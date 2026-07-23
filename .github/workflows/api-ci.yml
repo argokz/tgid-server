@@ -1,0 +1,36 @@
+name: API CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: itwin-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: itwin-api/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Auth / RBAC unit tests
+        env:
+          JWT_SECRET: ci-test-secret
+          AUTH_DISABLED: 'false'
+          MUTATIONS_ENABLED: 'false'
+          TOPOLOGY_MUTATIONS_ENABLED: 'false'
+        run: pytest tests/test_auth.py -q
