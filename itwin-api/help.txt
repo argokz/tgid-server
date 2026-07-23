@@ -1,0 +1,3 @@
+alembic init
+alembic revision --autogenerate -m "Initial UsersDB tables"
+alembic upgrade head

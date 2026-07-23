@@ -1,0 +1,1 @@
+python.exe ww.py -type_of_net 1 -server 145.249.247.138 -database AlmatyGID -user postgres -port 5440 -password Danil228 -rdbms postgreSQL -out_file 1/out.txt -name "Расчет планового режима 12.05.2025 13:43" -time "2025-05-12 08:43:40" -fileID 1 -trtp 0 -Tn -25

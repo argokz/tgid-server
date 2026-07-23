@@ -1,0 +1,15 @@
+appdirs==1.4.4
+certifi==2024.8.30
+charset-normalizer==3.4.0
+et-xmlfile==1.1.0
+idna==3.10
+networkx==3.4.2
+numpy==2.1.2
+openpyxl==3.1.5
+platformdirs==4.3.6
+PyHyphen==4.0.4
+pyodbc==5.2.0
+requests==2.32.3
+setuptools==75.2.0
+urllib3==2.2.3
+wheel==0.44.0

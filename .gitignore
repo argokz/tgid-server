@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+venv/
+.venv/
+
+# Secrets / env
+.env
+.env.local
+
+# Logs and runtime artifacts
+logs/
+*.log
+ww_output.log
+
+# OS junk
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# Отладочные дампы расчётчика (десятки МБ, не код)
+itwin-api/sety/teplo/old/
+itwin-api/sety/1/
+
+# Generated reports
+itwin-api/files/word/
+itwin-api/word_reports/files/

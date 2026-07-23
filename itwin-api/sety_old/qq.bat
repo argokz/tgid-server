@@ -1,0 +1,3 @@
+:python ww.py -type_of_net 1 -server "192.168.0.37" -database "AstanaGID" -user "tgid" -port 5440 -fileID 3151   -iter 20 -dross -Tn -30 -tp_metod -1 -trtp -1 -rdbms postgreSQL -color -password "Danil228" -no_teplovyd -time "2024-10-17 14:02:10" -mag_fragment -no_kv -user_gid "AstanaGID"
+
+python ww.py  -type_of_net 1 -server "192.168.0.37" -database "AstanaGID_03_06_24_work_2" -user "tgid" -port 5440 -fileID 6  -dross_yes  -iter 20 -dross -Tn -29.9 -tp_metod -1 -trtp -1 -rdbms postgreSQL -color -password "Danil228" -no_teplovyd -time "2024-11-01 06:22:54" -user_gid "AstanaGID_03_06_24_work_2"
