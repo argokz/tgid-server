@@ -1,6 +1,13 @@
 ﻿import os
-from hyphen import Hyphenator
-from hyphen.dictools import is_installed
+# PyHyphen - optional dependency: hyphenation is disabled (see hyphen() below)
+# and its only call in excel.py is commented out. Without this guard a missing
+# package broke the import of the whole passport module.
+try:
+    from hyphen import Hyphenator
+    from hyphen.dictools import is_installed
+except ImportError:
+    Hyphenator = None
+    is_installed = None
 #, install
 #from hyphen.dictools import list_installed
 

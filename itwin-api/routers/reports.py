@@ -2,6 +2,7 @@
 
 import io
 import os
+import sys
 
 import openpyxl
 import psycopg2
@@ -14,7 +15,7 @@ from app_logging import get_logger
 from database.connect import acquire_conn
 from database.export_shp import export_network_to_shp
 from database.word_db import get_defect_info
-from reports_generator import generate_excel_report, generate_form_html
+from reports_generator import excel_report_types, generate_excel_report, generate_form_html
 from word_reports.word_generator import generate_defect_map_word
 
 logger = get_logger(__name__)
@@ -32,9 +33,33 @@ def generate_passport_excel_query(table: str, obj_id: int):
     синхронные psycopg2/OpenPyXL не блокируют event loop остальных запросов.
     """
     try:
-        from passport_module.p import async_do_passport
+        # passport_module — перенесённый из gid8 код с плоскими импортами
+        # (import config, import connect …). Чтобы они разрешались, каталог
+        # модуля должен быть на sys.path.
+        module_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "passport_module")
+        if module_dir not in sys.path:
+            sys.path.insert(0, module_dir)
+        from passport_module.p import async_do_passport, read_ms_rs
+        import connect as passport_connect
+        import db2 as passport_db2
+        import ms1 as passport_ms1
+        import rs1 as passport_rs1
+        import sort_graph as passport_sort_graph
+        import sql_pass as passport_sql_pass
 
-        # Подключаемся через psycopg2 синхронно для совместимости с кодом gid8
+        # Формы паспорта (f1…f15) сами открывают соединение через
+        # connect.connect(**c), поэтому им передаются ПАРАМЕТРЫ подключения,
+        # а не готовый объект соединения (иначе TypeError на **c).
+        passport_conn_params = {
+            "rdbms": "postgreSQL",
+            "server": os.getenv("DB_HOST"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+            "db": os.getenv("DB_NAME"),
+            "port": os.getenv("DB_PORT"),
+        }
+
+        # Отдельное соединение для определения участка объекта
         conn = psycopg2.connect(
             host=os.getenv("DB_HOST"),
             database=os.getenv("DB_NAME"),
@@ -78,27 +103,62 @@ def generate_passport_excel_query(table: str, obj_id: int):
                 ms_rs = "rs"
                 site_id = int(bds)
             else:
-                raise Exception("Объект не привязан к участку (магистрали или распределительной сети)")
+                conn.close()
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Узел {node_id} не привязан ни к магистральному, ни к распределительному "
+                        "участку — паспорт формируется только по участку."
+                    ),
+                )
 
-        wb = openpyxl.Workbook()
-        # Удаляем дефолтный лист
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
+        conn.close()
 
-        # Вызываем логику gid8. Эта функция синхронная и использует ThreadPoolExecutor
+        # Полный сценарий desktop-паспорта (passport_module/p.py::passport):
+        # титульный лист участка → состав участка → граф участка (marked lines) →
+        # 15 форм. Без make_graph формам приходил mark_line=0 и SQL падал.
+        fragments = ""
+        passport_conn = passport_connect.connect(**passport_conn_params)
+        try:
+            wb = openpyxl.Workbook()
+            title_sheet = wb.active
+            title_sheet.title = "Паспорт"
+
+            head_rows = passport_db2.read_q(passport_conn, passport_sql_pass.passport(ms_rs, site_id))
+            if ms_rs == "ms":
+                passport_ms1.write_ms(title_sheet, head_rows)
+            else:
+                passport_rs1.write_rs(title_sheet, head_rows)
+
+            site_rows = read_ms_rs(passport_conn, ms_rs, site_id)
+            graph = passport_sort_graph.make_graph(passport_conn, fragments, ms_rs, site_id)
+        finally:
+            passport_conn.close()
+
+        if not graph or not graph[0]:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Для участка {ms_rs}/{site_id} нет ни одного трубопровода. "
+                    "Проверьте привязку узлов к участку (nodes.belongMagistralSite / "
+                    "belongDistSite) — без неё паспорт сформировать нельзя."
+                ),
+            )
+
+        mark_line, mark_node, mark_pts = graph
+
+        # Формы f1…f15 открывают собственные соединения из параметров (ThreadPoolExecutor)
         async_do_passport(
-            c=conn,
+            c=passport_conn_params,
             wb=wb,
             ms_rs=ms_rs,
             id=site_id,
-            fragments="",
-            mark_line=0,
-            mark_pts=0,
-            mark_node=0,
-            vals=""
+            fragments=fragments,
+            mark_line=mark_line,
+            mark_pts=mark_pts,
+            mark_node=mark_node,
+            vals=site_rows,
         )
-
-        conn.close()
 
         # Сохраняем в память
         output = io.BytesIO()
@@ -112,10 +172,11 @@ def generate_passport_excel_query(table: str, obj_id: int):
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Passport generation failed for {table}/{obj_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Не удалось сформировать паспорт: {e}")
 
 
 @router.get("/reports/word/defect/{defect_id}")
@@ -237,9 +298,21 @@ async def get_report_html_endpoint(form_id: str, search: Optional[str] = Query(N
     return HTMLResponse(content=html_content)
 
 
+@router.get("/api/reports/excel-types")
+async def list_report_excel_types():
+    """Доступные ведомости Excel — источник списка для UI."""
+    return {"items": excel_report_types()}
+
+
 @router.get("/api/reports/excel/{doc_type}")
 async def get_report_excel_endpoint(doc_type: str):
-    excel_bytes = await generate_excel_report(doc_type)
+    try:
+        excel_bytes = await generate_excel_report(doc_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Excel report {doc_type} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Не удалось сформировать ведомость: {e}")
     return StreamingResponse(
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

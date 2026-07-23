@@ -79,34 +79,27 @@ def connect_ms_sql(**conn_str: Any):
 
 #def connect_pg(**conn_str: Any) -> Connection | None:
 def connect_pg(**conn_str: Any):
-    driver = 'PostgreSQL ODBC Driver(Unicode)'
-    driver = 'PostgreSQL Unicode(x64)'
-    driver = 'PostgreSQL Unicode'
-
-    _host = conn_str.get('server', 'localhost')
-    _user = conn_str.get('user', 'gena1967')
-    _password = conn_str.get('password', 'Danil228')
-    _db = conn_str.get('db', 'gis')
-    _port = conn_str.get('port', 5432)
-    
-    str_connect = (f'DRIVER={{{driver}}};'
-            + f'DATABASE={_db};')
-
-    str_connect += f'SERVER={_host};PORT={_port};'
-    str_connect += f'Uid={_user};Pwd={_password}'
+    """psycopg2-подключение по параметрам server/user/password/db/port."""
+    _host = conn_str.get('server') or os.getenv('DB_HOST', 'localhost')
+    _user = conn_str.get('user') or os.getenv('DB_USER', 'postgres')
+    _password = conn_str.get('password') or os.getenv('DB_PASSWORD', '')
+    _db = conn_str.get('db') or os.getenv('DB_NAME', 'postgres')
+    _port = conn_str.get('port') or os.getenv('DB_PORT', 5432)
 
     try:
-        conn = pyodbc.connect(str_connect)
-
-        # Это чтобы читать данные geometry и не вылетать
-        conn.add_output_converter(-151, HandleHierarchyId)
+        conn = pyodbc.connect(
+            host=_host,
+            port=int(_port),
+            user=_user,
+            password=_password,
+            dbname=_db,
+        )
+        if conn_str.get('autocommit'):
+            conn.autocommit = True
         return conn
     except pyodbc.Error as ex:
-#        print(str_connect)
         print('Error', ex)
-        exit(0)
-
-    return None
+        raise
 
 #-----------------------------------------------
 #def connect_sqlite(**conn_str: Any) -> Connection | None:
