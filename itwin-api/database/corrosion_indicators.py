@@ -390,7 +390,13 @@ async def get_corrosion_indicators_geojson(conn: asyncpg.Connection) -> dict[str
     rows = await conn.fetch("""
         SELECT
             d.id,
-            d.name AS label,
+            -- В indikator_korrozii нет колонки name: подпись собираем из номера
+            -- индикатора и места установки (см. legacy-модель gid6)
+            COALESCE(
+                NULLIF(d.nomer_indikatora_korrozii, ''),
+                NULLIF(d.mesto_ustanovki, ''),
+                'Индикатор ' || d.id::text
+            ) AS label,
             ST_AsGeoJSON(ST_Transform(d.shape, 4326)) AS geometry
         FROM indikator_korrozii d
         WHERE d.shape IS NOT NULL

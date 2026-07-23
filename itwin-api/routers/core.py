@@ -1,7 +1,9 @@
 """Базовые маршруты: фрагменты, русские названия, карточки линий/узлов, справочники."""
 
 import json
+import time
 
+from asyncpg.exceptions import UndefinedColumnError
 from fastapi import APIRouter, HTTPException
 
 from app_logging import get_logger
@@ -51,6 +53,44 @@ async def _add_russian_names_to_response(data: dict, table: str) -> dict:
     except Exception as e:
         logger.error(f"Ошибка при добавлении русских названий: {str(e)}")
         return data
+
+
+@router.get("/health")
+@router.get("/api/health")
+async def health():
+    """Проверка живости для мониторинга и деплоя: доступность БД и версия набора маршрутов."""
+    from database.connect import acquire_conn
+
+    db_ok = False
+    db_error = None
+    started = time.monotonic()
+    try:
+        async with acquire_conn() as conn:
+            await conn.fetchval("SELECT 1")
+        db_ok = True
+    except Exception as e:  # noqa: BLE001 - здоровье не должно падать с 500
+        db_error = str(e)
+
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "database": {
+            "ok": db_ok,
+            "latency_ms": round((time.monotonic() - started) * 1000, 1),
+            "error": db_error,
+        },
+        # Клиент может сверить, что развёрнута актуальная версия API
+        "routes": len(_route_paths()),
+        "russian_names_initialized": russian_names_manager.initialized,
+    }
+
+
+def _route_paths() -> set:
+    try:
+        from main import app
+
+        return {getattr(r, "path", "") for r in app.routes if getattr(r, "path", "")}
+    except Exception:
+        return set()
 
 
 @router.get("/fragments")
@@ -125,6 +165,14 @@ async def get_line(table: str, id: int, include_russian_names: bool = False):
             data = await _add_russian_names_to_response(data, table)
 
         return {"data": data}
+    except UndefinedColumnError:
+        # Таблица не относится к линейным объектам (нет lineID) — это ошибка
+        # запроса клиента, а не сбой сервера
+        raise HTTPException(
+            status_code=400,
+            detail=f"Таблица «{table}» не является линейным объектом (нет колонки lineID). "
+                   f"Для точечных объектов используйте /node/{table}/{id}.",
+        )
     except Exception as e:
         logger.error(f"Error fetching line data: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching line data: {str(e)}")
@@ -145,6 +193,12 @@ async def get_node(table: str, id: int, include_russian_names: bool = False):
             data = await _add_russian_names_to_response(data, table)
 
         return {"data": data}
+    except UndefinedColumnError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Таблица «{table}» не является точечным объектом (нет колонки nodeID). "
+                   f"Для линейных объектов используйте /line/{table}/{id}.",
+        )
     except Exception as e:
         logger.error(f"Error fetching node data: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching node data: {str(e)}")

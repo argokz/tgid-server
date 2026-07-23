@@ -9,7 +9,7 @@ async def get_latest_calculations(conn: asyncpg.Connection, limit: int = 20) -> 
         SELECT id, name, date1 as calculated_at, fileid
         FROM calculation
         ORDER BY date1 DESC NULLS LAST, id DESC
-        LIMIT 
+        LIMIT $1
     """, limit)
     return [dict(row) for row in rows]
 

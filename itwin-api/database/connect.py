@@ -50,8 +50,24 @@ async def init_db_pool():
         logger.warning("Пул уже инициализирован, пропускаем повторную инициализацию")
         return
     try:
-        logger.info("🔄 Инициализация пула для основной базы...")
-        pool = await asyncpg.create_pool(**DATABASE_CONFIG, min_size=1, max_size=10)
+        # Размер пула и таймаут запроса — из окружения: под нагрузкой 10 соединений
+        # мало, а «вечный» запрос удерживает соединение и копит очередь.
+        min_size = int(os.getenv("DB_POOL_MIN_SIZE", "2"))
+        max_size = int(os.getenv("DB_POOL_MAX_SIZE", "20"))
+        command_timeout = float(os.getenv("DB_COMMAND_TIMEOUT", "60"))
+        logger.info(
+            f"🔄 Инициализация пула для основной базы (min={min_size}, max={max_size}, "
+            f"command_timeout={command_timeout}s)..."
+        )
+        pool = await asyncpg.create_pool(
+            **DATABASE_CONFIG,
+            min_size=min_size,
+            max_size=max_size,
+            command_timeout=command_timeout,
+            max_inactive_connection_lifetime=float(
+                os.getenv("DB_POOL_MAX_INACTIVE_LIFETIME", "300")
+            ),
+        )
         logger.info("✅ Пул успешно инициализирован")
     except socket.gaierror as e:
         logger.error(f"❌ Не удалось разрешить хост {DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}: {e}")
