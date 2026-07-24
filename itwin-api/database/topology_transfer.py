@@ -148,6 +148,61 @@ async def _column_exists(conn, table: str, column: str) -> bool:
     )
 
 
+_NODE_REF_CACHE: list[tuple[str, str]] | None = None
+
+
+async def _node_ref_columns(conn) -> list[tuple[str, str]]:
+    """Все (таблица, колонка), ссылающиеся на узел (nodeid*), кроме самой linesobj.
+
+    Кэшируется — набор таблиц в рамках одной БД не меняется.
+    """
+    global _NODE_REF_CACHE
+    if _NODE_REF_CACHE is None:
+        rows = await conn.fetch(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+              AND (lower(column_name) = 'nodeid' OR lower(column_name) LIKE 'nodeid%')
+            """
+        )
+        _NODE_REF_CACHE = [
+            (r["table_name"], r["column_name"])
+            for r in rows
+            if r["table_name"].lower() != "linesobj"  # инцидентные линии считаем отдельно
+        ]
+    return _NODE_REF_CACHE
+
+
+async def node_dependency_report(conn, node_id: int) -> dict:
+    """Что ссылается на узел, кроме инцидентных линий: {table.column: count} для count>0."""
+    deps: dict[str, int] = {}
+    for table, col in await _node_ref_columns(conn):
+        try:
+            n = await conn.fetchval(f'SELECT count(*) FROM {_ident(table)} WHERE {_ident(col)} = $1', node_id)
+        except Exception:  # noqa: BLE001 - таблица могла исчезнуть/сменить тип
+            continue
+        if n:
+            deps[f"{table}.{col}"] = int(n)
+    return deps
+
+
+async def line_dependency_report(conn, line_id: int) -> dict:
+    """Оборудование, ссылающееся на линию через lineid: {table: count} для count>0.
+
+    Использует те же таблицы, что и перенос при разрезании (реальный FK на linesobj).
+    heatpipesections (паспорт 1:1) не включается — он снимается вместе с линией.
+    """
+    deps: dict[str, int] = {}
+    for rule in SPLIT_TRANSFER_RULES:
+        if not await _table_exists(conn, rule.table):
+            continue
+        n = await conn.fetchval(f'SELECT count(*) FROM {_ident(rule.table)} WHERE lineid = $1', line_id)
+        if n:
+            deps[rule.table] = int(n)
+    return deps
+
+
 async def transfer_dependents(
     conn,
     orig_line_id: int,

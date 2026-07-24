@@ -10,6 +10,7 @@ from app_logging import get_logger
 from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_roles
 from database.topology import (
+    TopologyDependencyError,
     create_line,
     create_node,
     delete_line,
@@ -109,17 +110,22 @@ async def create_node_endpoint(
 async def delete_node_endpoint(
     id: int,
     user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    cascade: bool = False,
 ):
     require_topology_mutations_enabled()
     try:
-        await delete_node(id)
+        result = await delete_node(id, cascade=cascade)
         await write_audit_log(
             changed_by=user.username,
             operation="DELETE",
             table_name="nodes",
             record_id=id,
+            new_data={"cascade": cascade, **result},
         )
-        return {"success": True, "id": id}
+        return {"success": True, "id": id, **result}
+    except TopologyDependencyError as e:
+        # 409: узел не удалён, т.к. на нём висят зависимости; отчёт — в detail
+        raise HTTPException(status_code=409, detail={"message": str(e), "blockers": e.blockers})
     except Exception as e:
         logger.error(f"Error deleting node {id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

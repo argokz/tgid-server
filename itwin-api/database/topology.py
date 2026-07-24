@@ -1,6 +1,10 @@
 import logging
 from database.connect import get_pool
-from database.topology_transfer import transfer_dependents
+from database.topology_transfer import (
+    line_dependency_report,
+    node_dependency_report,
+    transfer_dependents,
+)
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -11,6 +15,14 @@ class _DryRunRollback(Exception):
 
     def __init__(self, payload: dict):
         self.payload = payload
+
+
+class TopologyDependencyError(Exception):
+    """Операция заблокирована зависимыми объектами (для ответа 409 с отчётом)."""
+
+    def __init__(self, message: str, blockers: dict):
+        super().__init__(message)
+        self.blockers = blockers
 
 async def move_node(node_id: int, lng: float, lat: float):
     pool = get_pool()
@@ -39,22 +51,73 @@ async def move_node(node_id: int, lng: float, lat: float):
 
             # 3. Update lines where this node is nodeid2 (end point -> last index)
             q_line2 = """
-                UPDATE linesobj 
+                UPDATE linesobj
                 SET shape = ST_SetPoint(shape, ST_NumPoints(shape) - 1, (SELECT shape FROM nodes WHERE id = $1)),
                     archivechangedate = $2
                 WHERE nodeid2 = $1 AND shape IS NOT NULL
             """
             await conn.execute(q_line2, node_id, now)
 
-async def delete_node(node_id: int):
+            # 4. Пересчёт длины паспорта труб у всех инцидентных участков:
+            # перемещение узла меняет длину линии, а pipesectlength должен следовать
+            # за геометрией — иначе гидравлический расчёт получит устаревшую длину.
+            affected = await conn.fetch(
+                """
+                UPDATE heatpipesections h
+                SET pipesectlength = ST_Length(l.shape)
+                FROM linesobj l
+                WHERE h.lineid = l.id
+                  AND (l.nodeid1 = $1 OR l.nodeid2 = $1)
+                  AND l.shape IS NOT NULL
+                RETURNING h.lineid
+                """,
+                node_id,
+            )
+            return {"node_id": node_id, "recalculated_lines": len(affected)}
+
+
+async def delete_node(node_id: int, cascade: bool = False) -> dict:
+    """Безопасное удаление узла.
+
+    По умолчанию отказывает, если на узле висят инцидентные активные линии или
+    другие ссылки (nodeid в зависимых таблицах) — чтобы не осиротить объекты молча.
+    cascade=True — удалить узел вместе с инцидентными линиями и их паспортами.
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             now = datetime.now()
-            # Soft delete node
+
+            incident_lines = await conn.fetch(
+                "SELECT id FROM linesobj WHERE (nodeid1 = $1 OR nodeid2 = $1) AND COALESCE(removed, 0) = 0",
+                node_id,
+            )
+            node_deps = await node_dependency_report(conn, node_id)
+
+            if not cascade and (incident_lines or node_deps):
+                raise TopologyDependencyError(
+                    "Узел нельзя удалить: есть зависимые объекты",
+                    blockers={
+                        "incident_lines": [r["id"] for r in incident_lines],
+                        "references": node_deps,
+                    },
+                )
+
+            # cascade: снимаем инцидентные линии и их паспорта
+            removed_lines = [r["id"] for r in incident_lines]
+            if removed_lines:
+                await conn.execute(
+                    "UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = ANY($1::int[])",
+                    removed_lines, now,
+                )
+                await _soft_remove_heatpipesections(conn, removed_lines, now)
+
             await conn.execute("UPDATE nodes SET removed = 1, archivechangedate = $2 WHERE id = $1", node_id, now)
-            # Soft delete connected lines
-            await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE nodeid1 = $1 OR nodeid2 = $1", node_id, now)
+            return {
+                "node_id": node_id,
+                "removed_lines": removed_lines,
+                "cleared_references": node_deps,
+            }
 
 async def create_node(lng: float, lat: float) -> int:
     pool = get_pool()
@@ -119,11 +182,36 @@ async def create_line(nodeid1: int, nodeid2: int) -> int:
 
             return line_id
 
-async def delete_line(line_id: int):
+async def delete_line(line_id: int) -> dict:
+    """Мягкое удаление участка вместе с его паспортом; отчёт по зависимому оборудованию.
+
+    Оборудование (задвижки, регуляторы…) на удалённой линии не пропадает
+    (soft-delete сохраняет данные), но возвращается в отчёте, чтобы оператор
+    знал, какие объекты теперь ссылаются на снятый участок.
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
-        now = datetime.now()
-        await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = $1", line_id, now)
+        async with conn.transaction():
+            now = datetime.now()
+            equipment = await line_dependency_report(conn, line_id)
+            await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = $1", line_id, now)
+            await _soft_remove_heatpipesections(conn, [line_id], now)
+            return {"line_id": line_id, "dependent_equipment": equipment}
+
+
+async def _soft_remove_heatpipesections(conn, line_ids: list, now) -> None:
+    """Мягко снимает паспорта труб снятых линий, если в таблице есть колонка removed."""
+    if not line_ids:
+        return
+    has_removed = await conn.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE lower(table_name)='heatpipesections' AND lower(column_name)='removed' LIMIT 1"
+    )
+    if has_removed:
+        await conn.execute(
+            "UPDATE heatpipesections SET removed = 1 WHERE lineid = ANY($1::int[])",
+            line_ids,
+        )
 
 async def split_line(line_id: int, lng: float, lat: float, dry_run: bool = False) -> dict:
     """Разрезает участок точкой, перенося зависимые объекты на нужную половину.

@@ -84,3 +84,19 @@ def test_transfer_rule_is_frozen():
     r = TransferRule("dampers", TransferKind.REVIEW)
     with pytest.raises(Exception):
         r.table = "other"  # dataclass(frozen=True)
+
+
+def test_dependency_report_helpers_exist():
+    # safe-delete опирается на эти отчёты — контракт модуля
+    from database.topology_transfer import line_dependency_report, node_dependency_report
+
+    assert callable(node_dependency_report)
+    assert callable(line_dependency_report)
+
+
+def test_topology_dependency_error_carries_blockers():
+    from database.topology import TopologyDependencyError
+
+    err = TopologyDependencyError("blocked", blockers={"incident_lines": [1, 2]})
+    assert err.blockers["incident_lines"] == [1, 2]
+    assert "blocked" in str(err)
