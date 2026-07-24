@@ -326,7 +326,9 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
                   NULL::heatpipesections,
                   to_jsonb(h) || jsonb_build_object(
                     'id', nextval('heatpipesections_id_seq'),
-                    'lineid', $2,
+                    -- явный ::int: в jsonb_build_object аргумент имеет тип "any",
+                    -- и без каста PostgreSQL не может вывести тип параметра
+                    'lineid', $2::int,
                     'pipesectlength', ST_Length((SELECT shape FROM linesobj WHERE id = $2))
                   )
                 )).*
