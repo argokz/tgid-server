@@ -42,6 +42,8 @@ class SplitLineRequest(BaseModel):
     line_id: int
     lng: float
     lat: float
+    # dry_run=true — вернуть отчёт «что перенесётся» без сохранения (превью в UI)
+    dry_run: bool = False
 
 
 def require_topology_mutations_enabled():
@@ -176,16 +178,20 @@ async def api_split_line(
     req: SplitLineRequest,
     user: Annotated[AuthUser, Depends(require_roles("admin"))],
 ):
-    require_topology_mutations_enabled()
+    # Превью (dry_run) безопасно — транзакция откатывается, ничего не сохраняется,
+    # поэтому не требует включённого флага записи; RBAC (admin) остаётся.
+    if not req.dry_run:
+        require_topology_mutations_enabled()
     try:
-        result = await split_line(req.line_id, req.lng, req.lat)
-        await write_audit_log(
-            changed_by=user.username,
-            operation="SPLIT",
-            table_name="linesobj",
-            record_id=req.line_id,
-            new_data=result if isinstance(result, dict) else {"result": str(result)},
-        )
+        result = await split_line(req.line_id, req.lng, req.lat, dry_run=req.dry_run)
+        if not req.dry_run:
+            await write_audit_log(
+                changed_by=user.username,
+                operation="SPLIT",
+                table_name="linesobj",
+                record_id=req.line_id,
+                new_data=result if isinstance(result, dict) else {"result": str(result)},
+            )
         return {"status": "success", **result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

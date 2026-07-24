@@ -1,8 +1,16 @@
 import logging
 from database.connect import get_pool
+from database.topology_transfer import transfer_dependents
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+class _DryRunRollback(Exception):
+    """Служебное исключение: форсирует ROLLBACK транзакции dry-run, неся отчёт."""
+
+    def __init__(self, payload: dict):
+        self.payload = payload
 
 async def move_node(node_id: int, lng: float, lat: float):
     pool = get_pool()
@@ -117,15 +125,30 @@ async def delete_line(line_id: int):
         now = datetime.now()
         await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = $1", line_id, now)
 
-async def split_line(line_id: int, lng: float, lat: float) -> dict:
+async def split_line(line_id: int, lng: float, lat: float, dry_run: bool = False) -> dict:
+    """Разрезает участок точкой, перенося зависимые объекты на нужную половину.
+
+    dry_run=True — выполнить всё в транзакции, вернуть отчёт и откатить (ничего не
+    сохраняется). Отчёт показывает, что будет перенесено и что требует ручной проверки.
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            now = datetime.now()
-            
-            # 1. Locate the clicked point on the original geometry. The fraction is
-            # reused for both halves so intermediate vertices are preserved.
-            q_old = """
+        try:
+            async with conn.transaction():
+                result = await _split_line_body(conn, line_id, lng, lat)
+                if dry_run:
+                    raise _DryRunRollback({"dry_run": True, **result})
+                return result
+        except _DryRunRollback as e:
+            return e.payload
+
+
+async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
+    now = datetime.now()
+
+    # 1. Locate the clicked point on the original geometry. The fraction is
+    # reused for both halves so intermediate vertices are preserved.
+    q_old = """
                 SELECT nodeid1, nodeid2,
                        ST_LineLocatePoint(
                          shape,
@@ -134,15 +157,16 @@ async def split_line(line_id: int, lng: float, lat: float) -> dict:
                 FROM linesobj
                 WHERE id = $1 AND removed = 0 AND shape IS NOT NULL
             """
-            old_line = await conn.fetchrow(q_old, line_id, lng, lat)
-            if not old_line:
-                raise ValueError("Line not found")
-            split_fraction = float(old_line['split_fraction'])
-            if split_fraction <= 1e-8 or split_fraction >= 1.0 - 1e-8:
-                raise ValueError("Split point is too close to a line endpoint")
-            
-            # 2. Create the new node at lng, lat
-            q_insert_node = """
+    old_line = await conn.fetchrow(q_old, line_id, lng, lat)
+    if not old_line:
+        raise ValueError("Line not found")
+    orig_nodeid2 = old_line['nodeid2']
+    split_fraction = float(old_line['split_fraction'])
+    if split_fraction <= 1e-8 or split_fraction >= 1.0 - 1e-8:
+        raise ValueError("Split point is too close to a line endpoint")
+
+    # 2. Create the new node at lng, lat
+    q_insert_node = """
                 INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid)
                 SELECT
                   ST_LineInterpolatePoint(l.shape, $2),
@@ -155,10 +179,10 @@ async def split_line(line_id: int, lng: float, lat: float) -> dict:
                 WHERE l.id = $1
                 RETURNING id
             """
-            new_node_id = await conn.fetchval(q_insert_node, line_id, split_fraction, now)
-            
-            # 3. Create the new line from new_node_id to old nodeid2
-            q_insert_line = """
+    new_node_id = await conn.fetchval(q_insert_node, line_id, split_fraction, now)
+
+    # 3. Create the new line from new_node_id to old nodeid2
+    q_insert_line = """
                 INSERT INTO linesobj (
                   nodeid1, nodeid2, externalsignlineid, location, hydrores,
                   organizationid, registnum, firstpicdate, lastmaintdate,
@@ -177,28 +201,38 @@ async def split_line(line_id: int, lng: float, lat: float) -> dict:
                 WHERE l.id = $1
                 RETURNING id
             """
-            new_line_id = await conn.fetchval(
-                q_insert_line,
-                line_id,
-                new_node_id,
-                split_fraction,
-                now,
-            )
-            
-            # 4. Update the old line's nodeid2 to new_node_id
-            q_update_old = """
+    new_line_id = await conn.fetchval(
+        q_insert_line,
+        line_id,
+        new_node_id,
+        split_fraction,
+        now,
+    )
+
+    # 4. Перенос зависимых объектов на нужную половину — ДО усечения геометрии L,
+    # т.к. геометрический перенос проецирует точки на полную исходную линию.
+    transfer_report = await transfer_dependents(
+        conn,
+        orig_line_id=line_id,
+        new_line_id=new_line_id,
+        split_fraction=split_fraction,
+        orig_nodeid2=orig_nodeid2,
+    )
+
+    # 5. Update the old line's nodeid2 to new_node_id (усечение геометрии до 0..f)
+    q_update_old = """
                 UPDATE linesobj
                 SET nodeid2 = $1,
                     shape = ST_LineSubstring(shape, 0.0, $2),
                     archivechangedate = $3
                 WHERE id = $4
             """
-            await conn.execute(q_update_old, new_node_id, split_fraction, now, line_id)
+    await conn.execute(q_update_old, new_node_id, split_fraction, now, line_id)
 
-            # Clone the business passport of the pipe section for the new half,
-            # then update geometric lengths for both halves. jsonb_populate_record
-            # keeps all current and future columns without a 150-column SQL list.
-            q_clone_heat = """
+    # 6. Clone the business passport of the pipe section for the new half,
+    # then update geometric lengths for both halves. jsonb_populate_record
+    # keeps all current and future columns without a 150-column SQL list.
+    q_clone_heat = """
                 INSERT INTO heatpipesections
                 SELECT (jsonb_populate_record(
                   NULL::heatpipesections,
@@ -207,21 +241,22 @@ async def split_line(line_id: int, lng: float, lat: float) -> dict:
                     'lineid', $2,
                     'pipesectlength', ST_Length((SELECT shape FROM linesobj WHERE id = $2))
                   )
-                )).* 
+                )).*
                 FROM heatpipesections h
                 WHERE h.lineid = $1
             """
-            await conn.execute(q_clone_heat, line_id, new_line_id)
-            await conn.execute(
-                """
+    await conn.execute(q_clone_heat, line_id, new_line_id)
+    await conn.execute(
+        """
                 UPDATE heatpipesections
                 SET pipesectlength = ST_Length((SELECT shape FROM linesobj WHERE id = $1))
                 WHERE lineid = $1
                 """,
-                line_id,
-            )
+        line_id,
+    )
 
-            return {
-                "new_node_id": new_node_id,
-                "new_line_id": new_line_id
-            }
+    return {
+        "new_node_id": new_node_id,
+        "new_line_id": new_line_id,
+        "transferred": transfer_report,
+    }
