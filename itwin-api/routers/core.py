@@ -58,7 +58,9 @@ async def _add_russian_names_to_response(data: dict, table: str) -> dict:
 @router.get("/health")
 @router.get("/api/health")
 async def health():
-    """Проверка живости для мониторинга и деплоя: доступность БД и версия набора маршрутов."""
+    """Проверка живости: БД, Redis/Celery broker, число маршрутов."""
+    import os
+
     from database.connect import acquire_conn
 
     db_ok = False
@@ -68,19 +70,67 @@ async def health():
         async with acquire_conn() as conn:
             await conn.fetchval("SELECT 1")
         db_ok = True
-    except Exception as e:  # noqa: BLE001 - здоровье не должно падать с 500
+    except Exception as e:  # noqa: BLE001
         db_error = str(e)
 
+    redis_ok = False
+    redis_error = None
+    redis_started = time.monotonic()
+    try:
+        import redis as redis_lib
+
+        addr = os.getenv("REDIS_ADDR", "127.0.0.1:6379")
+        password = os.getenv("REDIS_PASSWORD", "").strip() or None
+        host, _, port_s = addr.partition(":")
+        client = redis_lib.Redis(
+            host=host or "127.0.0.1",
+            port=int(port_s or "6379"),
+            password=password,
+            socket_connect_timeout=1.5,
+            socket_timeout=1.5,
+        )
+        redis_ok = bool(client.ping())
+        client.close()
+    except Exception as e:  # noqa: BLE001
+        redis_error = str(e)
+
+    status = "ok" if db_ok else "degraded"
+    if db_ok and not redis_ok:
+        status = "degraded"
+
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": status,
         "database": {
             "ok": db_ok,
             "latency_ms": round((time.monotonic() - started) * 1000, 1),
             "error": db_error,
         },
-        # Клиент может сверить, что развёрнута актуальная версия API
+        "redis": {
+            "ok": redis_ok,
+            "latency_ms": round((time.monotonic() - redis_started) * 1000, 1),
+            "error": redis_error,
+            "note": None if redis_ok else "sety / heat-loss run требуют Redis + Celery worker",
+        },
         "routes": len(_route_paths()),
         "russian_names_initialized": russian_names_manager.initialized,
+        "flags": {
+            "auth_disabled": os.getenv("AUTH_DISABLED", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "dev_login_enabled": os.getenv("DEV_LOGIN_ENABLED", "false")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            "strict_auth": os.getenv("STRICT_AUTH", "false").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "mutations_enabled": os.getenv("MUTATIONS_ENABLED", "false").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "topology_mutations_enabled": os.getenv(
+                "TOPOLOGY_MUTATIONS_ENABLED", "false"
+            )
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+        },
     }
 
 

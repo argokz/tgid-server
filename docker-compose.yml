@@ -1,0 +1,40 @@
+# Local / stand stack for itwin-api + Celery (sety) + Redis.
+# Production cutover: point nginx /map-api upstream at the `api` service.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ./itwin-api/.env
+    environment:
+      REDIS_ADDR: redis:6379
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+      MUTATIONS_ENABLED: ${MUTATIONS_ENABLED:-false}
+      TOPOLOGY_MUTATIONS_ENABLED: ${TOPOLOGY_MUTATIONS_ENABLED:-false}
+      STRICT_AUTH: ${STRICT_AUTH:-true}
+    ports:
+      - "8011:8011"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
+    env_file:
+      - ./itwin-api/.env
+    environment:
+      REDIS_ADDR: redis:6379
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
