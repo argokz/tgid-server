@@ -14,6 +14,7 @@ from typing import Optional
 from app_logging import get_logger
 from database.connect import acquire_conn
 from database.export_shp import export_network_to_shp
+from database.passport_diagnostics import get_passport_site_diagnostics
 from database.word_db import get_defect_info
 from reports_generator import excel_report_types, generate_excel_report, generate_form_html
 from word_reports.word_generator import generate_defect_map_word
@@ -71,6 +72,7 @@ def generate_passport_excel_query(table: str, obj_id: int):
 
         ms_rs = None
         site_id = None
+        line_id = None
 
         # Находим к какому участку относится объект
         if table == "linesobj":
@@ -79,6 +81,7 @@ def generate_passport_excel_query(table: str, obj_id: int):
             if not res:
                 raise Exception("Труба не найдена")
             node_id = res[0]
+            line_id = obj_id
         elif table == "nodes":
             node_id = obj_id
         elif table == "uchastok_ms":
@@ -91,26 +94,30 @@ def generate_passport_excel_query(table: str, obj_id: int):
             raise Exception("Неизвестная таблица")
 
         if ms_rs is None:
-            cur.execute("SELECT belongmagistralsite, belongdistsite FROM nodes WHERE id = %s", (node_id,))
+            from database.passport_site import resolve_site_from_node_row, resolve_site_via_heatpipesections
+
+            cur.execute(
+                "SELECT belongmagistralsite, belongdistsite FROM nodes WHERE id = %s",
+                (node_id,),
+            )
             res = cur.fetchone()
             if not res:
                 raise Exception("Узел не найден")
-            bms, bds = res
-            if bms and int(bms) > 0:
-                ms_rs = "ms"
-                site_id = int(bms)
-            elif bds and int(bds) > 0:
-                ms_rs = "rs"
-                site_id = int(bds)
-            else:
+            resolved = resolve_site_from_node_row(res[0], res[1])
+            if resolved is None:
+                resolved = resolve_site_via_heatpipesections(cur, node_id, line_id=line_id)
+            if resolved is None:
                 conn.close()
                 raise HTTPException(
                     status_code=404,
                     detail=(
                         f"Узел {node_id} не привязан ни к магистральному, ни к распределительному "
-                        "участку — паспорт формируется только по участку."
+                        "участку — паспорт формируется только по участку. "
+                        "Запустите scripts/sql/backfill_belong_site.sql на копии БД "
+                        "или откройте паспорт по uchastok_ms / uchastok_rs."
                     ),
                 )
+            ms_rs, site_id = resolved
 
         conn.close()
 
@@ -211,6 +218,17 @@ async def export_defect_word(defect_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/passports/diagnostics")
+async def passport_site_diagnostics():
+    """Почему Excel-паспорт может вернуть 404 «нет трубопроводов»."""
+    try:
+        async with acquire_conn() as conn:
+            return await get_passport_site_diagnostics(conn)
+    except Exception as e:
+        logger.exception("passport diagnostics failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.get("/api/passports/hierarchy")
 async def get_passports_hierarchy():
     async with acquire_conn() as conn:
@@ -283,12 +301,26 @@ async def get_passports_hierarchy():
 
 
 @router.get("/api/export/shp")
-async def export_shp_endpoint():
-    zip_data = await export_network_to_shp()
+async def export_shp_endpoint(
+    fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Comma-separated fileIDs"),
+    limit: int = Query(50000, ge=1, le=200000),
+):
+    ids: list[int] = []
+    if fragments:
+        for part in fragments.split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.append(int(part))
+    if fragment_id is not None:
+        ids.append(int(fragment_id))
+    frags = sorted(set(ids)) or None
+    zip_data = await export_network_to_shp(frags, limit=limit)
+    suffix = f"_f{frags[0]}" if frags and len(frags) == 1 else ("_frag" if frags else "")
     return StreamingResponse(
         io.BytesIO(zip_data),
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=network_export.zip"}
+        headers={"Content-Disposition": f"attachment; filename=network_export{suffix}.zip"},
     )
 
 
@@ -305,16 +337,20 @@ async def list_report_excel_types():
 
 
 @router.get("/api/reports/excel/{doc_type}")
-async def get_report_excel_endpoint(doc_type: str):
+async def get_report_excel_endpoint(
+    doc_type: str,
+    year: Optional[int] = Query(None, ge=1990, le=2200),
+):
     try:
-        excel_bytes = await generate_excel_report(doc_type)
+        excel_bytes = await generate_excel_report(doc_type, year=year)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Excel report {doc_type} failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Не удалось сформировать ведомость: {e}")
+    suffix = f"_{year}" if year else ""
     return StreamingResponse(
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=report_{doc_type}.xlsx"}
+        headers={"Content-Disposition": f"attachment; filename=report_{doc_type}{suffix}.xlsx"}
     )

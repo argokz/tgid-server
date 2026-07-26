@@ -15,6 +15,8 @@ from auth import (
     role_for_mutation,
 )
 from database.db import create_object, delete_object, update_object_attributes
+from database.ops_mutations import filter_ops_fields
+from database.tu_mutations import filter_tu_fields
 
 logger = get_logger(__name__)
 
@@ -23,6 +25,15 @@ router = APIRouter(tags=["crud"])
 
 class UpdateAttributesParams(BaseModel):
     fields: Dict[str, Any]
+
+
+def _prepare_fields(table: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    key = table.lower()
+    if key == "tehnicheskie_usloviya":
+        return filter_tu_fields(fields)
+    if key in {"defect", "shurfy", "osmotr", "remont2", "opres"}:
+        return filter_ops_fields(table, fields)
+    return fields
 
 
 @router.put("/update/{table}/{id}")
@@ -38,14 +49,15 @@ async def update_object(
     table = assert_mutable_table(table)
     if not user.has_role(role_for_mutation(table)):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
+    fields = _prepare_fields(table, body.fields)
     try:
-        success = await update_object_attributes(table, id, body.fields)
+        success = await update_object_attributes(table, id, fields)
         await write_audit_log(
             changed_by=user.username,
             operation="UPDATE",
             table_name=table,
             record_id=id,
-            new_data=body.fields,
+            new_data=fields,
         )
         return {"success": success, "message": "Атрибуты успешно обновлены"}
     except Exception as e:
@@ -65,14 +77,15 @@ async def api_create_object(
     table = assert_mutable_table(table)
     if not user.has_role(role_for_mutation(table)):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
+    fields = _prepare_fields(table, body.fields)
     try:
-        new_id = await create_object(table, body.fields)
+        new_id = await create_object(table, fields)
         await write_audit_log(
             changed_by=user.username,
             operation="INSERT",
             table_name=table,
             record_id=new_id,
-            new_data=body.fields,
+            new_data=fields,
         )
         return {"success": True, "id": new_id, "message": "Объект успешно создан"}
     except Exception as e:

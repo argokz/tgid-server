@@ -265,6 +265,95 @@ async def _rows_consumers(conn) -> tuple[List[str], List[List[Any]]]:
     ]
 
 
+async def _rows_technical_conditions(conn) -> tuple[List[str], List[List[Any]]]:
+    from database.technical_conditions import get_technical_conditions
+
+    data = await get_technical_conditions(conn, page=1, page_size=MAX_REPORT_ROWS)
+    headers = [
+        "ID",
+        "Номер",
+        "Дата",
+        "Организация",
+        "Объект",
+        "Адрес",
+        "Источник",
+        "Район",
+        "Состояние",
+    ]
+    return headers, [
+        [
+            i.get("id"),
+            i.get("number") or i.get("nomer_tu"),
+            i.get("issue_date") or i.get("data_vydachi_tu"),
+            i.get("organization") or i.get("organizatsiya"),
+            i.get("object_name") or i.get("obekt"),
+            i.get("address") or i.get("adres"),
+            i.get("heat_source") or i.get("istochnik"),
+            i.get("district") or i.get("rayon_ekspluatatsii"),
+            i.get("state_name") or i.get("state"),
+        ]
+        for i in data.get("items", [])
+    ]
+
+
+async def _rows_tu_balance(conn, year: Optional[int] = None) -> tuple[List[str], List[List[Any]]]:
+    from database.tu_balance import get_technical_condition_balance
+
+    data = await get_technical_condition_balance(conn, year=year)
+    headers = [
+        "Источник",
+        "ТУ, шт",
+        "Установленная мощность, Гкал/ч",
+        "Отопление источника",
+        "Вентиляция источника",
+        "ГВС источника",
+        "Располагаемая мощность, Гкал/ч",
+        "Нормативные тепловые потери, Гкал/ч",
+        "Отопление договорное",
+        "Вентиляция договорная",
+        "ГВС договорная",
+        "Всего договорная, Гкал/ч",
+        "Прирост отопления",
+        "Прирост вентиляции",
+        "Прирост ГВС",
+        "Прирост всего, Гкал/ч",
+        "Отопление подключенное",
+        "Вентиляция подключенная",
+        "ГВС подключенное",
+        "Подключенная нагрузка всего, Гкал/ч",
+        "Баланс по присоединённой нагрузке, Гкал/ч",
+        "Баланс по присоединённой и перспективной, Гкал/ч",
+    ]
+    rows = [
+        [
+            i.get("heat_source"),
+            i.get("tu_count"),
+            i.get("installed_power"),
+            i.get("source_heating"),
+            i.get("source_ventilation"),
+            i.get("source_gvs"),
+            i.get("available_power"),
+            i.get("normative_losses"),
+            i.get("contract_heating"),
+            i.get("contract_ventilation"),
+            i.get("contract_gvs"),
+            i.get("contract_total"),
+            i.get("heating_increase"),
+            i.get("ventilation_increase"),
+            i.get("gvs_max_increase"),
+            i.get("load_increase_total"),
+            i.get("admitted_heating"),
+            i.get("admitted_ventilation"),
+            i.get("admitted_gvs_max"),
+            i.get("admitted_total"),
+            i.get("balance_connected"),
+            i.get("balance_with_prospective"),
+        ]
+        for i in data.get("items", [])
+    ]
+    return headers, rows
+
+
 EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
     "ut": ("Участки теплопроводов", _rows_pipelines),
     "pipelines": ("Участки теплопроводов", _rows_pipelines),
@@ -276,6 +365,10 @@ EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
     "pumps": ("Насосные агрегаты", _rows_pumps),
     "pt": ("Потребители", _rows_consumers),
     "consumers": ("Потребители", _rows_consumers),
+    "tu": ("Технические условия", _rows_technical_conditions),
+    "technical-conditions": ("Технические условия", _rows_technical_conditions),
+    "tu-balance": ("Свод ТУ баланс", _rows_tu_balance),
+    "tu_balance": ("Свод ТУ баланс", _rows_tu_balance),
 }
 
 
@@ -287,7 +380,7 @@ def excel_report_types() -> List[Dict[str, str]]:
     return [{"code": code, "title": title} for title, code in seen.items()]
 
 
-async def generate_excel_report(doc_type: str) -> bytes:
+async def generate_excel_report(doc_type: str, *, year: Optional[int] = None) -> bytes:
     entry = EXCEL_SHEETS.get(doc_type.lower())
     if entry is None:
         raise ValueError(
@@ -300,7 +393,10 @@ async def generate_excel_report(doc_type: str) -> bytes:
     ws.title = sheet_title[:31]
 
     async with acquire_conn() as conn:
-        headers, rows = await loader(conn)
+        if doc_type.lower() in ("tu-balance", "tu_balance"):
+            headers, rows = await loader(conn, year=year)
+        else:
+            headers, rows = await loader(conn)
 
     ws.append(headers)
     for row in rows:

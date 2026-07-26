@@ -1,10 +1,13 @@
-"""Реестры (read-only): технические условия, индикаторы коррозии, АЛСЕКО, электрическая сеть."""
+"""Реестры: технические условия (RO + CRUD), индикаторы коррозии, АЛСЕКО, электрическая сеть."""
 
 from datetime import date
-from typing import Optional
+from typing import Annotated, Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel
 
+from audit import write_audit_log
+from auth import AuthUser, require_mutations_enabled, require_roles
 from database.alseko import (
     get_alseko_building,
     get_alseko_load,
@@ -19,6 +22,7 @@ from database.corrosion_indicators import (
     get_corrosion_indicators,
     get_corrosion_indicators_geojson,
 )
+from database.db import create_object, delete_object, update_object_attributes
 from database.electrical_network import (
     get_electrical_lookups,
     get_electrical_object,
@@ -29,6 +33,8 @@ from database.technical_conditions import (
     get_technical_condition_lookups,
     get_technical_conditions,
 )
+from database.tu_balance import get_technical_condition_balance
+from database.tu_mutations import TU_TABLE, filter_tu_fields
 
 router = APIRouter(tags=["registries"])
 
@@ -182,6 +188,13 @@ async def technical_condition_journal_lookups():
         return await get_technical_condition_lookups(conn)
 
 
+@router.get("/api/technical-conditions/balance")
+async def technical_condition_balance(year: Optional[int] = Query(None, ge=1990, le=2200)):
+    """Свод/баланс ТУ по источникам за год (эталон gid6 tu.sql, упрощённый PG)."""
+    async with acquire_conn() as conn:
+        return await get_technical_condition_balance(conn, year=year)
+
+
 @router.get("/api/technical-conditions")
 async def technical_condition_journal(
     page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
@@ -213,3 +226,64 @@ async def technical_condition_card(condition_id: int):
     if result is None:
         raise HTTPException(status_code=404, detail="Technical condition not found")
     return result
+
+
+class TuFieldsBody(BaseModel):
+    fields: Dict[str, Any]
+
+
+@router.post("/api/technical-conditions")
+@router.post("/api/v1/technical-conditions")
+async def create_technical_condition(
+    body: TuFieldsBody,
+    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+):
+    """Vertical CRUD create for ТУ (gid6 etalon)."""
+    require_mutations_enabled()
+    fields = filter_tu_fields(body.fields)
+    new_id = await create_object(TU_TABLE, fields)
+    await write_audit_log(
+        changed_by=user.username,
+        operation="INSERT",
+        table_name=TU_TABLE,
+        record_id=new_id,
+        new_data=fields,
+    )
+    return {"success": True, "id": new_id}
+
+
+@router.put("/api/technical-conditions/{condition_id}")
+@router.put("/api/v1/technical-conditions/{condition_id}")
+async def update_technical_condition(
+    condition_id: int,
+    body: TuFieldsBody,
+    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+):
+    require_mutations_enabled()
+    fields = filter_tu_fields(body.fields)
+    ok = await update_object_attributes(TU_TABLE, condition_id, fields)
+    await write_audit_log(
+        changed_by=user.username,
+        operation="UPDATE",
+        table_name=TU_TABLE,
+        record_id=condition_id,
+        new_data=fields,
+    )
+    return {"success": ok}
+
+
+@router.delete("/api/technical-conditions/{condition_id}")
+@router.delete("/api/v1/technical-conditions/{condition_id}")
+async def delete_technical_condition(
+    condition_id: int,
+    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+):
+    require_mutations_enabled()
+    ok = await delete_object(TU_TABLE, condition_id)
+    await write_audit_log(
+        changed_by=user.username,
+        operation="DELETE",
+        table_name=TU_TABLE,
+        record_id=condition_id,
+    )
+    return {"success": ok}
