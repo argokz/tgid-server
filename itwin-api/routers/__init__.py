@@ -5,11 +5,13 @@
 модулями не влияет на маршрутизацию (наборы путей не пересекаются).
 """
 
+from routers.analysis import router as analysis_router
 from routers.auth_routes import router as auth_router
 from routers.calc import router as calc_router
 from routers.core import router as core_router
 from routers.crud import router as crud_router
 from routers.equipment import router as equipment_router
+from routers.exports_p4 import router as exports_p4_router
 from routers.heat import router as heat_router
 from routers.operations import router as operations_router
 from routers.piezometer import router as piezometer_router
@@ -29,4 +31,6 @@ all_routers = [
     operations_router,
     topology_router,
     reports_router,
+    exports_p4_router,
+    analysis_router,
 ]
