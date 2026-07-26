@@ -49,8 +49,60 @@ def test_mutable_table_allow_list():
         assert_mutable_table("evil;drop")
 
 
+def test_password_hash_roundtrip():
+    from auth import hash_password, verify_password
+
+    hashed = hash_password("secret")
+    assert hashed.startswith("{bcrypt}")
+    assert verify_password("secret", hashed)
+    assert not verify_password("wrong", hashed)
+    assert verify_password("plain", "{noop}plain")
+
+
+def test_tu_and_ops_field_filters():
+    from database.tu_mutations import filter_tu_fields
+    from database.ops_mutations import filter_ops_fields
+
+    tu = filter_tu_fields({"nomer_tu": "1", "evil": "x"})
+    assert tu == {"nomer_tu": "1"}
+    defect = filter_ops_fields("defect", {"data_osmotra": "2020-01-01", "shape": "nope"})
+    assert "data_osmotra" in defect
+    assert "shape" not in defect
+
+
+def test_strict_auth_rejects_defaults(monkeypatch):
+    from auth import assert_production_auth_safe
+
+    monkeypatch.setenv("STRICT_AUTH", "true")
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setenv("DEV_LOGIN_ENABLED", "false")
+    monkeypatch.setenv("JWT_SECRET", "unit-test-secret-not-default-0123456789")
+    with pytest.raises(RuntimeError):
+        assert_production_auth_safe()
+
+
+def test_strict_auth_rejects_dev_login(monkeypatch):
+    from auth import assert_production_auth_safe
+
+    monkeypatch.setenv("STRICT_AUTH", "true")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("DEV_LOGIN_ENABLED", "true")
+    monkeypatch.setenv("JWT_SECRET", "unit-test-secret-not-default-0123456789")
+    with pytest.raises(RuntimeError, match="DEV_LOGIN"):
+        assert_production_auth_safe()
+
+
+def test_strict_auth_ok_when_hardened(monkeypatch):
+    from auth import assert_production_auth_safe
+
+    monkeypatch.setenv("STRICT_AUTH", "true")
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("DEV_LOGIN_ENABLED", "false")
+    monkeypatch.setenv("JWT_SECRET", "unit-test-secret-not-default-0123456789")
+    assert_production_auth_safe()
+
+
 def test_mutations_enabled_when_flag_on(monkeypatch):
     monkeypatch.setenv("MUTATIONS_ENABLED", "true")
-    # Re-import behavior reads env each call
     assert mutations_enabled() is True
     require_mutations_enabled()  # should not raise

@@ -16,6 +16,16 @@ class TokenResponse(BaseModel):
     username: str
 
 
+class AuthConfigResponse(BaseModel):
+    """Public auth/mutation flags for LoginDialog (no JWT required)."""
+
+    auth_disabled: bool
+    dev_login_enabled: bool
+    strict_auth: bool
+    mutations_enabled: bool
+    topology_mutations_enabled: bool
+
+
 class MeResponse(BaseModel):
     sub: str
     username: str
@@ -23,3 +33,5 @@ class MeResponse(BaseModel):
     mutations_enabled: bool
     topology_mutations_enabled: bool
     auth_disabled: bool
+    dev_login_enabled: bool = False
+    strict_auth: bool = False

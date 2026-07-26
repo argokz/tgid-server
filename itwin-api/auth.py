@@ -22,9 +22,16 @@ try:
 except ImportError:  # pragma: no cover
     jwt = None  # type: ignore
 
+try:
+    from passlib.context import CryptContext
+except ImportError:  # pragma: no cover
+    CryptContext = None  # type: ignore
+
 ROLE_ORDER = {"viewer": 1, "calculator": 2, "editor": 3, "admin": 4}
+_DEFAULT_JWT_SECRET = "dev-insecure-change-me"
 
 security = HTTPBearer(auto_error=False)
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto") if CryptContext else None
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -40,8 +47,17 @@ def mutations_enabled() -> bool:
     return _env_bool("MUTATIONS_ENABLED", "false")
 
 
+def auth_required_get() -> bool:
+    """When true, Bearer JWT is required for GET /api/* (except public allow-list)."""
+    return _env_bool("AUTH_REQUIRED_GET", "false")
+
+
+def strict_auth() -> bool:
+    return _env_bool("STRICT_AUTH", "false")
+
+
 def jwt_secret() -> str:
-    return os.getenv("JWT_SECRET", "dev-insecure-change-me")
+    return os.getenv("JWT_SECRET", _DEFAULT_JWT_SECRET)
 
 
 def jwt_algorithm() -> str:
@@ -220,3 +236,55 @@ def role_for_mutation(table: str) -> str:
     if table.lower() in {"nodes", "linesobj", "heatpipesections"}:
         return "admin"
     return "editor"
+
+
+def hash_password(plain: str) -> str:
+    if _pwd_context is None:
+        raise RuntimeError("passlib is required. Install passlib[bcrypt] from requirements.txt")
+    return "{bcrypt}" + _pwd_context.hash(plain)
+
+
+def verify_password(plain: str, stored: str) -> bool:
+    """Accept {noop}plaintext (legacy), {bcrypt}..., or raw bcrypt hashes."""
+    if not stored:
+        return False
+    if stored.startswith("{noop}"):
+        return stored[6:] == plain
+    digest = stored[8:] if stored.startswith("{bcrypt}") else stored
+    if _pwd_context is None:
+        return False
+    try:
+        return _pwd_context.verify(plain, digest)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def dev_login_enabled() -> bool:
+    return _env_bool("DEV_LOGIN_ENABLED", "false")
+
+
+def assert_production_auth_safe() -> None:
+    """Fail-fast when STRICT_AUTH is on and secrets/auth are unsafe."""
+    if not strict_auth():
+        return
+    if auth_disabled():
+        raise RuntimeError("STRICT_AUTH=true forbids AUTH_DISABLED=true")
+    if jwt_secret() in {"", _DEFAULT_JWT_SECRET, "change-me-to-a-long-random-string"}:
+        raise RuntimeError("STRICT_AUTH=true requires a non-default JWT_SECRET")
+    if dev_login_enabled():
+        raise RuntimeError("STRICT_AUTH=true forbids DEV_LOGIN_ENABLED=true")
+
+
+# Paths that stay public even when AUTH_REQUIRED_GET=true.
+PUBLIC_GET_PREFIXES: tuple[str, ...] = (
+    "/health",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/fragments",
+    "/russian-names",
+    "/auth/config",
+    "/api/v1/auth/config",
+    "/auth/login",
+    "/api/v1/auth/login",
+)

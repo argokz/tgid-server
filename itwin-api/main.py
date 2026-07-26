@@ -10,8 +10,10 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app_logging import configure_logging
 
@@ -19,7 +21,18 @@ from app_logging import configure_logging
 logger = configure_logging()
 load_dotenv()
 
-from database.connect import close_db_pool, init_db_pool  # noqa: E402
+from auth import (  # noqa: E402
+    PUBLIC_GET_PREFIXES,
+    assert_production_auth_safe,
+    auth_required_get,
+    decode_access_token,
+)
+from database.connect import (  # noqa: E402
+    close_db_pool,
+    close_users_db_pool,
+    init_db_pool,
+    init_users_db_pool,
+)
 from routers import all_routers  # noqa: E402
 from utils.ini import storage  # noqa: E402
 from utils.russian_names import russian_names_manager  # noqa: E402
@@ -28,7 +41,12 @@ from utils.russian_names import russian_names_manager  # noqa: E402
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Старт приложения...")
+    assert_production_auth_safe()
     await init_db_pool()
+    try:
+        await init_users_db_pool()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("UsersDB pool unavailable at startup: %s", exc)
     await storage.read_lookup("kls/gid.lookup")
     await storage.read_help("kls/gid.txt1")
     await storage.read_help("kls/gid.txt2")
@@ -42,6 +60,7 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Завершение приложения...")
+    await close_users_db_pool()
     await close_db_pool()
 
 
@@ -63,6 +82,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
+    """Optional JWT gate for GET /api/* when AUTH_REQUIRED_GET=true."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method.upper() != "GET" or not auth_required_get():
+            return await call_next(request)
+        path = request.url.path
+        if any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in PUBLIC_GET_PREFIXES):
+            return await call_next(request)
+        if path in {"/api/v1/auth/login", "/auth/login"} or path.startswith("/auth/login"):
+            return await call_next(request)
+        # Only gate /api* journal/data GETs — leave map tile proxies alone if any
+        if not (path.startswith("/api/") or path.startswith("/piezometer") or path.startswith("/reports/")):
+            return await call_next(request)
+        auth_header = request.headers.get("authorization") or ""
+        if not auth_header.lower().startswith("bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authorization Bearer token required"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        try:
+            decode_access_token(auth_header.split(" ", 1)[1].strip())
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", str(exc))
+            status_code = getattr(exc, "status_code", 401)
+            return JSONResponse(status_code=status_code, content={"detail": detail})
+        return await call_next(request)
+
+
+app.add_middleware(AuthRequiredGetMiddleware)
 
 for router in all_routers:
     app.include_router(router)
