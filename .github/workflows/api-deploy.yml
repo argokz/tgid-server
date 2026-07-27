@@ -1,0 +1,64 @@
+name: Deploy itwin-api
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target label (staging|production)"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image archive
+        run: |
+          docker build -t itwin-api:ci -f Dockerfile .
+          docker save itwin-api:ci | gzip > /tmp/itwin-api.tar.gz
+
+      - name: Upload & restart over SSH
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          REMOTE_DIR: ${{ secrets.DEPLOY_REMOTE_DIR }}
+        run: |
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ] || [ -z "$SSH_KEY" ]; then
+            echo "DEPLOY_SSH_* secrets are not configured — skipping remote push."
+            echo "Local image built successfully; configure secrets to enable cutover."
+            exit 0
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            /tmp/itwin-api.tar.gz "$SSH_USER@$SSH_HOST:/tmp/itwin-api.tar.gz"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" bash -s <<EOF
+            set -euo pipefail
+            DIR="${REMOTE_DIR:-/opt/itwin-api}"
+            mkdir -p "\$DIR"
+            gunzip -c /tmp/itwin-api.tar.gz | docker load
+            cd "\$DIR"
+            docker tag itwin-api:ci itwin-api:latest
+            docker compose up -d api worker
+          EOF
+
+      - name: Verify routes
+        if: ${{ inputs.target == 'production' }}
+        env:
+          API_BASE: ${{ secrets.MAP_API_BASE_URL }}
+        run: |
+          if [ -z "$API_BASE" ]; then
+            echo "MAP_API_BASE_URL secret missing; skip verify"
+            exit 0
+          fi
+          python itwin-api/scripts/verify_prod_routes.py
