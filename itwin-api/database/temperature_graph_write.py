@@ -1,10 +1,12 @@
-"""Temperature graph write helpers (stationary fill + clear/recalc stub)."""
+"""Temperature graph write helpers (stationary fill + OTOP recalculate)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import asyncpg
+
+from database.tg_otop import calculate_otop_curve
 
 
 async def apply_stationary_graph(
@@ -40,6 +42,34 @@ async def clear_temperature_graph(conn: asyncpg.Connection, source_id: int) -> N
     await conn.execute("DELETE FROM deployedtempgraphs WHERE hsourceid=$1", source_id)
 
 
+async def seed_otop_graph(conn: asyncpg.Connection, source_id: int, params: dict[str, Any]) -> int:
+    """Replace deployedTempGraphs with desktop OTOP curve."""
+    points = calculate_otop_curve(params)
+    # delete + insert атомарно: при ошибке вставки график источника не должен пропасть
+    async with conn.transaction():
+        await clear_temperature_graph(conn, source_id)
+        await conn.executemany(
+            """
+            INSERT INTO deployedtempgraphs (hsourceid, tn, t1, t2, t3, tv, t_bn, q_otn)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            [
+                (
+                    source_id,
+                    p["tn"],
+                    p["t1"],
+                    p["t2"],
+                    p["t3"],
+                    p["tv"],
+                    p["t_bn"],
+                    p["q_otn"],
+                )
+                for p in points
+            ],
+        )
+    return len(points)
+
+
 async def seed_linear_graph(
     conn: asyncpg.Connection,
     source_id: int,
@@ -50,18 +80,17 @@ async def seed_linear_graph(
     t2_design: float,
     t3_design: float,
 ) -> int:
-    """Minimal OTOP-like fill: linear interpolate t1/t2/t3 over outdoor tn range."""
+    """Fallback linear fill if OTOP inputs are incomplete (kept for tests)."""
     if tn_max < tn_min:
         tn_min, tn_max = tn_max, tn_min
-    points = int(round(tn_max - tn_min)) + 1
-    if points < 2 or points > 200:
+    npoints = int(round(tn_max - tn_min)) + 1
+    if npoints < 2 or npoints > 200:
         raise ValueError("Invalid outdoor temperature range for graph seed")
     await clear_temperature_graph(conn, source_id)
     inserted = 0
-    for i in range(points):
+    for i in range(npoints):
         tn = tn_min + i
-        ratio = 0.0 if points == 1 else i / (points - 1)
-        # colder outdoor → higher supply (invert ratio vs tn ascending)
+        ratio = 0.0 if npoints == 1 else i / (npoints - 1)
         cold_ratio = 1.0 - ratio
         t1 = t2_design + (t1_design - t2_design) * cold_ratio
         t2 = t2_design
@@ -86,7 +115,8 @@ async def seed_linear_graph(
 async def source_design_temps(conn: asyncpg.Connection, source_id: int) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         """
-        SELECT id, tn_5, tn_1, t1_r, t2_r, t3_r
+        SELECT id, tn_5, tn_1, tvn_r, t1_r, t2_r, t3_r, q_r, q_gv,
+               t1_2r, t1_4r, t2_2r, tvb_tr, uf, v
           FROM heatsources
          WHERE id=$1
         """,

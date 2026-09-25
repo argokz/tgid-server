@@ -354,6 +354,66 @@ async def _rows_tu_balance(conn, year: Optional[int] = None) -> tuple[List[str],
     return headers, rows
 
 
+async def _rows_heat_loss_seasons(conn) -> tuple[List[str], List[List[Any]]]:
+    from database.heat_losses import get_heat_loss_seasons
+
+    data = await get_heat_loss_seasons(conn, page=1, page_size=MAX_REPORT_ROWS)
+    headers = [
+        "ID",
+        "Название",
+        "Город",
+        "Начало",
+        "Конец",
+        "t отопление",
+        "t вентиляция",
+        "Текущий",
+        "Объём МС",
+        "Объём РС",
+    ]
+    return headers, [
+        [
+            i.get("id"),
+            i.get("name"),
+            i.get("city"),
+            i.get("d1"),
+            i.get("d2"),
+            i.get("t_ot"),
+            i.get("t_vent"),
+            "да" if i.get("is_current") else "",
+            i.get("volwaterhs"),
+            i.get("volwatervs"),
+        ]
+        for i in data.get("items", [])
+    ]
+
+
+async def _rows_heat_loss_sources(conn) -> tuple[List[str], List[List[Any]]]:
+    from database.heat_losses import get_heat_loss_sources
+
+    data = await get_heat_loss_sources(conn, page=1, page_size=MAX_REPORT_ROWS)
+    headers = [
+        "ID",
+        "Источник",
+        "Фрагмент",
+        "Готов к расчёту",
+        "Параметры источника",
+        "Месяцы",
+        "Заполнение / обвязка",
+    ]
+    return headers, [
+        [
+            i.get("id"),
+            i.get("name"),
+            i.get("fragment_name"),
+            "да" if i.get("ready_to_calculate") else "нет",
+            "да" if i.get("has_source_parameters") else "нет",
+            "да" if i.get("has_month_parameters") else "нет",
+            "да" if (i.get("has_filling_parameters") or i.get("has_harness")) else "нет",
+        ]
+        for i in data.get("items", [])
+    ]
+
+
 EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
     "ut": ("Участки теплопроводов", _rows_pipelines),
     "pipelines": ("Участки теплопроводов", _rows_pipelines),
@@ -369,6 +429,8 @@ EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
     "technical-conditions": ("Технические условия", _rows_technical_conditions),
     "tu-balance": ("Свод ТУ баланс", _rows_tu_balance),
     "tu_balance": ("Свод ТУ баланс", _rows_tu_balance),
+    "heat-loss-seasons": ("Сезоны теплопотерь", _rows_heat_loss_seasons),
+    "heat-loss-sources": ("Источники теплопотерь", _rows_heat_loss_sources),
 }
 
 

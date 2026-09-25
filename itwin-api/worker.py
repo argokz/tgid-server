@@ -35,6 +35,28 @@ celery_app.conf.update(
 
 logger = logging.getLogger(__name__)
 
+# Флаги подключения и вывода задаёт сам воркер; из пользовательских параметров
+# их принимать нельзя (argparse берёт последнее значение — переопределили бы БД/файл)
+RESERVED_SETY_FLAGS = {
+    "-type_of_net", "-server", "-database", "-user", "-port", "-password", "-rdbms", "-out_file",
+}
+
+
+def validate_sety_params(params: str) -> list[str]:
+    """Разбирает строку параметров sety; ValueError, если в ней зарезервированные флаги."""
+    try:
+        tokens = shlex.split(params or "")
+    except ValueError as exc:
+        raise ValueError(f"Не удалось разобрать параметры расчёта: {exc}") from exc
+    for token in tokens:
+        flag = token.split("=", 1)[0].lower()
+        if flag.startswith("--"):
+            flag = flag[1:]
+        if flag in RESERVED_SETY_FLAGS:
+            raise ValueError(f"Параметр {flag} задаётся сервером и не может быть передан в расчёт")
+    return tokens
+
+
 @celery_app.task(bind=True, name="run_sety_calculation")
 def run_sety_calculation(self, params: str, request_id: str = None):
     if not request_id:
@@ -66,7 +88,7 @@ def run_sety_calculation(self, params: str, request_id: str = None):
     ]
     
     # Safely split parameters and add to command
-    cmd += shlex.split(params)
+    cmd += validate_sety_params(params)
     
     safe_cmd = ['***' if i > 0 and cmd[i - 1] == '-password' else c for i, c in enumerate(cmd)]
     cmd_str = ' '.join([f'"{c}"' if ' ' in c else c for c in safe_cmd])

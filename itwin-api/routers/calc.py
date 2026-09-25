@@ -3,10 +3,10 @@
 import io
 import time
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal, Optional
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -19,7 +19,12 @@ from database.calculations import (
     get_latest_calculations,
 )
 from database.connect import acquire_conn
-from worker import celery_app, run_sety_calculation
+from database.throttling_calc import (
+    calculate_elevator_parameters,
+    calculate_orifice_plate_full,
+    generate_throttling_excel,
+)
+from worker import celery_app, run_sety_calculation, validate_sety_params
 
 logger = get_logger(__name__)
 
@@ -36,6 +41,10 @@ async def run_sety_cmd(
     body: SetyCmdParams,
     user: Annotated[AuthUser, Depends(require_roles("calculator"))],
 ):
+    try:
+        validate_sety_params(body.params)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     request_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
     # Отправляем задачу в очередь Celery (не блокируем FastAPI)
@@ -96,3 +105,99 @@ async def api_calculations_results_excel(calculation_id: int):
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename=calculation_{calculation_id}_results.xlsx"}
         )
+
+
+class OrificePlateRequest(BaseModel):
+    flow_g: Optional[float] = None
+    delta_h: Optional[float] = None
+    p1: Optional[float] = None
+    p2: Optional[float] = None
+    q_heating_gcal: Optional[float] = None
+    q_heating_kcal: Optional[float] = None
+    t_supply: float = 130.0
+    t_return: float = 70.0
+    scheme: Literal[
+        "bezelevator", "pump_mix", "pre_nozzle", "nozzle", "ventilation", "heater", "gvs_circulation", "gvs"
+    ] = "bezelevator"
+
+
+class ElevatorNozzleRequest(BaseModel):
+    q_heating_gcal: Optional[float] = None
+    flow_g: Optional[float] = None
+    p1: float = 6.0
+    p2: float = 4.0
+    t1: float = 130.0
+    t2: float = 70.0
+    t3: float = 95.0
+    delta_h_system: float = 1.5
+
+
+class ThrottlingSigner(BaseModel):
+    position: Optional[str] = None
+    name: Optional[str] = None
+
+
+class ThrottlingSheetRequest(BaseModel):
+    district: Optional[str] = None
+    site_name: Optional[str] = None
+    consumer_name: Optional[str] = None
+    address: Optional[str] = None
+    p1: float
+    p2: float
+    q_heating_gcal: float = 0.0
+    q_vent_gcal: float = 0.0
+    q_gvs_gcal: float = 0.0  # максимальная нагрузка ГВС, Гкал/ч
+    t1: float = 130.0
+    t2: float = 70.0
+    t3: float = 95.0
+    signers: list[ThrottlingSigner] = []
+    organization: Optional[str] = None
+
+
+@router.post("/api/calc/orifice-plate")
+async def api_calc_orifice_plate(req: OrificePlateRequest):
+    try:
+        return calculate_orifice_plate_full(
+            flow_g=req.flow_g,
+            delta_h=req.delta_h,
+            p1=req.p1,
+            p2=req.p2,
+            q_heating_gcal=req.q_heating_gcal,
+            q_heating_kcal=req.q_heating_kcal,
+            t_supply=req.t_supply,
+            t_return=req.t_return,
+            scheme=req.scheme,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/api/calc/elevator-nozzle")
+async def api_calc_elevator_nozzle(req: ElevatorNozzleRequest):
+    try:
+        return calculate_elevator_parameters(
+            q_heating_gcal=req.q_heating_gcal,
+            flow_g=req.flow_g,
+            p1=req.p1,
+            p2=req.p2,
+            t1=req.t1,
+            t2=req.t2,
+            t3=req.t3,
+            delta_h_system=req.delta_h_system,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/api/calc/throttling-sheet")
+async def api_calc_throttling_sheet(req: ThrottlingSheetRequest):
+    data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    try:
+        excel_bytes = generate_throttling_excel(data)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=throttling_calculation_sheet.xlsx"},
+    )

@@ -20,9 +20,10 @@ from database.heat_losses import (
     get_heat_loss_source,
     get_heat_loss_sources,
 )
+from database.tg_otop import OtopError
 from database.temperature_graph_write import (
     apply_stationary_graph,
-    seed_linear_graph,
+    seed_otop_graph,
     source_design_temps,
 )
 from database.temperature_graphs import (
@@ -143,32 +144,16 @@ async def temperature_graph_recalculate(
     source_id: int,
     user: Annotated[AuthUser, Depends(require_roles("editor"))],
 ):
-    """Seed linear TG from heatsources design temps (OTOP-like minimal port)."""
+    """Desktop OTOP: overwrite deployedTempGraphs from heatsources design temps."""
     require_mutations_enabled()
     async with acquire_conn() as conn:
         src = await source_design_temps(conn, source_id)
         if src is None:
             raise HTTPException(status_code=404, detail="Heat source not found")
-        tn_min = src.get("tn_5")
-        tn_max = src.get("tn_1")
-        t1 = src.get("t1_r")
-        t2 = src.get("t2_r")
-        t3 = src.get("t3_r") or t1
-        if None in (tn_min, tn_max, t1, t2):
-            raise HTTPException(
-                status_code=400,
-                detail="Источник не имеет tn_5/tn_1/t1_r/t2_r — заполните параметры перед расчётом TG",
-            )
         try:
-            inserted = await seed_linear_graph(
-                conn,
-                source_id,
-                tn_min=float(tn_min),
-                tn_max=float(tn_max),
-                t1_design=float(t1),
-                t2_design=float(t2),
-                t3_design=float(t3),
-            )
+            inserted = await seed_otop_graph(conn, source_id, src)
+        except OtopError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     await write_audit_log(
@@ -176,9 +161,9 @@ async def temperature_graph_recalculate(
         operation="RECALC",
         table_name="deployedTempGraphs",
         record_id=source_id,
-        new_data={"points": inserted},
+        new_data={"points": inserted, "mode": "otop"},
     )
-    return {"success": True, "points": inserted}
+    return {"success": True, "points": inserted, "mode": "otop"}
 
 
 @router.get("/api/heat-losses/lookups")
@@ -250,10 +235,14 @@ async def run_heat_losses(
     Full poteriNewPg desktop suite remains a follow-up; this wires the Celery path
     used by web for fragment heat-loss runs.
     """
-    from worker import run_sety_calculation
+    from worker import run_sety_calculation, validate_sety_params
 
     params = f"-fileID {body.fragment_id} -tg"
     if body.extra_params.strip():
+        try:
+            validate_sety_params(body.extra_params)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         params = f"{params} {body.extra_params.strip()}"
     task = run_sety_calculation.delay(params)
     await write_audit_log(
