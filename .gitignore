@@ -27,3 +27,5 @@ itwin-api/sety/1/
 # Generated reports
 itwin-api/files/word/
 itwin-api/word_reports/files/
+.env.*
+!.env.example
