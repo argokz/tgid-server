@@ -162,3 +162,118 @@ async def export_ops_word(journal: str, record_id: int):
         filename=os.path.basename(filepath),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+@router.get("/api/export/geojson")
+async def export_network_geojson(
+    fragment_id: Optional[int] = Query(None, ge=1),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    """Экспорт сети в стандартный GeoJSON для QGIS."""
+    import json
+    async with acquire_conn() as conn:
+        q = """
+            SELECT 
+                l.id,
+                l.registnum as name,
+                l.nodeid1,
+                l.nodeid2,
+                hps.pipesectlength as length,
+                hps.diameterinternal as diameter,
+                hps.tuberoughness as roughness,
+                ST_AsGeoJSON(ST_Transform(l.shape, 4326)) as geometry
+            FROM linesobj l
+            LEFT JOIN LATERAL (
+                SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
+                WHERE lineid = l.id ORDER BY id LIMIT 1
+            ) hps ON true
+            WHERE COALESCE(l.removed, 0) = 0
+              AND ($1::int IS NULL OR l.fileid = $1)
+              AND l.shape IS NOT NULL
+            LIMIT $2
+        """
+        rows = await conn.fetch(q, fragment_id, limit)
+        features = []
+        for r in rows:
+            if not r["geometry"]:
+                continue
+            features.append({
+                "type": "Feature",
+                "geometry": json.loads(r["geometry"]),
+                "properties": {
+                    "id": r["id"],
+                    "name": r["name"] or "",
+                    "nodeid1": r["nodeid1"],
+                    "nodeid2": r["nodeid2"],
+                    "length": float(r["length"] or 0),
+                    "diameter": float(r["diameter"] or 0),
+                    "roughness": float(r["roughness"] or 0.001),
+                }
+            })
+        return {
+            "type": "FeatureCollection",
+            "crs": {
+                "type": "name",
+                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+            },
+            "features": features
+        }
+
+
+@router.get("/api/export/zulugis")
+async def export_network_zulugis(
+    fragment_id: Optional[int] = Query(None, ge=1),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    """Экспорт сети в ZuluGIS GeoJSON формат (с атрибутами Sys, Type, L, D, K_E)."""
+    import json
+    async with acquire_conn() as conn:
+        q = """
+            SELECT 
+                l.id,
+                l.registnum as name,
+                l.nodeid1,
+                l.nodeid2,
+                COALESCE(hps.pipesectlength, 10.0) as l_m,
+                COALESCE(hps.diameterinternal, 200.0) as d_mm,
+                COALESCE(hps.tuberoughness, 0.001) as k_e,
+                ST_AsGeoJSON(ST_Transform(l.shape, 4326)) as geometry
+            FROM linesobj l
+            LEFT JOIN LATERAL (
+                SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
+                WHERE lineid = l.id ORDER BY id LIMIT 1
+            ) hps ON true
+            WHERE COALESCE(l.removed, 0) = 0
+              AND ($1::int IS NULL OR l.fileid = $1)
+              AND l.shape IS NOT NULL
+            LIMIT $2
+        """
+        rows = await conn.fetch(q, fragment_id, limit)
+        features = []
+        for r in rows:
+            if not r["geometry"]:
+                continue
+            features.append({
+                "type": "Feature",
+                "geometry": json.loads(r["geometry"]),
+                "properties": {
+                    "Sys": r["id"],
+                    "Type": 1,
+                    "Name": r["name"] or f"Участок {r['id']}",
+                    "Node1": r["nodeid1"],
+                    "Node2": r["nodeid2"],
+                    "L": float(r["l_m"]),
+                    "D": float(r["d_mm"]) / 1000.0,
+                    "K_E": float(r["k_e"]),
+                    "Kst": 1.0,
+                }
+            })
+        return {
+            "type": "FeatureCollection",
+            "crs": {
+                "type": "name",
+                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+            },
+            "features": features
+        }
+

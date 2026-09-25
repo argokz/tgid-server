@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
+from app_logging import get_logger
 from database.connect import acquire_conn
 from database.network_queries import (
     query_heat_consumption,
@@ -13,8 +15,15 @@ from database.network_queries import (
     query_network_length,
     query_network_volume,
 )
+from database.outage_simulation import simulate_outage_isolation
 
+logger = get_logger(__name__)
 router = APIRouter(tags=["analysis"])
+
+
+class ValveIsolationRequest(BaseModel):
+    line_id: Optional[int] = None
+    node_id: Optional[int] = None
 
 
 def _parse_fragments(
@@ -72,3 +81,15 @@ async def network_query_heat_consumption(
     frags = _parse_fragments(fragment_id, fragments)
     async with acquire_conn() as conn:
         return await query_heat_consumption(conn, fragment_ids=frags)
+
+
+@router.post("/api/analysis/valve-isolation")
+async def api_valve_isolation(req: ValveIsolationRequest):
+    async with acquire_conn() as conn:
+        try:
+            return await simulate_outage_isolation(conn, line_id=req.line_id, node_id=req.node_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            logger.error(f"Error in valve isolation: {exc}")
+            raise HTTPException(status_code=500, detail=str(exc))
