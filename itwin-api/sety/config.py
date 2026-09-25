@@ -1,4 +1,5 @@
 import gettext
+import os
 
 import json
 
@@ -96,7 +97,7 @@ _ = gettext.gettext
 VERSION = '1.0.2'
 
 USER = 'lifan'
-PASSWORD = 'Danil228'
+PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 
 #if True:

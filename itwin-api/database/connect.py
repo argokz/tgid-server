@@ -89,7 +89,7 @@ async def init_users_db_pool():
         # Проверяем существование базы и создаём, если её нет
         temp_config = USERS_DB_CONFIG.copy()
         temp_config["database"] = "postgres"
-        logger.info(f"Попытка подключения к системной базе: {temp_config}")
+        logger.info(f"Попытка подключения к системной базе: { {k: v for k, v in temp_config.items() if k != 'password'} }")
         try:
             temp_pool = await asyncpg.create_pool(**temp_config, min_size=1, max_size=10)
         except socket.gaierror as e:

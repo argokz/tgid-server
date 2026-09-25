@@ -1,6 +1,7 @@
 ﻿#_ = gettext.gettext
 
 import gettext
+import os
 
 def my_gettext(s):
     subDict = {
@@ -25,7 +26,7 @@ import types
 VERSION = '1.0'
 
 USER = 'Lifan'
-PASSWORD = 'Danil228'
+PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 if True:
 #if False:
@@ -39,7 +40,7 @@ if True:
 
     DB = 'AstanaGID_2023_07_10'
     DB = 'test'
-    PASSWORD = ''
+    PASSWORD = os.environ.get('DB_PASSWORD', '')
     DB = 'AstanaGID_03_06_24_work_2'
 
     SERVER = 'localhost'
@@ -47,13 +48,13 @@ if True:
     PORT = 1433
 
     USER = 'lifan'
-    PASSWORD = 'Danil228'
+    PASSWORD = os.environ.get('DB_PASSWORD', '')
 
     
     SERVER = ''
     DB = ''
     USER = ''
-    PASSWORD = ''
+    PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 
 else:
@@ -63,7 +64,7 @@ else:
     DB = 'gis'
 
     USER = 'gena1967'
-    PASSWORD = '12345098'
+    PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 FILE = 'D:/22.tgid'
 

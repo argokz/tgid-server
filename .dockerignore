@@ -1,0 +1,16 @@
+# Secrets and local state must never reach the image
+**/.env
+**/.env.*
+!**/.env.example
+**/venv/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/logs/
+**/*.log
+**/*.dump
+itwin-api/sety/out_*
+itwin-api/sety/teplo/old/
+itwin-api/sety/1/
+.git/
+.github/

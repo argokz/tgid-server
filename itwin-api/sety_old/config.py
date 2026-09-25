@@ -1,4 +1,5 @@
 import gettext
+import os
 
 def my_gettext(s):
     subDict = {
@@ -31,7 +32,7 @@ _ = gettext.gettext
 VERSION = '1.0'
 
 USER = 'lifan'
-PASSWORD = 'Danil228'
+PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 
 #if True:

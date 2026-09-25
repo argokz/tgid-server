@@ -68,7 +68,8 @@ def run_sety_calculation(self, params: str, request_id: str = None):
     # Safely split parameters and add to command
     cmd += shlex.split(params)
     
-    cmd_str = ' '.join([f'"{c}"' if ' ' in c else c for c in cmd])
+    safe_cmd = ['***' if i > 0 and cmd[i - 1] == '-password' else c for i, c in enumerate(cmd)]
+    cmd_str = ' '.join([f'"{c}"' if ' ' in c else c for c in safe_cmd])
     logger.info(f"Task {self.request.id} executing command: {cmd_str}")
     
     try:
