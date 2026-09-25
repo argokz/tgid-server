@@ -5,18 +5,37 @@
 направить трассу через нужные участки, а не только «старт → финиш».
 """
 
+import io
 import time
+from typing import Optional
 
 import networkx as nx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from database.connect import get_pool
+from database.piezo_excel import generate_piezometer_excel
+from database.ut_out_columns import (
+    UT_DIAMETER_MM,
+    UT_FLOW_TH,
+    UT_LENGTH_M,
+    UT_LOSS_LINEAR_M,
+    UT_LOSS_LOCAL_M,
+    UT_LOSS_TOTAL_M,
+    UT_SIGN_RETURN,
+    UT_SIGN_SUPPLY,
+    UT_SPEC_LOSS_MM_M,
+    UT_VELOCITY_MS,
+)
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["piezometer"])
+
+# Каждая пара соседних точек — отдельный поиск пути и запросы к БД
+MAX_WAYPOINTS = 200
 
 _piezo_cached_graph = None
 _piezo_cached_graph_time = 0.0
@@ -85,10 +104,19 @@ async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int]) -> list[
                  ELSE ST_X(ST_Transform(n.shape, 4326)) END AS lng,
             CASE WHEN n.shape IS NULL THEN NULL
                  ELSE ST_Y(ST_Transform(n.shape, 4326)) END AS lat,
-            pt.t1 AS t_pod,
-            pt.t2 AS t_obr
+            COALESCE(pt.t1, us1.t) AS t_pod,
+            COALESCE(pt.t2, us2.t) AS t_obr,
+            us1.pih AS pih_pod,
+            us2.pih AS pih_obr
         FROM nodes n
         LEFT JOIN pt_out pt ON pt.nodeid = n.id
+        LEFT JOIN LATERAL (
+            SELECT max(calculationid) AS cid FROM us_out WHERE nodeid = n.id
+        ) lc ON true
+        LEFT JOIN us_out us1 ON us1.nodeid = n.id AND us1.calculationid = lc.cid
+                            AND us1.externalsign = 1
+        LEFT JOIN us_out us2 ON us2.nodeid = n.id AND us2.calculationid = lc.cid
+                            AND us2.externalsign = 2
         WHERE n.id = ANY($1::int[])
     '''
     rows = await conn.fetch(q_nodes, path_nodes)
@@ -105,8 +133,10 @@ async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int]) -> list[
         item: dict = {"node_id": n_id, "distance": round(cum_dist, 2)}
         if attrs:
             z = float(attrs['geomarktoptube'] or 0.0)
-            h_pod = attrs['calcpressflow']
-            h_obr = attrs['calcpressret']
+            # Давление в узле, м: nodes.calcpress*, а если не записано —
+            # us_out.pih последнего расчёта (тоже напор над отметкой: a21 = a19 + a20)
+            h_pod = attrs['calcpressflow'] if attrs['calcpressflow'] is not None else attrs['pih_pod']
+            h_obr = attrs['calcpressret'] if attrs['calcpressret'] is not None else attrs['pih_obr']
             item.update({
                 "label": attrs['label'],
                 "z": z,
@@ -147,7 +177,7 @@ async def get_piezometer_path(start: int, end: int):
 
 
 class RouteRequest(BaseModel):
-    nodes: list[int] = Field(..., min_length=2, description="Последовательность узлов маршрута")
+    nodes: list[int] = Field(..., min_length=2, max_length=MAX_WAYPOINTS, description="Последовательность узлов маршрута")
 
 
 @router.post("/piezometer/route")
@@ -172,3 +202,127 @@ async def build_piezometer_route(body: RouteRequest):
     except Exception as e:
         logger.error(f"Error building piezometer route: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class PiezometerExcelRequest(BaseModel):
+    waypoints: Optional[list[int]] = None
+    nodes: Optional[list[int]] = None
+
+    @property
+    def target_nodes(self) -> list[int]:
+        res = self.waypoints or self.nodes or []
+        if len(res) < 2:
+            raise ValueError("Необходимо указать минимум 2 узла для построения профиля.")
+        if len(res) > MAX_WAYPOINTS:
+            raise ValueError(f"Слишком много узлов маршрута (максимум {MAX_WAYPOINTS}).")
+        return res
+
+
+@router.post("/api/piezometer/excel")
+@router.post("/piezometer/excel")
+async def api_download_piezometer_excel(body: PiezometerExcelRequest):
+    """Экспорт пьезометрического профиля и технологической таблицы в Excel (openpyxl)."""
+    pool = get_pool()
+    try:
+        nodes = body.target_nodes
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        async with pool.acquire() as conn:
+            G = await _get_topology_graph(conn)
+            path_nodes = _build_route(G, nodes)
+            path_data = await _assemble_path_data(conn, G, path_nodes)
+
+            # Собираем данные по сегментам (трубопроводам) между последовательными узлами пути
+            segment_details = []
+            cum_dist = 0.0
+
+            # Подача и обратка участка из последнего расчёта, в котором он есть
+            q_edge = f"""
+                SELECT
+                    l.id as line_id,
+                    COALESCE(hps.pipesectlength, s.{UT_LENGTH_M}, r.{UT_LENGTH_M}, 10.0) as length,
+                    COALESCE(hps.diameterinternal, s.{UT_DIAMETER_MM}, r.{UT_DIAMETER_MM}, 200.0) as diameter,
+                    s.{UT_FLOW_TH} as flow,
+                    s.{UT_VELOCITY_MS} as velocity,
+                    s.{UT_SPEC_LOSS_MM_M} as spec_loss,
+                    s.{UT_LOSS_LINEAR_M} as loss_linear,
+                    s.{UT_LOSS_LOCAL_M} as loss_local,
+                    s.{UT_LOSS_TOTAL_M} as loss_total,
+                    r.{UT_FLOW_TH} as flow_return,
+                    r.{UT_VELOCITY_MS} as velocity_return,
+                    r.{UT_SPEC_LOSS_MM_M} as spec_loss_return,
+                    r.{UT_LOSS_LINEAR_M} as loss_linear_return,
+                    r.{UT_LOSS_LOCAL_M} as loss_local_return,
+                    r.{UT_LOSS_TOTAL_M} as loss_total_return
+                FROM linesobj l
+                LEFT JOIN LATERAL (
+                    SELECT pipesectlength, diameterinternal FROM heatpipesections
+                    WHERE lineid = l.id ORDER BY id LIMIT 1
+                ) hps ON true
+                LEFT JOIN LATERAL (
+                    SELECT max(calculationid) AS cid FROM ut_out WHERE lineid = l.id
+                ) lc ON true
+                LEFT JOIN ut_out s ON s.lineid = l.id AND s.calculationid = lc.cid
+                                  AND s.externalsignlineid = {UT_SIGN_SUPPLY}
+                LEFT JOIN ut_out r ON r.lineid = l.id AND r.calculationid = lc.cid
+                                  AND r.externalsignlineid = {UT_SIGN_RETURN}
+                WHERE ((l.nodeid1 = $1 AND l.nodeid2 = $2) OR (l.nodeid1 = $2 AND l.nodeid2 = $1))
+                  AND COALESCE(l.removed, 0) = 0
+                LIMIT 1
+            """
+
+            node_dict = {p["node_id"]: p for p in path_data}
+
+            for i in range(len(path_nodes) - 1):
+                n1_id = path_nodes[i]
+                n2_id = path_nodes[i + 1]
+                edge_row = await conn.fetchrow(q_edge, n1_id, n2_id)
+                n1_info = node_dict.get(n1_id, {})
+                n2_info = node_dict.get(n2_id, {})
+
+                seg_len = float(edge_row["length"]) if edge_row and edge_row["length"] else 10.0
+                cum_dist += seg_len
+
+                def val(key: str) -> Optional[float]:
+                    return float(edge_row[key]) if edge_row and edge_row[key] is not None else None
+
+                segment_details.append({
+                    "node1_id": n1_id,
+                    "node1_label": n1_info.get("label") or f"Узел {n1_id}",
+                    "node2_id": n2_id,
+                    "node2_label": n2_info.get("label") or f"Узел {n2_id}",
+                    "line_id": edge_row["line_id"] if edge_row else None,
+                    "length": seg_len,
+                    "diameter": float(edge_row["diameter"]) if edge_row and edge_row["diameter"] else 200.0,
+                    "supply": {
+                        "flow": val("flow"), "velocity": val("velocity"), "spec_loss": val("spec_loss"),
+                        "loss_linear": val("loss_linear"), "loss_local": val("loss_local"),
+                        "loss_total": val("loss_total"),
+                    },
+                    "return": {
+                        "flow": val("flow_return"), "velocity": val("velocity_return"),
+                        "spec_loss": val("spec_loss_return"), "loss_linear": val("loss_linear_return"),
+                        "loss_local": val("loss_local_return"), "loss_total": val("loss_total_return"),
+                    },
+                    "h_pod_start": n1_info.get("h_pod"),
+                    "h_pod_end": n2_info.get("h_pod"),
+                    "h_obr_start": n1_info.get("h_obr"),
+                    "h_obr_end": n2_info.get("h_obr"),
+                    "distance_to_end": cum_dist,
+                })
+
+            excel_bytes = generate_piezometer_excel(path_data, segment_details)
+
+            return StreamingResponse(
+                io.BytesIO(excel_bytes),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": "attachment; filename=piezometer_profile.xlsx"}
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating piezometer excel: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
