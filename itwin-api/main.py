@@ -85,10 +85,15 @@ app.add_middleware(
 
 
 class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
-    """Optional JWT gate for GET /api/* when AUTH_REQUIRED_GET=true."""
+    """Optional JWT gate for /api/* when AUTH_REQUIRED_GET=true.
+
+    Covers every method, not only GET: compute POSTs (valve isolation,
+    calculators, piezometer export) have no per-route auth dependency.
+    CORS preflight (OPTIONS) and the login/config/health paths stay public.
+    """
 
     async def dispatch(self, request: Request, call_next):
-        if request.method.upper() != "GET" or not auth_required_get():
+        if request.method.upper() == "OPTIONS" or not auth_required_get():
             return await call_next(request)
         path = request.url.path
         if any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in PUBLIC_GET_PREFIXES):
