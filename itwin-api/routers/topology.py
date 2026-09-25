@@ -17,6 +17,9 @@ from database.topology import (
     delete_node,
     move_node,
     split_line,
+    reverse_line,
+    merge_nodes,
+    update_line_geometry,
 )
 
 logger = get_logger(__name__)
@@ -205,3 +208,94 @@ async def api_split_line(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReverseLineRequest(BaseModel):
+    line_id: int
+
+
+class MergeNodesRequest(BaseModel):
+    target_node_id: int
+    source_node_id: int
+
+
+class UpdateLineGeometryRequest(BaseModel):
+    coordinates: list[list[float]]
+
+
+@router.post("/api/topology/reverse-line")
+@router.post("/api/v1/topology/reverse-line")
+async def api_reverse_line(
+    req: ReverseLineRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+):
+    require_topology_mutations_enabled()
+    try:
+        result = await reverse_line(req.line_id)
+        await write_audit_log(
+            changed_by=user.username,
+            operation="UPDATE",
+            table_name="linesobj",
+            record_id=req.line_id,
+            new_data={"action": "REVERSE", **result},
+        )
+        return result
+    except TopologyDependencyError as e:
+        raise HTTPException(status_code=409, detail={"message": str(e), "blockers": e.blockers})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error reversing line {req.line_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/topology/merge-nodes")
+@router.post("/api/v1/topology/merge-nodes")
+async def api_merge_nodes(
+    req: MergeNodesRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+):
+    require_topology_mutations_enabled()
+    try:
+        result = await merge_nodes(req.target_node_id, req.source_node_id)
+        await write_audit_log(
+            changed_by=user.username,
+            operation="MERGE",
+            table_name="nodes",
+            record_id=req.target_node_id,
+            new_data={"source_node_id": req.source_node_id, **result},
+        )
+        return result
+    except TopologyDependencyError as e:
+        raise HTTPException(status_code=409, detail={"message": str(e), "blockers": e.blockers})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error merging nodes {req.target_node_id} and {req.source_node_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/api/topology/line/{line_id}/geometry")
+@router.put("/api/v1/topology/line/{line_id}/geometry")
+async def api_update_line_geometry(
+    line_id: int,
+    req: UpdateLineGeometryRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+):
+    require_topology_mutations_enabled()
+    try:
+        result = await update_line_geometry(line_id, req.coordinates)
+        await write_audit_log(
+            changed_by=user.username,
+            operation="UPDATE_GEOMETRY",
+            table_name="linesobj",
+            record_id=line_id,
+            new_data={"point_count": len(req.coordinates), **result},
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating geometry for line {line_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

@@ -164,6 +164,8 @@ async def _node_ref_columns(conn) -> list[tuple[str, str]]:
             FROM information_schema.columns
             WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
               AND (lower(column_name) = 'nodeid' OR lower(column_name) LIKE 'nodeid%')
+              -- nodeid текстового типа (импорт из внешних систем) с id узла не сравнить
+              AND data_type IN ('integer', 'bigint', 'smallint', 'numeric')
             """
         )
         _NODE_REF_CACHE = [
@@ -179,7 +181,10 @@ async def node_dependency_report(conn, node_id: int) -> dict:
     deps: dict[str, int] = {}
     for table, col in await _node_ref_columns(conn):
         try:
-            n = await conn.fetchval(f'SELECT count(*) FROM {_ident(table)} WHERE {_ident(col)} = $1', node_id)
+            # savepoint: отчёт вызывается внутри транзакций delete/merge, и ошибка
+            # одного запроса без него обрывает всю транзакцию
+            async with conn.transaction():
+                n = await conn.fetchval(f'SELECT count(*) FROM {_ident(table)} WHERE {_ident(col)} = $1', node_id)
         except Exception:  # noqa: BLE001 - таблица могла исчезнуть/сменить тип
             continue
         if n:

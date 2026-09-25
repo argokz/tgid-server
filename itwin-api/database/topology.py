@@ -1,11 +1,13 @@
+import json
 import logging
+from datetime import datetime
 from database.connect import get_pool
+from database.outage_simulation import invalidate_outage_cache
 from database.topology_transfer import (
     line_dependency_report,
     node_dependency_report,
     transfer_dependents,
 )
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,19 @@ class _DryRunRollback(Exception):
 
     def __init__(self, payload: dict):
         self.payload = payload
+
+
+# Слияние узлов переносит только потребителей; остальное — блокер (как safe-delete B3).
+MERGE_MOVABLE_REFS = {"generalizedconsumers.nodeid", "realconsumers.nodeid"}
+# Оборудование, для которого важно направление участка: разворот его не переносит.
+REVERSE_BLOCKING_TABLES = {"diaphragms", "pumps", "elevators", "heatexchangers", "airheaters", "systemradiators"}
+# Допуск для концов новой геометрии участка относительно его узлов, м (SRID 9998 — метры).
+GEOMETRY_ENDPOINT_TOLERANCE_M = 5.0
+
+
+def _is_result_table(ref: str) -> bool:
+    """us_out.nodeid, pt_out.nodeid… — выход расчёта, а не данные сети."""
+    return ref.split(".", 1)[0].lower().endswith("_out")
 
 
 class TopologyDependencyError(Exception):
@@ -350,3 +365,238 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
         "new_line_id": new_line_id,
         "transferred": transfer_report,
     }
+
+
+async def reverse_line(line_id: int) -> dict:
+    """Разворот направления участка (инвертирование nodeid1 <-> nodeid2 и ST_Reverse)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            now = datetime.now()
+            row = await conn.fetchrow(
+                "SELECT id, nodeid1, nodeid2, shape FROM linesobj WHERE id = $1 AND COALESCE(removed, 0) = 0",
+                line_id,
+            )
+            if not row:
+                raise ValueError(f"Линия с ID {line_id} не найдена или удалена.")
+            line_deps = await line_dependency_report(conn, line_id)
+            blockers = {t: n for t, n in line_deps.items() if t in REVERSE_BLOCKING_TABLES}
+            if blockers:
+                raise TopologyDependencyError(
+                    "Участок нельзя развернуть: на нём оборудование, зависящее от направления",
+                    blockers={"equipment": blockers},
+                )
+            n1, n2 = row["nodeid1"], row["nodeid2"]
+            q_update = """
+                UPDATE linesobj
+                SET nodeid1 = $2,
+                    nodeid2 = $3,
+                    shape = CASE WHEN shape IS NOT NULL THEN ST_Reverse(shape) ELSE NULL END,
+                    archivechangedate = $4
+                WHERE id = $1
+            """
+            await conn.execute(q_update, line_id, n2, n1, now)
+            invalidate_outage_cache()
+            return {"success": True, "line_id": line_id, "nodeid1": n2, "nodeid2": n1}
+
+
+async def merge_nodes(target_node_id: int, source_node_id: int) -> dict:
+    """Слияние source_node_id в target_node_id: перепривязка всех инцидентных линий и удаление источника."""
+    if target_node_id == source_node_id:
+        raise ValueError("Невозможно объединить узел с самим собой.")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            now = datetime.now()
+            t_node = await conn.fetchrow(
+                "SELECT id, shape, fileid FROM nodes WHERE id = $1 AND COALESCE(removed, 0) = 0",
+                target_node_id,
+            )
+            s_node = await conn.fetchrow(
+                "SELECT id, shape, fileid FROM nodes WHERE id = $1 AND COALESCE(removed, 0) = 0",
+                source_node_id,
+            )
+            if not t_node or not s_node:
+                raise ValueError("Оба объединяемых узла должны существовать и быть активными.")
+            if t_node["fileid"] != s_node["fileid"]:
+                raise ValueError("Нельзя объединить узлы из разных фрагментов.")
+
+            # Всё, что ссылается на исходный узел и не переносится, блокирует слияние
+            blockers: dict = {}
+            refs = {
+                ref: n for ref, n in (await node_dependency_report(conn, source_node_id)).items()
+                if ref not in MERGE_MOVABLE_REFS and not _is_result_table(ref)
+            }
+            if refs:
+                blockers["references"] = refs
+            internal = await conn.fetchval(
+                "SELECT count(*) FROM linesobj WHERE internalnodeid = $1 AND COALESCE(removed, 0) = 0",
+                source_node_id,
+            )
+            if internal:
+                blockers["internal_scheme_lines"] = int(internal)
+
+            # Участки между сливаемыми узлами превратились бы в петли — снимаем их,
+            # если на них нет оборудования
+            connecting = [r["id"] for r in await conn.fetch(
+                """
+                SELECT id FROM linesobj
+                WHERE ((nodeid1 = $1 AND nodeid2 = $2) OR (nodeid1 = $2 AND nodeid2 = $1))
+                  AND COALESCE(removed, 0) = 0
+                """,
+                source_node_id,
+                target_node_id,
+            )]
+            for lid in connecting:
+                line_deps = await line_dependency_report(conn, lid)
+                if line_deps:
+                    blockers.setdefault("connecting_lines", {})[lid] = line_deps
+            if blockers:
+                raise TopologyDependencyError(
+                    "Узлы нельзя объединить: есть зависимые объекты", blockers=blockers
+                )
+            if connecting:
+                await conn.execute(
+                    "UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = ANY($1::int[])",
+                    connecting, now,
+                )
+                await _soft_remove_heatpipesections(conn, connecting, now)
+
+            # 1. Линии, где source_node_id был началом (nodeid1)
+            affected1 = await conn.fetch(
+                """
+                UPDATE linesobj
+                SET nodeid1 = $1,
+                    shape = CASE WHEN shape IS NOT NULL THEN ST_SetPoint(shape, 0, (SELECT shape FROM nodes WHERE id = $1)) ELSE NULL END,
+                    archivechangedate = $3
+                WHERE nodeid1 = $2 AND COALESCE(removed, 0) = 0
+                RETURNING id
+                """,
+                target_node_id,
+                source_node_id,
+                now,
+            )
+
+            # 2. Линии, где source_node_id был концом (nodeid2)
+            affected2 = await conn.fetch(
+                """
+                UPDATE linesobj
+                SET nodeid2 = $1,
+                    shape = CASE WHEN shape IS NOT NULL THEN ST_SetPoint(shape, ST_NumPoints(shape) - 1, (SELECT shape FROM nodes WHERE id = $1)) ELSE NULL END,
+                    archivechangedate = $3
+                WHERE nodeid2 = $2 AND COALESCE(removed, 0) = 0
+                RETURNING id
+                """,
+                target_node_id,
+                source_node_id,
+                now,
+            )
+
+            all_affected_lines = list({r["id"] for r in (affected1 + affected2)})
+
+            # 3. Пересчет длины в heatpipesections
+            if all_affected_lines:
+                await conn.execute(
+                    """
+                    UPDATE heatpipesections h
+                    SET pipesectlength = ST_Length(l.shape)
+                    FROM linesobj l
+                    WHERE h.lineid = l.id AND l.id = ANY($1::int[]) AND l.shape IS NOT NULL
+                    """,
+                    all_affected_lines,
+                )
+
+            # 4. Перенос потребителей
+            await conn.execute(
+                "UPDATE generalizedconsumers SET nodeid = $1 WHERE nodeid = $2",
+                target_node_id,
+                source_node_id,
+            )
+            await conn.execute(
+                "UPDATE realconsumers SET nodeid = $1 WHERE nodeid = $2",
+                target_node_id,
+                source_node_id,
+            )
+
+            # 5. Мягкое удаление source_node_id
+            await conn.execute(
+                "UPDATE nodes SET removed = 1, archivechangedate = $2 WHERE id = $1",
+                source_node_id,
+                now,
+            )
+
+            invalidate_outage_cache()
+            return {
+                "success": True,
+                "target_node_id": target_node_id,
+                "source_node_id": source_node_id,
+                "merged_lines": len(all_affected_lines),
+                "removed_lines": connecting,
+            }
+
+
+async def update_line_geometry(line_id: int, coordinates: list[list[float]]) -> dict:
+    """Обновление геометрии полилинии (добавление/перемещение промежуточных вершин)."""
+    if len(coordinates) < 2:
+        raise ValueError("Полилиния должна содержать как минимум 2 точки.")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            now = datetime.now()
+            line = await conn.fetchrow(
+                "SELECT id, nodeid1, nodeid2 FROM linesobj WHERE id = $1 AND COALESCE(removed, 0) = 0",
+                line_id,
+            )
+            if not line:
+                raise ValueError(f"Линия с ID {line_id} не найдена или удалена.")
+
+            geojson_geom = json.dumps({"type": "LineString", "coordinates": coordinates})
+            # Концы новой геометрии должны лежать у узлов участка (или у прежних концов):
+            # иначе геометрия «отрывается» от топологии. Принятые концы прижимаются к узлам.
+            ends = await conn.fetchrow(
+                """
+                WITH g AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), 9998) AS geom),
+                     l AS (SELECT shape FROM linesobj WHERE id = $1)
+                SELECT
+                    ST_Distance(ST_StartPoint(g.geom), n1.shape) AS d_start_node,
+                    ST_Distance(ST_EndPoint(g.geom), n2.shape) AS d_end_node,
+                    ST_Distance(ST_StartPoint(g.geom), ST_StartPoint(l.shape)) AS d_start_old,
+                    ST_Distance(ST_EndPoint(g.geom), ST_EndPoint(l.shape)) AS d_end_old
+                FROM g, l, nodes n1, nodes n2
+                WHERE n1.id = $3 AND n2.id = $4
+                """,
+                line_id, geojson_geom, line["nodeid1"], line["nodeid2"],
+            )
+            if ends is None:
+                raise ValueError(f"У участка {line_id} нет геометрии или узлов для проверки концов.")
+
+            def _near(*dists) -> bool:
+                return any(d is not None and d <= GEOMETRY_ENDPOINT_TOLERANCE_M for d in dists)
+
+            if not (_near(ends["d_start_node"], ends["d_start_old"]) and _near(ends["d_end_node"], ends["d_end_old"])):
+                raise ValueError(
+                    "Концы участка должны оставаться у его узлов "
+                    f"(допуск {GEOMETRY_ENDPOINT_TOLERANCE_M:g} м); для переноса конца переместите узел."
+                )
+
+            q_update = """
+                UPDATE linesobj l
+                SET shape = ST_SetPoint(
+                        ST_SetPoint(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), 9998), 0, n1.shape),
+                        -1, n2.shape),
+                    archivechangedate = $3
+                FROM nodes n1, nodes n2
+                WHERE l.id = $1 AND n1.id = l.nodeid1 AND n2.id = l.nodeid2
+                RETURNING ST_Length(l.shape) as new_len
+            """
+            new_len = await conn.fetchval(q_update, line_id, geojson_geom, now)
+
+            await conn.execute(
+                "UPDATE heatpipesections SET pipesectlength = $2 WHERE lineid = $1",
+                line_id,
+                new_len,
+            )
+
+            invalidate_outage_cache()
+            return {"success": True, "line_id": line_id, "new_length": round(float(new_len or 0), 2)}
+
