@@ -1,3 +1,4 @@
+import os
 import pyodbc
 import platform
 from typing import *
@@ -66,9 +67,9 @@ def connect(**conn_str: Any) -> Connection | None:
     driver = 'SQL Server'
     driver = 'ODBC Driver 17 for SQL Server'
     
-    _host = conn_str.get('server', '45.132.85.23')
-    _user = conn_str.get('user', 'Lifan')
-    _password = conn_str.get('password', 'Danil228')
+    _host = conn_str.get('server', os.getenv('MSSQL_SERVER', 'localhost'))
+    _user = conn_str.get('user', os.getenv('MSSQL_USER', ''))
+    _password = conn_str.get('password', os.getenv('MSSQL_PASSWORD', ''))
     _db = conn_str.get('db', 'Water')
     _port = conn_str.get('port', 1437)
 
