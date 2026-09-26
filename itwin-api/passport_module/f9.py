@@ -6,6 +6,7 @@ from openpyxl import Workbook
 import connect
 import sql
 import excel
+import journals_pg
 
 #-------------------------------------------------------------------------------------
 
@@ -15,7 +16,7 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
     q = f'''
     select 
     naimenovanie_uchastka,naimenovanie_rayona,nomer_uchastka,fio,nomer_prikaza_otv,data_prikaza_otv,otv_dolznost,otv_fio 
-    from getPts_responsible_person({id},'{ms_rs}')
+    from ({journals_pg.responsible_person(id, ms_rs)}) t
     '''
 
 #    ws = wb.create_sheet(title="Ф9.Ответств.лицо")

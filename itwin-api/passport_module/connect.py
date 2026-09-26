@@ -32,10 +32,10 @@ def connect_ms_sql(**conn_str: Any):
 #    driver = 'PostgreSQL ODBC Driver(Unicode)'
 
 
-    _host = conn_str.get('server', '45.132.85.23')
+    _host = conn_str.get('server', os.getenv('MSSQL_SERVER', 'localhost'))
     _host = conn_str.get('server', 'localhost')
-    _user = conn_str.get('user', 'Lifan')
-    _password = conn_str.get('password', 'Danil228')
+    _user = conn_str.get('user', os.getenv('MSSQL_USER', ''))
+    _password = conn_str.get('password', os.getenv('MSSQL_PASSWORD', ''))
     _password = conn_str.get('password', '')
     _db = conn_str.get('db', 'AlmatyGID')
     _db = conn_str.get('db', 'AstanaGID_2023_07_10')
@@ -70,7 +70,7 @@ def connect_ms_sql(**conn_str: Any):
         return conn
     except pyodbc.Error as ex:
         print('Error: ', ex)
-        exit(0)
+        raise
 
     return None
 
@@ -125,7 +125,7 @@ def connect_sqlite(**conn_str: Any):
         return conn
     except pyodbc.Error as ex:
         print(ex)
-        exit(0)
+        raise
 
     return None
 
@@ -165,9 +165,9 @@ def connect(**conn_str: Any):
     driver = 'SQL Server'
     driver = 'ODBC Driver 17 for SQL Server'
     
-    _host = conn_str.get('server', '45.132.85.23')
-    _user = conn_str.get('user', 'Lifan')
-    _password = conn_str.get('password', 'Danil228___')
+    _host = conn_str.get('server', os.getenv('MSSQL_SERVER', 'localhost'))
+    _user = conn_str.get('user', os.getenv('MSSQL_USER', ''))
+    _password = conn_str.get('password', os.getenv('MSSQL_PASSWORD', ''))
 
 #    print(conn_str)
 #    exit(0)
@@ -199,7 +199,7 @@ def connect(**conn_str: Any):
         return conn
     except pyodbc.Error as ex:
         print(ex)
-        exit(2)
+        raise
 
     return None
 

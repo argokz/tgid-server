@@ -227,12 +227,44 @@ order by z.ps_ord, z.ps_rn
     return q;
 
 #-------------------------------------------------------------------------------------
+# PostGIS-аналоги пространственных методов MS SQL, на которых написан десктопный паспорт.
+# MS SQL: obj.shape.STPointN(1).STDistance(l.shape) < 0.3
+# PostGIS: ST_DWithin(<первая точка obj.shape>, l.shape, 0.3) — использует GiST-индекс.
+
+NEAR_TOLERANCE = 0.3
+
+
+def first_point(geom):
+    '''Первая точка геометрии как STPointN(1) в MS SQL: для линии — начало,
+    для полигона — первая вершина внешнего кольца, для точки — сама точка.'''
+    g = f'ST_GeometryN({geom}, 1)'
+    return f'COALESCE(ST_PointN({g}, 1), ST_PointN(ST_ExteriorRing({g}), 1), {g})'
+
+
+def obj_anchor(geom, use_first_point=True):
+    return first_point(geom) if use_first_point else geom
+
+
+def near(anchor, geom, other):
+    '''anchor в пределах NEAR_TOLERANCE от other. Первое условие — по самой колонке geom
+    (следует из второго): его может использовать GiST-индекс, выражение anchor — нет.'''
+    cond = f'ST_DWithin({geom}, {other}, {NEAR_TOLERANCE})'
+    if anchor != geom:
+        cond += f' and ST_DWithin({anchor}, {other}, {NEAR_TOLERANCE})'
+    return cond
+
+
 #-------------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------------
 
-def get_obj_ps(mark_line, mark_pts, obj, cols = [], hps_cols = ()):
+def get_obj_ps(mark_line, mark_pts, obj, cols = [], hps_cols = (), use_first_point=True):
+    '''Объекты obj, привязанные к трубам участка (в пределах NEAR_TOLERANCE).
+    use_first_point=False — расстояние от всей геометрии (камеры, павильоны).'''
+    anchor = obj_anchor('z.shape', use_first_point)
     obj_par = ''
+    obj_par1 = ''
+    obj_par2 = ''
     if len(cols) > 0:
         '''
         if col in hps_cols:
@@ -275,8 +307,14 @@ mark_pts.nodeID2,
 mark_line.ord,
 mark_pts.ord AS ps_ord,
 
-ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY z.shape.STPointN(1).STDistance(l.shape)) AS rn,
-ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY z.shape.STPointN(1).STDistance(n.shape)) AS rn2
+-- Объект относится к ближайшей трубе участка, камера — ближайший к нему узел.
+-- В десктопе было два независимых ROW_NUMBER (rn по трубе, rn2 по узлу) и условие
+-- rn=1 and rn2=1: при нескольких трубах и узлах рядом эти строки не совпадали и объект
+-- выпадал из формы. Одна нумерация: труба, затем узел.
+-- mark_pts может содержать участок ПТС несколько раз (обход возвращается в него) — берём первое вхождение.
+ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY ST_Distance({anchor}, l.shape), l.id,
+                   ST_Distance({anchor}, n.shape), n.id, mark_pts.ord) AS rn,
+1 AS rn2
 
 {obj_par1}
 
@@ -288,8 +326,8 @@ join (values {mark_line}) mark_line(ord, id, napr, pts) on mark_line.id=l.id
 join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
 
 
-join {obj} z on z.shape.STPointN(1).STDistance(l.shape) < 0.3
-left join nodes n on n.removed=0 and n.fileID=n1.fileID and z.shape.STPointN(1).STDistance(n.shape) < 0.3
+join {obj} z on {near(anchor, 'z.shape', 'l.shape')}
+left join nodes n on n.removed=0 and n.fileID=n1.fileID and {near(anchor, 'z.shape', 'n.shape')}
 
 
 where l.removed=0
@@ -305,7 +343,8 @@ where l.removed=0
 #-------------------------------------------------------------------------------------
 
 
-def get_obj_ps2(mark_line, mark_pts, obj):
+def get_obj_ps2(mark_line, mark_pts, obj, use_first_point=True):
+    anchor = obj_anchor('z.shape', use_first_point)
 
     q = f'''
 ---------------------------------------------------------------------------------------------
@@ -331,8 +370,14 @@ mark_pts.nodeID2,
 mark_line.ord,
 mark_pts.ord AS ps_ord,
 
-ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY z.shape.STPointN(1).STDistance(l.shape)) AS rn,
-ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY z.shape.STPointN(1).STDistance(n.shape)) AS rn2
+-- Объект относится к ближайшей трубе участка, камера — ближайший к нему узел.
+-- В десктопе было два независимых ROW_NUMBER (rn по трубе, rn2 по узлу) и условие
+-- rn=1 and rn2=1: при нескольких трубах и узлах рядом эти строки не совпадали и объект
+-- выпадал из формы. Одна нумерация: труба, затем узел.
+-- mark_pts может содержать участок ПТС несколько раз (обход возвращается в него) — берём первое вхождение.
+ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY ST_Distance({anchor}, l.shape), l.id,
+                   ST_Distance({anchor}, n.shape), n.id, mark_pts.ord) AS rn,
+1 AS rn2
 
 
 from linesobj l
@@ -343,8 +388,8 @@ join (values {mark_line}) mark_line(ord, id, napr, pts) on mark_line.id=l.id
 join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
 
 
-join {obj} z on z.shape.STPointN(1).STDistance(l.shape) < 0.3
-left join nodes n on n.removed=0 and n.fileID=n1.fileID and z.shape.STPointN(1).STDistance(n.shape) < 0.3
+join {obj} z on {near(anchor, 'z.shape', 'l.shape')}
+left join nodes n on n.removed=0 and n.fileID=n1.fileID and {near(anchor, 'z.shape', 'n.shape')}
 
 
 where l.removed=0

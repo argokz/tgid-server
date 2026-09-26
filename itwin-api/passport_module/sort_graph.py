@@ -1,4 +1,5 @@
 ﻿import os
+import logging
 import psycopg2 as pyodbc
 import traceback
 from collections import defaultdict
@@ -189,6 +190,7 @@ where l.removed=0
 and ({fr})
 and n1.internalNodeID is NULL
 and {ms_rs_q}
+order by l.id
     '''
 
 #    print(q)
@@ -283,14 +285,26 @@ and {ms_rs_q}
             elif len(node12) == 1:
                 print(f'Кольцо в участке ПТС {pts} {G.nodes[pts_nodeID1]}')
                 nodes123[pts] = (pts_nodeID1, pts_nodeID1)
-            else:
-                print(f'Страшная ошибка {pts}!!!')
-                for n in node12:
-                    print(G.nodes[n])
-                
+            elif pts not in nodes123:
+                # Больше двух концов: ветвление внутри участка ПТС (узел степени 3 не признан
+                # узлом ПТС). Раньше make_graph возвращал None и паспорт не строился целиком;
+                # берём первый и последний концы в порядке обхода.
+                order = [n for a, b, _, _, p in sorted_edges if p == pts for n in (a, b)]
+                ends = [n for n in dict.fromkeys(order) if n in node12]
+                nodes123[pts] = (ends[0], ends[-1])
+                logging.warning('Участок ПТС %s: %d концов (ветвление), взяты %s и %s',
+                                pts, len(node12), G.nodes[ends[0]].get('name'), G.nodes[ends[-1]].get('name'))
+
+    # Сегмент ПТС, концы которого не совпали ни с одним ребром обхода, раньше обрывал весь паспорт
+    for pts, ends in nodes12.items():
+        if pts not in nodes123 and ends:
+            ends = list(ends)
+            nodes123[pts] = (ends[0], ends[-1])
 
 
-    graph2.unite(G) 
+    # graph2.unite(G) — соединение компонент перебором всех пар узлов (O(N²), до 100+ с на
+    # крупном участке). Результат (sorted_edges, nodes123) к этому моменту уже посчитан
+    # и от G не зависит — вызов ничего не менял, только тратил время.
 
 #    print('-------------------')
 

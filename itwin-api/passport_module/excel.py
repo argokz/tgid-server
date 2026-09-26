@@ -280,7 +280,8 @@ def write_table(ws, conn, q, row0=1, col0=1, numbers=True, freez=True):
 #        print(f'-------------------------------------------')
         print(q)
         print(f'-------------------------------------------')
-        exit(3)
+        # Раньше здесь был exit(3): в API это SystemExit посреди запроса
+        raise RuntimeError(f'Паспорт, лист «{ws.title}»: ошибка SQL: {e}') from e
 
     return r, c
 

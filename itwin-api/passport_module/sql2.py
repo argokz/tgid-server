@@ -19,13 +19,14 @@ def get_ps_obj(conn, q):
 
 #        print(row)
 
-        row = ['null' if col is None else col for col in row]
+        # NULL::int — иначе PostgreSQL выводит тип столбца VALUES как text (text = integer)
+        row = ['null::int' if col is None else col for col in row]
         
         (obj_id, n_id, l_id, ps_id, nodeID1, nodeID2, ord, ps_ord) = row
 
         if ps_id_old == ps_id: 
-            nodeID1 = 'null'
-            nodeID2 = 'null'
+            nodeID1 = 'null::int'
+            nodeID2 = 'null::int'
 
         ps_id_old = ps_id
 
@@ -39,7 +40,7 @@ def get_ps_obj(conn, q):
     t2 = time.time()
 
     if ps2 == '':
-        ps2 += f'''(null, null, null, null, null, null, null, null)\n'''
+        ps2 += f'''(null::int, null::int, null::int, null::int, null::int, null::int, null::int, null::int)\n'''
 
 
 

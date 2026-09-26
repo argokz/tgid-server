@@ -83,7 +83,8 @@ f'\'{fio}\' as fio',
 
     ]
 
-    q = sql.get_obj_ps(mark_line, mark_pts, obj, cols)
+    # Камеры, павильоны и спецконструкции — площадные: расстояние от всей геометрии
+    q = sql.get_obj_ps(mark_line, mark_pts, obj, cols, use_first_point=False)
 
     set_gr = (
 'locationTypesID',
@@ -101,7 +102,6 @@ f'\'{fio}\' as fio',
     )
 
     q = sql.group_ps1(q, cols, set_gr)
-    q = q.replace('.STPointN(1)', '');
 
     join_tabs = {
         'organizationID': 'organizations',

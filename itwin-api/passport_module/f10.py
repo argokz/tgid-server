@@ -7,6 +7,7 @@ import connect
 import sql
 import sql2
 import excel
+import journals_pg
 
 #-------------------------------------------------------------------------------------
 
@@ -17,31 +18,31 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
 
     q = f'''
 select
-[Наименование начального узла],
-[Наименование конечного узла],
-[Вид ремонта],
-[Дата начала ремонтных работ],
-[Дата завершения ремонтных работ],
-[Тип прокладки],
+"Наименование начального узла",
+"Наименование конечного узла",
+"Вид ремонта",
+"Дата начала ремонтных работ",
+"Дата завершения ремонтных работ",
+"Тип прокладки",
 
-[Длина заменённой трубы, м],
-[Восстановление канальной прокладки, м],
-[Диаметр условный, заменённой трубы, м],
-[Диаметр внутренний, заменённой трубы, м],
-[Диаметр наружный, заменённой трубы, м],
-[Толщина стенки, , заменённой трубы, мм],
-[Восстановление тепловой изоляции поверхности трубы, м2],
-[Асфальтирование, ремонт, м2],
+"Длина заменённой трубы, м",
+"Восстановление канальной прокладки, м",
+"Диаметр условный, заменённой трубы, м",
+"Диаметр внутренний, заменённой трубы, м",
+"Диаметр наружный, заменённой трубы, м",
+"Толщина стенки, , заменённой трубы, мм",
+"Восстановление тепловой изоляции поверхности трубы, м2",
+"Асфальтирование, ремонт, м2",
 
-[Перечень работ (трубопровода)],
-[Перечень работ (канал)],
-[Перечень работ (камеры)],
+"Перечень работ (трубопровода)",
+"Перечень работ (канал)",
+"Перечень работ (камеры)",
 
-[Номер приказа на ввод в эксплуатацию],
-[Дата приказа ввода в эксплуацию],
+"Номер приказа на ввод в эксплуатацию",
+"Дата приказа ввода в эксплуацию",
 
-[Подразделение производившее ремонт],
-[Ответственный за ремонт]
+"Подразделение производившее ремонт",
+"Ответственный за ремонт"
 
 from getPts_remont2({id},'{ms_rs}','{fragments}')
 '''
@@ -51,74 +52,44 @@ from getPts_remont2({id},'{ms_rs}','{fragments}')
 --select distinct
 --    pss.id as id,
 select
-    IIF (n1.nodeName is NULL or n1.nodeName = '' or n1.nodeName = ' ',CONCAT(nt1.name, ' ', n1.externalNodeName), n1.nodeName) as 'Наименование начального узла',
-    IIF (n2.nodeName is NULL or n2.nodeName = '' or n2.nodeName = ' ',CONCAT(nt2.name, ' ', n2.externalNodeName), n2.nodeName) as 'Наименование конечного узла',
-    rt.name as 'Вид ремонта',
-    --st.name as 'Состояние',
-    obj.data_nachala_remonta as 'Дата начала ремонтных работ',
-    obj.data_zaversheniya_remonta as 'Дата завершения ремонтных работ',
-    tubingTypes.name as 'Тип прокладки',
-    faktory_riska_truboprovoda.len_tube as 'Длина заменённой трубы, м',
-    faktory_riska_truboprovoda.len_channel as 'Восстановление канальной прокладки, м',
-    faktory_riska_truboprovoda.diameterCondit as 'Диаметр условный, заменённой трубы, м',
-    faktory_riska_truboprovoda.diameterInternal as 'Диаметр внутренний, заменённой трубы, м',
-    faktory_riska_truboprovoda.diameterExternal as 'Диаметр наружный, заменённой трубы, м',
-    faktory_riska_truboprovoda.wallThickness as 'Толщина стенки, , заменённой трубы, мм',
-    faktory_riska_truboprovoda.len_izol as 'Восстановление тепловой изоляции поверхности трубы, м2',
-    faktory_riska_truboprovoda.asfaltirovanie as 'Асфальтирование, ремонт, м2',
-    'Перечень работ (трубопровода)' = STUFF(
-                (
-                    SELECT
-                        concat(',', rtt2.name) AS n
-                    FROM
+    CASE WHEN n1.nodeName is NULL or n1.nodeName = '' or n1.nodeName = ' ' THEN CONCAT(nt1.name, ' ', n1.externalNodeName) ELSE n1.nodeName END AS "Наименование начального узла",
+    CASE WHEN n2.nodeName is NULL or n2.nodeName = '' or n2.nodeName = ' ' THEN CONCAT(nt2.name, ' ', n2.externalNodeName) ELSE n2.nodeName END AS "Наименование конечного узла",
+    rt.name AS "Вид ремонта",
+    --st.name AS "Состояние",
+    obj.data_nachala_remonta AS "Дата начала ремонтных работ",
+    obj.data_zaversheniya_remonta AS "Дата завершения ремонтных работ",
+    tubingTypes.name AS "Тип прокладки",
+    faktory_riska_truboprovoda.len_tube AS "Длина заменённой трубы, м",
+    faktory_riska_truboprovoda.len_channel AS "Восстановление канальной прокладки, м",
+    faktory_riska_truboprovoda.diameterCondit AS "Диаметр условный, заменённой трубы, м",
+    faktory_riska_truboprovoda.diameterInternal AS "Диаметр внутренний, заменённой трубы, м",
+    faktory_riska_truboprovoda.diameterExternal AS "Диаметр наружный, заменённой трубы, м",
+    faktory_riska_truboprovoda.wallThickness AS "Толщина стенки, , заменённой трубы, мм",
+    faktory_riska_truboprovoda.len_izol AS "Восстановление тепловой изоляции поверхности трубы, м2",
+    faktory_riska_truboprovoda.asfaltirovanie AS "Асфальтирование, ремонт, м2",
+    (SELECT string_agg(rtt2.name, ',') FROM
                         faktory_riska_truboprovoda r2
                         LEFT JOIN remontCapitalTube rt2 ON r2.id = rt2.objID
                         LEFT JOIN remontCapitalTubeTypes rtt2 ON rtt2.id = rt2.activityID
                     WHERE
-                        r2.id = obj.id FOR XML PATH(''),
-                        TYPE
-                ).value('.', 'NVARCHAR(MAX)'),
-                1,
-                1,
-                ''
-            ),
-            'Перечень работ (канал)' = STUFF(
-                (
-                    SELECT
-                        concat(',', rtt2.name) AS n
-                    FROM
+                        r2.id = obj.id) AS "Перечень работ (трубопровода)",
+            (SELECT string_agg(rtt2.name, ',') FROM
                         faktory_riska_truboprovoda r2
                         LEFT JOIN remontChannel rt2 ON r2.id = rt2.objID
                         LEFT JOIN remontChannelTypes rtt2 ON rtt2.id = rt2.activityID
                     WHERE
-                        r2.id = obj.id FOR XML PATH(''),
-                        TYPE
-                ).value('.', 'NVARCHAR(MAX)'),
-                1,
-                1,
-                ''
-            ),
-            'Перечень работ (камеры)' = STUFF(
-                (
-                    SELECT
-                        concat(',', rtt2.name) AS n
-                    FROM
+                        r2.id = obj.id) AS "Перечень работ (канал)",
+            (SELECT string_agg(rtt2.name, ',') FROM
                         faktory_riska_truboprovoda r2
                         LEFT JOIN remontKamera rt2 ON r2.id = rt2.objID
                         LEFT JOIN remontChannelTypes rtt2 ON rtt2.id = rt2.activityID
                     WHERE
-                        r2.id = obj.id FOR XML PATH(''),
-                        TYPE
-                ).value('.', 'NVARCHAR(MAX)'),
-                1,
-                1,
-                ''
-    ),
-    obj.nomer_prikaza as 'Номер приказа на ввод в эксплуатацию',
-    format(obj.data_prikaza_vvoda_v_ekspluataciyu,'dd.MM.yyyy') as 'Дата приказа ввода в эксплуацию',
-    sb.name as 'Подразделение производившее ремонт',
-    nu.fio as 'Ответственный за ремонт'
-   -- obj.id AS 'Номер контура'
+                        r2.id = obj.id) AS "Перечень работ (камеры)",
+    obj.nomer_prikaza AS "Номер приказа на ввод в эксплуатацию",
+    to_char(obj.data_prikaza_vvoda_v_ekspluataciyu, 'DD.MM.YYYY') AS "Дата приказа ввода в эксплуацию",
+    sb.name AS "Подразделение производившее ремонт",
+    nu.fio AS "Ответственный за ремонт"
+   -- obj.id AS "Номер контура"
 from remont2 obj
     join remont2Deployed d on d.directionID = obj.id
     JOIN heatPipeSections hpss ON hpss.lineID=d.lineID
@@ -160,14 +131,14 @@ from remont2 obj
     left join uchastki_ekspluatatsii ue_rs ON ue_rs.id = rs.nomer_uchastka
     left join nachalniki_uchastkov nu_rs ON nu_rs.id = ue_rs.nachalnik_uchastka
 
-    where obj.stateID = 3 and n1.fileID in ({fragments})
+    where obj.stateID = 3 and {journals_pg.fragment_filter('n1', fragments)}
 
     AND 
     
     {ms_rs}.id={id}
 
 --    AND ( (not ec1.name in ('П1','П2') or not ec2.name in ('П1','П2')) or (ec1.name is null AND ec2.name is null) )
---    and ( (@type = 'ms' and ms.id = @id) or (@type = 'rs' and rs.id = @id) or (@type = 'all'))
+--    and ( ('{ms_rs}' = 'ms' and ms.id = {id}) or ('{ms_rs}' = 'rs' and rs.id = {id}) or ('{ms_rs}' = 'all'))
 
     order by pss.ord_p
 

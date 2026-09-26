@@ -10,25 +10,22 @@ import excel
 
 
 def workListTube():
+    # PostgreSQL-аналог STUFF((... FOR XML PATH('')), 1, 1, ''): string_agg + substr(…, 2)
     s = f'''
-    
-      workListTube = STUFF(
-        (
+      (
+        SELECT substr(string_agg(w.n, ''), 2)
+        FROM (
             SELECT
                 distinct concat(
-                    IIF( rtt2.name != '', CONCAT(', ', rtt2.name, ':'),''),
-                    STUFF (
-                        (
-                            select
-                                concat(',', se.name) as n
-                            from
-                                defectTube dt
-                                LEFT JOIN spisokElementov se ON se.id = dt.elementID
-                            where
-                                objId = z.id
-                                and activityID = rt2.activityID FOR XML PATH(''),
-                                TYPE
-                        ).value('.', 'NVARCHAR(MAX)'), 1, 1, ''
+                    CASE WHEN rtt2.name != '' THEN CONCAT(', ', rtt2.name, ':') ELSE '' END,
+                    (
+                        select string_agg(se.name, ',')
+                        from
+                            defectTube dt
+                            LEFT JOIN spisokElementov se ON se.id = dt.elementID
+                        where
+                            dt.objId = z.id
+                            and dt.activityID = rt2.activityID
                     )
                 ) AS n
             FROM
@@ -36,10 +33,9 @@ def workListTube():
                 left JOIN defectTube rt2 ON r2.id = rt2.objID
                 left JOIN remontTruboprovodaSpisok rtt2 ON rtt2.id = rt2.activityID
             WHERE
-                r2.id = z.id FOR XML PATH(''),
-                TYPE
-        ).value('.', 'NVARCHAR(MAX)'), 1, 1, ''
-      )
+                r2.id = z.id
+        ) w
+      ) AS workListTube
       '''
     return s
 
