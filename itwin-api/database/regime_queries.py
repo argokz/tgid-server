@@ -90,6 +90,29 @@ def _envelope(key: str, title: str, fragment_id: int, calc, items: list[dict], *
     }
 
 
+async def attach_coords(conn, items: list[dict], key: str = "node_id") -> list[dict]:
+    """Дописывает longitude/latitude (WGS84) для показа на карте: узел — точка на объекте,
+    участок (key="line_id") — середина линии."""
+    ids = sorted({i[key] for i in items if i.get(key) is not None})
+    if not ids:
+        return items
+    if key.endswith("line_id"):
+        sql = """SELECT id, ST_X(p) AS lon, ST_Y(p) AS lat FROM (
+                   SELECT id, ST_Transform(ST_LineInterpolatePoint(ST_LineMerge(shape), 0.5), 4326) AS p
+                     FROM linesobj WHERE id = ANY($1::int[]) AND GeometryType(ST_LineMerge(shape)) = 'LINESTRING'
+                 ) q"""
+    else:
+        sql = """SELECT id, ST_X(p) AS lon, ST_Y(p) AS lat FROM (
+                   SELECT id, ST_Transform(ST_PointOnSurface(shape), 4326) AS p
+                     FROM nodes WHERE id = ANY($1::int[]) AND shape IS NOT NULL
+                 ) q"""
+    coords = {r["id"]: (r["lon"], r["lat"]) for r in await conn.fetch(sql, ids)}
+    for i in items:
+        lon, lat = coords.get(i.get(key), (None, None))
+        i["longitude"], i["latitude"] = lon, lat
+    return items
+
+
 def _no_calculation(key: str, title: str, fragment_id: int) -> dict[str, Any]:
     out = _envelope(key, title, fragment_id, None, [])
     out["note"] = "У фрагмента нет расчёта"
@@ -117,7 +140,8 @@ async def negative_dp(conn, fragment_id: int, calculation_id: Optional[int] = No
         """,
         fragment_id, calc["id"],
     )
-    return _envelope("negative_dp", title, fragment_id, calc, [dict(r) for r in rows])
+    items = await attach_coords(conn, [dict(r) for r in rows])
+    return _envelope("negative_dp", title, fragment_id, calc, items)
 
 
 def _is_independent_scheme(scheme: Optional[str]) -> bool:
@@ -152,7 +176,7 @@ async def airlock(conn, fragment_id: int, calculation_id: Optional[int] = None) 
         """,
         fragment_id, calc["id"],
     )
-    items = [dict(r) for r in rows if not _is_independent_scheme(r["scheme"])]
+    items = await attach_coords(conn, [dict(r) for r in rows if not _is_independent_scheme(r["scheme"])])
     return _envelope("airlock", title, fragment_id, calc, items,
                      note="Только потребители с результатом расчёта; независимые схемы не учитываются")
 
@@ -238,6 +262,7 @@ async def low_temperature(conn, fragment_id: int, calculation_id: Optional[int] 
         item["no_flow"] = flows_zero  # нулевая нагрузка и нет расхода — в десктопе тоже в списке
         items.append(item)
     items.sort(key=lambda i: (i["t_supply"] - i["t2_graph"], i["node_id"]))
+    await attach_coords(conn, items)
     return _envelope("low_temperature", title, fragment_id, calc, items,
                      note=f"Сравнение с t2 графика источника при Tн = {tn:g} °C")
 
@@ -276,7 +301,8 @@ async def closed_sections(conn, fragment_id: int, include_uncalculated: bool = F
         """,
         fragment_id, calc["id"] if calc else None, include_uncalculated,
     )
-    return _envelope(key, title, fragment_id, calc, [dict(r) for r in rows])
+    items = await attach_coords(conn, [dict(r) for r in rows], "line_id")
+    return _envelope(key, title, fragment_id, calc, items)
 
 
 async def hydrostatic_zones(conn, fragment_id: int, zone_height_m: float = 60.0) -> dict[str, Any]:
@@ -326,6 +352,7 @@ async def hydrostatic_zones(conn, fragment_id: int, zone_height_m: float = 60.0)
                 queue.append(u)
     items = [{"node_id": i, "code": info[i]["code"], "name": info[i]["name"], "geo_mark": info[i]["z"],
               "building_height": info[i]["hz"]} for i in sorted(zone)]
+    await attach_coords(conn, items)
     return {
         "query": "hydrostatic_zones",
         "title": title,
@@ -363,6 +390,7 @@ async def admissibility(conn, query_id: int, fragment_id: int) -> dict[str, Any]
         if id_col:
             item["_" + ("line_id" if obj == "line" else "node_id")] = r[id_col]
         items.append(item)
+    await attach_coords(conn, items, "_line_id" if obj == "line" else "_node_id")
     summary: dict[str, int] = {}
     if mode_column and mode_column in columns:
         for r in rows:
