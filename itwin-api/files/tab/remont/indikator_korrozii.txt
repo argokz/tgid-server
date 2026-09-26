@@ -1,0 +1,52 @@
+Сеть
+  sostoyanie Состояние индикатора коррозии
+  data_planirovaniya
+  data_ustanovki Дата установки индикатора коррозии
+  data_izvlecheniya Дата извлечения индикатора коррозии
+  truboprovod
+  mesto_ustanovki
+  nomer_indikatora_korrozii
+  kod_rs_blizhayshey_kamery Код расчетной схемы ближайшего узла
+  blizhayshaya_kamera Имя ближайшего узла
+  rasstoyanie_do_kamery__m Расстояние до ближайшего узла
+--  uchastok_ekspluatatsii
+--  istochnik_tepla
+--  magistral_raspredset
+--  nachalnik_uchastka
+--  god_vvoda_v_ekspluatatsiyu
+--  vid_prokladki
+--  ulitsa
+--  nomer_doma
+--  teplonositel
+--  kod_rs_nachalnoy_kamery
+--  nachalnaya_kamera
+--  kod_rs_konechnoy_kamery
+--  konechnaya_kamera
+--
+--  diametr_truby_podayuschiy__uslovn__mm
+--  diametr_truby_obratnyy__uslovn__mm
+  responsibleID
+Установка индикатора коррозии
+  kolichestvo_plastin_v_sborke
+  spisok_plastin_pri_ustanovke
+  sredniy_ves_plastiny_pri_ustanovke__g
+  radius_krugloy_plastiny__mm
+  radius_vtulki__mm
+  tolschina_plastiny__mm
+Извлечение индикатора коррозии
+  stateIndID
+  sredniy_ves_plastiny_posle_ispytaniy__g
+  poterya_massy_srednyaya_pri_kislotnoy_obraboke__g
+  spisok_plastin_posle_ispytaniy
+  srednyaya_skorost_korrozii__mm_god
+  otsenka_korrozionnogo_protsessa
+  agressivnost_setevoy_vody
+  vneshniy_vid_plastin
+  primechanie
+Журнал
+--  save_r Сохранить результат обработки индикатора коррозии
+--  result История обработки индикатора коррозии
+--  $ind_save Сохранить результат обработки индикатора коррозии
+  $ind_result История обработки индикатора коррозии
+--  $ind_reset Сделать индикатора коррозии плановым
+  regimID

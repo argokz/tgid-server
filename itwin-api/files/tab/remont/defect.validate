@@ -1,0 +1,29 @@
+remontTypeID NotNull
+--opresID NotNull
+defectDescription NotNull
+remontCatID NotNull
+stateID NotNull
+subdivisionID NotNull
+responsibleID NotNull
+
+data_osmotra NotNull CurrentSeason
+data_sozdaniya_akta_osmotra_v_shurfe CurrentSeason
+data_nachala_remonta CurrentSeason After data_osmotra
+data_zaversheniya_remonta CurrentSeason After data_nachala_remonta
+
+
+ulicaID NotNull
+nomer_doma NotNull
+mestoPovrezhdenijaID NotNull
+nodeID_bizhajshej_kamery NotNull
+rasstoyanieDoPovrezhdeniyaNachKamery NotNull
+vid_narusheniyaID NotNull
+tipPovrezhdeniaID NotNull
+
+
+
+--otchet_po_defektu NotNull
+vremya_osmotra Pattern "^(([0-1]?[0-9]|2[0-3]):[0-5][0-9])$" "Время нужно заполнить в формате чч:мм"
+tsentrPovrezhdenia Pattern "^(([0-1]?[0-9]|2[0-3]):[0-5][0-9])$" "Место расположения нужно заполнить в формате чч:мм"
+
+vid_rabotID NotNIf stateID 2

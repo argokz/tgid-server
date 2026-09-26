@@ -1,0 +1,28 @@
+Наружный осмотр
+    obj_type_faktory_riskaID
+-- Для осмотра
+    VnesniiVid
+    SostOborudovania
+    sostoyanie_metalla_truboprovodaID
+    SostKonstrukz
+    sostoyanie_teplovoj_izolyacii_podachaID
+    sostoyanie_teplovoj_izolyacii_obratkaID
+    sostoyanie_naruzhnogo_pokrytiya_podachaID
+    sostoyanie_naruzhnogo_pokrytiya_obratkaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_podachaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_obratkaID
+    zashemID
+    sost_podvID
+    sost_oporID
+    nalich_obrKlID
+--Документы
+--    $15 !!! Ссылка на документ: Чертеж объекта контроля
+--    dokument_analiz_prob_na_vlazhnost
+--    dokument_analiz_prob_na_korrozijnuyu_aktivnost
+--    dokument_raznost_elektricheskih_potencialov
+--    dokument_analiz_vodyanoj_vytyazhki
+--    dokument_chertezh_objekta_kontrolya
+--Надежда Ивановна решила добавить
+  sootv_nadpID
+  nalich_tabl_regID
+  nalich_tabl_parID

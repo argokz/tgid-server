@@ -1,0 +1,13 @@
+-!Регулятор давления
+Регулятор давления
+  regulatorStateID
+  nodeID Наименование узла с регулируемым напором
+  pipelineSignID
+  h
+  deltaH
+  regValveRelCap
+  relLeakage
+  valveHydroResOpen
+  valveHydroResClose
+  consDrip
+  workAttrID

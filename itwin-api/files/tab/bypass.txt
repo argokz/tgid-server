@@ -1,0 +1,17 @@
+-!Байпас
+Байпас
+  regulatorStateID
+  nodeID Идентификатор регулятора узла
+  pipelineSignID
+  h Значение регулируемого напора, м
+  deltaH Допустимое отклонение напора от заданного значения, м
+  q
+  deltaQ
+----
+  locInstall
+--  standardTubeLink
+  length
+  standardID
+  diameterInternal
+  tubeRoughness
+  resCoeffsSum

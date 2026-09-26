@@ -1,0 +1,8 @@
+Основные
+  reg_nomer
+  god_stroitelstva
+  proizvoditelnost
+  kolichestvo_nasosov_na_podache
+  kolichestvo_nasosov_na_obratke
+  primechanie
+  shema

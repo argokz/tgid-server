@@ -1,0 +1,13 @@
+Основные
+-   atribut1
+   nazvanie_zhk Название Жилого комплекса
+-   kod_pt
+-   uzel_pt
+-   name_building
+-   kod_ut
+-   uzel_ut
+-   kod1
+-   uzel1
+-   kod2
+-   uzel2
+-   shape

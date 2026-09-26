@@ -1,0 +1,11 @@
+Основные
+    dlina
+    shirina
+    vysota
+    glubina_zalozheniya
+    diametr
+    otmetka_verha
+    otmetka_niza
+    yuridicheskoe_litso
+    primechanie
+    material

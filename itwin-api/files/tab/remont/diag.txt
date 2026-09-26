@@ -1,0 +1,61 @@
+Диагностика
+    sredstvoDiagID
+    statusTypesID
+--    diam_usl
+    priznak_truboprovoda
+    data_prov
+Шурф 
+    mesto_vskr
+    naznachenie_vskrID
+    nomer_akta_vskr
+    otchet_vskr
+    $view_documents$docDiagVskr$remontDocumentTypes$ Документы вскрытия
+Вырезка   
+    mesto_vyr
+    naznachenie_vyrID
+    nomer_akta_vyr
+    otchet_vyr
+    $view_documents$docDiagVyr$remontDocumentTypes$ Документы вырезки
+Освидетельствование
+    vneshny_vidID
+    sost_oborudID
+    sost_konstrID
+    otchet_osv
+    $view_documents$docDiagOsv$remontDocumentTypes$ Документы освидетельствования
+--Диагностика
+Визуальный контроль канальной прокладки
+    vc1
+    vc2
+    vc3
+    vc4
+    vc5
+Визуальный контроль основного металла трубопровода
+    vt1
+    vt2
+    vt3
+    vt4
+--@Нормативно-техническая документация оценки качества контроля
+--@Визуальный контроль канальной прокладки
+--@Визуальный контроль основного металла трубопровода
+--@Визуальный контроль канальной прокладки
+--@Визуальный контроль основного металла трубопровода
+--@Измерительный  контроль основного металла трубопровода
+Измерительный  контроль основного металла трубопровода
+    tol1
+    tol2
+    glubina_kor
+    int_korID
+    razmery_kor
+    sost_pokrID
+    antikorpokrID
+    zashemID
+    sost_podvID
+    sost_oporID
+    nalich_obrKlID
+    sootv_nadpID
+    nalich_tabl_regID
+    nalich_tabl_parID
+Ответственный за диагностику
+    subdivisionID
+    responsibleID
+    primechanie

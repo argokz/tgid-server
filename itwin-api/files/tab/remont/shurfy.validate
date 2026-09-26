@@ -1,0 +1,12 @@
+nodeID_bizhajshej_kamery NotNull
+rasstoyanie_do_blizhajshej_kamery NotNull
+ulicaID NotNull
+nomer_doma NotNull
+-fio_utverzhdaemogo NotNull
+-dolzhnost_utverzhdaemogoID NotNull
+-sluzhba_utverzhdaemogoID NotNull
+data_utverzhdeniya_plana_shurfovok CurrentSea2son
+data_nachala NotNull CurrentSeason
+data_nachala_plan NotNull CurrentSeason
+data_okonchaniya_plan NotNull CurrentSeason After data_nachala_plan
+data_okonchaniya CurrentSeason After data_nachala

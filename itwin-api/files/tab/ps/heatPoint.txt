@@ -1,0 +1,18 @@
+Основное
+  name Наименование ТП
+  heatPointTypeID Тип теплового пункта
+  raschetnayaNagruzkaCO Расчетная нагрузка на СО, гкал/час 
+  srednyayaNagruzkaGV Средняя нагрузка на ГВ, гкал/час 
+  maxNagruzkaGV Максимальная нагрузка на ГВ, гкал/час
+  raschetnayaNagruzkaSV Расчетная нагрузка на СВ, гкал/час 
+Характеристика
+  countBusinessConsumers Количество потребителей-предприятий, шт
+  countUserGV Число пользователей ГВ, чел
+  area Отапливаемая площадь, м2
+  buildingVolume Объем отапливаемого здания, м3
+  basementVolume Объем подвала отапливаемого здания, м3
+  builtInVolume Объем встроенных помещений отапливаемого здания, м3
+Реальные потребители
+  $table_view_heat_point_real_consumers Список адресов
+  --$table_view_heat_point_buildings Список подключенных зданий
+  $table_view_heat_point_list_contract Список договоров

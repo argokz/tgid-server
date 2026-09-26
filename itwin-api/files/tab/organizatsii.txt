@@ -1,0 +1,21 @@
+Основной
+  nomer_dogovora
+  naimenovanie_obekta
+  adres_obekta
+  naznachenie_obekta
+  naimenovanie_kontragenta
+  ploschad
+  nagruzka__otoplenie_
+  etazhnost
+  srednyaya_nagruzka__otoplenie_
+  nagruzka__ventilyatsiya_
+  srednyaya_nagruzka__ventilyatsiya_
+  nagruzka__gvs_
+  srednyaya_nagruzka__gvs_
+  nagruzka__par_
+  srednyaya_nagruzka__par_
+  nomer_a__pribora_ucheta
+  ekspluatatsionnyy_rayon_po_obektu
+  ekspluatatsionnyy_uchastok_po_obektu
+  administrativnyy_rayon_po_obektu
+  istochnik_tepla

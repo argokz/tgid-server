@@ -1,0 +1,15 @@
+-!Задвижка
+Задвижка
+   damperArmatureStateID
+   dispatcherSwitch
+   standardDampLink
+   diameterCondit
+   relatLeakage
+   partDempOpen
+   name
+Дополнительные
+   turnCount
+   gateControl
+   clue
+   thrustCollar
+-   opc

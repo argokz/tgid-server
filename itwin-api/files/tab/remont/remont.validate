@@ -1,0 +1,7 @@
+data_osmotra NotNull
+remontTypeID NotNull
+stateID NotNull
+subdivisionID NotNull
+responsibleID NotNull
+vremya_osmotra NotNull
+vremya_osmotra Pattern "^(([0-1]?[0-9]|2[0-3]):[0-5][0-9])$" "Время нужно заполнить в формате чч:мм"

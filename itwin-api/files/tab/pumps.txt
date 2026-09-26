@@ -1,0 +1,43 @@
+-!Насос
+Насос
+ id
+ stateID
+-- offReason
+ thrust
+ parallAgregCount
+ pumpStationID
+ number
+ standardPumpID
+ driveTypeID
+ rotorDiameterTypeID
+ standardEMID
+ rotorRotSpeedSet
+ rotorDiameterSet
+ lastPumpReplaceDate
+ lastEMreplaceDate
+ lastAgregReplaceDate
+ repairCountPump
+ replaceCountAgreg
+ repairCountEM
+ opc
+-!Коэффициенты апроксимации
+Коэффициенты апроксимации, номинальный режим
+ r0 R0 характеристики напора H(G)
+ r1 R1 характеристики напора H(G)
+ r2 R2 характеристики напора H(G)
+ e0 E0 характеристики мощности N(G)
+ e1 E1 характеристики мощности N(G)
+ e2 E2 характеристики мощности N(G)
+ k0 K0 характеристики КПД K(G) 
+ k1 K1 характеристики КПД K(G) 
+ k2 K2 характеристики КПД K(G) 
+Коэффициенты апроксимации, заданный режим
+ r0_z R0 характеристики напора H(G)
+ r1_z R1 характеристики напора H(G)
+ r2_z R2 характеристики напора H(G)
+ e0_z E0 характеристики мощности N(G)
+ e1_z E1 характеристики мощности N(G)
+ e2_z E2 характеристики мощности N(G)
+ k0_z K0 характеристики КПД K(G)
+ k1_z K1 характеристики КПД K(G)
+ k2_z K2 характеристики КПД K(G)

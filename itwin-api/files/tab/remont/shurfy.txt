@@ -1,0 +1,85 @@
+План шурфовки
+  $view_UT$ Участок теплопровода ...
+  $view_UTBIG$ Участок теплопровода ПТС ...
+--  naznachenie_vskrID
+--  ulicaID
+--  nomer_doma
+  naznachenie_vskrID
+  data_nachala_plan
+  data_okonchaniya_plan
+  materialy_i_mekhanizmyID
+Местоположение
+  data_utverzhdeniya_plana_shurfovok
+  ulicaID
+  nomer_doma
+  sostoyanie_shurfaID
+--  data_nachala_plan
+--  data_okonchaniya_plan
+  data_nachala
+  data_okonchaniya
+  nodeID_bizhajshej_kamery
+  rasstoyanie_do_blizhajshej_kamery
+  dlina_osmotra
+  glubina_zalozheniya
+--  harakter_gruntaID
+--  podtoplenie_do_truby
+--  ustrojstva_vodootvedeniyaID
+Социальные факторы
+  $faktory_riska_truboprovoda$faktor_riska1$ Социальные факторы
+--Социальные факторы
+--  poverhnost_nad_trassojID
+--  nalichie_vblizi_elektrificirovannogo_transporta
+--  rasstoyanie_do_relsov
+----  nalichie_vblizi_kommunikacijID
+-----  $view_filtr$nalichie_vblizi_kommunikacij_for_shurfy$nalichie_vblizi_kommunikacij$ Вблизи лежащие коммуникации
+--  nalichie_vblizi_rabotayushchih_elektrozashchitnyh_ustanovokID
+Осмотр в шурфе
+--  osmotreny_elementyID
+  $view_filtr$vidy_elementov_for_shurfy$vidy_elementov_shurf$ Осмотренные элементы
+  $faktory_riska_truboprovoda$faktor_riska2$ Осмотр
+  $faktory_riska_truboprovoda$faktor_riska3$ Замеры
+  $faktory_riska_truboprovoda$faktor_riska4$ Вырезка
+----  gidroizolyacionnaya_konstrukciya_podachaID
+----  gidroizolyacionnaya_konstrukciya_obratkaID
+----  sostoyanie_protivokorrozionnogo_pokrytiya_podachaID
+----  sostoyanie_protivokorrozionnogo_pokrytiya_obratkaID
+----  nalichie_korrozii_podachaID
+----  nalichie_korrozii_obratkaID
+----  mesto_kontrolnoj_vyrezki_truboprovoda
+----  rezultaty_vyrezki
+----  rezultaty_osmotra
+----  namechennye_meropriyatiya
+----  meropriyatiya_po_vosstanovleniyu_prokladki
+----  primechanie
+  rezultaty_osmotra
+  namechennye_meropriyatiya
+  meropriyatiya_po_vosstanovleniyu_prokladki
+Вырезка
+  mesto_vyr
+  naznachenie_vyrID
+  nomer_akta_vyr
+  otchet_vyr
+Нарушения
+  $diag_defect_new Нарушение в шурфе
+  $diag_defect_list Список нарушений...
+--  primechanie
+Документы
+  nomer_akta
+  data_utverzhdenija_akta
+  $akt_na_osmotr_tepl$ Акт на осмотр тепломагистрали в шурфе
+  $view_documents$shurfDocuments$vidy_dokumentov_shurfa$ Документы
+  $zhurnal_shurfy История шурфов на участке
+Утверждение
+  naznachenie
+  fio_utverzhdaemogo
+  dolzhnost_utverzhdaemogoID
+  sluzhba_utverzhdaemogoID
+  fio_viziruemogo_1
+  dolzhnost_viziruemogoID_1 
+  primechanie
+  fio_1
+  dolzhnost_1
+  fio_2
+  dolzhnost_2
+  utverdit Состояние утверждения
+--  $shurf_utverdit Утвердить шурфовку 

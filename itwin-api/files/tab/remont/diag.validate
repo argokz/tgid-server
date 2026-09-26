@@ -1,0 +1,14 @@
+sredstvoDiagID NotNull
+statusTypesID NotNull
+priznak_truboprovoda NotNull
+data_prov NotNull
+
+mesto_vskr NotNIf sredstvoDiagID 1
+naznachenie_vskrID NotNIf sredstvoDiagID 1
+
+mesto_vyr NotNIf sredstvoDiagID 2
+naznachenie_vyrID NotNIf sredstvoDiagID 2
+
+vneshny_vidID NotNIf sredstvoDiagID 3
+sost_oborudID NotNIf sredstvoDiagID 3
+

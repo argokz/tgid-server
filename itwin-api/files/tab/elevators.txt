@@ -1,0 +1,12 @@
+Основные
+  stateID Состояние
+  elevatorType
+  elevatorNumInst
+  diameterNozzle
+  entryMark
+  diameterChamber
+  length
+  diameterInletFlange
+  diameterOutletFlange
+  diameterSuctionPipe
+  material

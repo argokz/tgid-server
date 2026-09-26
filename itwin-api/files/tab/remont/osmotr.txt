@@ -1,0 +1,25 @@
+Осмотр
+  $faktory_riska_truboprovoda_osmotr$ Список участков для осмотра
+  name
+  data_osmotra
+  predpolagaemye_prichiny_razrusheniya_izolyacii_korrozii
+  rezultaty_osmotra
+  namechennye_meropriyatiya
+  meropriyatiya_po_vosstanovleniyu_prokladki
+  primechanie
+  otvetstvennoe_lico_ID
+  podrazdelenie_provodivshee_raboty
+Документы
+-  nomer_akta
+  $view_documents$osmotrDocuments$vidy_dokumentov_osmotra$ Документы
+Нарушения
+  $osmotr_defect_new_pick Новое нарушение
+  $osmotr_defect_list Список нарушений
+Члены комиссии
+  fio_utverzhdaemogo
+  dolzhnost_utverzhdaemogoID
+  sluzhba_utverzhdaemogoID
+  fio_1
+  dolzhnost_1
+  fio_2
+  dolzhnost_2

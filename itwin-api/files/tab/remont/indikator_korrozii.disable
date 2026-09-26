@@ -1,0 +1,45 @@
+stateIndID
+    0
+        ???
+    1
+        sredniy_ves_plastiny_posle_ispytaniy__g
+    2
+        ???
+sostoyanie
+   6
+      sostoyanie
+      srednyaya_skorost_korrozii__mm_god
+      otsenka_korrozionnogo_protsessa
+      agressivnost_setevoy_vody
+--      poterya_massy_srednyaya_pri_kislotnoy_obraboke__g
+--      truboprovod
+   4
+      data_planirovaniya
+   1
+      data_planirovaniya
+      data_ustanovki
+--      mesto_ustanovki
+--      nomer_indikatora_korrozii
+--      truboprovod
+   2
+      data_ustanovki
+      data_izvlecheniya
+--      nomer_indikatora_korrozii
+      kolichestvo_plastin_v_sborke
+      sredniy_ves_plastiny_pri_ustanovke__g
+      radius_krugloy_plastiny__mm
+      radius_vtulki__mm
+      tolschina_plastiny__mm
+   3
+--
+      stateIndID
+--      nomer_indikatora_korrozii
+      kolichestvo_plastin_v_sborke
+      sredniy_ves_plastiny_pri_ustanovke__g
+      radius_krugloy_plastiny__mm
+      radius_vtulki__mm
+      tolschina_plastiny__mm
+      poterya_massy_srednyaya_pri_kislotnoy_obraboke__g
+-
+      data_izvlecheniya
+      vneshniy_vid_plastin

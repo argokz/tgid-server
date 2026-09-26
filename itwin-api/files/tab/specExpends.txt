@@ -1,0 +1,18 @@
+Основные
+  specExpendID
+  hSourceCode
+Удельные расходы потребителя, т/Гкал
+  calcHLdep На отопление, зависимая
+  calcHLindep На отопление, независимая
+  calcHLventil На вентиляцию
+  calcHLcond На кондициоирование
+  calcHLcloseSys На технологические процессы
+  calcHLopenSys На технологические процессы, открытые
+  calcExpendHWopen На ГВ при открытой ТС
+  circHLosOpen На компенсацию при открытой ТС
+  avgHLGVScloseParall На ГВ при параллельной
+  avgHLGVScloseMix На ГВ при смешанной
+  avgHLGVScloseConseq На ГВ при последовательной
+  avgHLGVSclosePreON На ГВ при предвключенной 
+-  avgHLGVScloseSummer На ГВ в закрытой системе в летний период
+-  avgHLGVSopenSummer На ГВ в открытой системе в летний период

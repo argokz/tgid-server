@@ -1,0 +1,147 @@
+-!Основные
+Данные
+--  vozdushnikLists
+--  id int(11) NOT NULL AUTO_INCREMENT,
+  name Наименование
+-  nodeID1 int(11) DEFAULT NULL,
+-  nodeID2 int(11) DEFAULT NULL,
+-  magistral Магистраль
+-  magistralSite Участок МС
+-  distSite Участок РС
+  tubingTypeID Тип прокладки
+  firstPICdateHP Дата первичного ввода в эксплуатацию
+  lastTransDate Дата последней перекладки
+  lastIsolDate Дата последней замены изоляционной конструкции
+  DiamUslov Диаметр условный трубопровод, мм
+  pipeLength Протяженность, м
+  standart Стандарт на изготовление трубопровода
+  inventNumber Инвентарный номер
+  tubeTypeID Материал трубы
+  objectTypeID Назначение трубопровода
+  Sreda Рабочая среда
+  press Рабочее давление, м.вод.ст
+  temperature Рабочая температура, Град.C
+  SpokSluzhbiRash Расчетный срок службы, лет
+  ressurs Расчетный ресурс,час
+  pusk Расчетное число пусков, раз
+--  sectExploitPeriod Срок эксплуатации участка, лет
+  organizationID Балансовая принадлежность участка
+------ Социальные фактры риска
+------   Elektrich Наличие эл.коммуникаций, электрохимзащиты газопровода
+------   TransportElekricht Наличие электрифицированного транспорта на расстоянии
+------   Ponezial Уровень разности электропотенциала, В
+------   floodIntensityGWid Интенсивность подтопления грунтовыми водами
+------   floodIntensityFWid Интенсивность подтопления паводковыми водами
+------   floodIntensityTWid Интенсивность подтопления водопроводными водами
+------   floodIntensityBWid Интенсивность подтопления фекальными водами
+------   buildingConstrStateID Состояние строительных конструкций
+------   Vodootved Водоотведение на участке
+------   SlozhOkluzh Сложность отключения участка для устранения повреждения
+------   OtkluzhGkal Объем отключаемых потребителей, при повреждении, Гкал/ч
+------   AvariiVipoln Сложность выполнения аварийно-восстановительных работ
+------   Pesehod Прокладка трубопроводов под пешеходными зонами
+------   ZhdDorogi Прокладка трубопроводов под авто и ж/д дорогами
+------   LudiProklad Прокладка трубопровода в местах массового скопления жителей города
+------   UzherbLudi Нанесение ущерба населению от подтопления при возможном повреждении трубопроводов
+------   UzherbSity Нанесение ущерба инфраструктуре города  при возможном повреждении трубопроводов
+------ Технические фактры риска
+------   VnesniiVid Внешний вид
+------   SostOborudovania Состояние оборудования
+------   VnesnKorrozia Степень внешней коррозии
+------   VnunrenKorrozia Степень внутренней коррозии
+------   SostKonstrukz Состояние строительных конструкций
+------   Kategorii Категории нарушений
+-!Дополнительные
+Ремонты
+  $table_view_defect Нарушения
+  $table_view_remont Ремонты (устарело)
+  $table_view_shurf Шурфы
+  $pipeSections_osmotr_history История осмотров
+  $pipeSections_remont_history История ремонтов
+--  $pipeSections_faktory_riska Последние факторы риска (только для просмотра)
+--  $table_view_cut_out Вырезки
+--  $table_view_certification Освидетельствования
+--Ремонты
+--  $remont_defekt2 Повреждения
+--  $remont_shurf2 Шурфы
+--  $control_tu Контроль технического состояния
+Объекты ПТС
+  $table_view_drenazhnyy_kran Дренажный кран
+  $table_view_vozdushnik Воздушник
+  $table_view_zapornaya_armatura Запорная арматура
+  $table_view_kompensator Компенсатор
+  $table_view_kolodtsy Колодец
+  $table_view_opora Опора
+  $table_view_peremychki Перемычки
+  $table_view_drenazhnyy_truboprovod Дренажный трубопровод
+  $table_view_duker Дюкер
+  $table_view_shield Щит
+  $table_view_bridge_crossing Мостовой переход
+  $table_view_pavilion Павильон
+  $table_view_tkamera Тепловая камера
+  $table_view_indikator_korrozii Индикатор коррозии
+--Добавить
+--  $pipeSections_osmotr_history История осмотров
+--  $pipeSections_remont_history История ремонтов
+--  $pipeSections_faktory_riska Последние факторы риска (только для просмотра)
+-!Факторы риска
+Социальные факторы
+    Elektrich
+    TransportElekricht
+    floodIntensityBWid
+    floodIntensityFWid
+    floodIntensityGWid
+    floodIntensityTWid
+    Vodootved
+    SlozhOkluzh
+    AvariiVipoln
+    Pesehod
+    ZhdDorogi
+    LudiProklad
+    OtkluzhGkal
+    UzherbLudi
+    UzherbSity
+Технические факторы
+    nalichie_korrozii_podachaID
+    nalichie_korrozii_obratkaID
+    sostoyanie_metalla_truboprovodaID
+    VnesnKorrozia
+    VnunrenKorrozia
+    sostoyanie_teplovoj_izolyacii_podachaID
+    sostoyanie_teplovoj_izolyacii_obratkaID
+    sostoyanie_naruzhnogo_pokrytiya_podachaID
+    sostoyanie_naruzhnogo_pokrytiya_obratkaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_podachaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_obratkaID
+----
+    zashemID
+    sost_podvID
+    sost_oporID
+    nalich_obrKlID
+---
+    harakter_gruntaID
+    poverhnost_nad_trassojID
+    podtoplenie_do_truby
+--
+    konstrukciya_drenazhnogo_ustrojstvaID
+    vnutrennee_sostoyanie_kanalaID
+    zanos_kanala_gruntomID
+    stroitelnye_konstrukcii_kanalaID
+    sostoyanie_stroitelnyh_konstrukcij_kanalaID
+--
+Технические факторы из ремонтов
+    SostKonstrukz
+    Vodootved
+    VnesniiVid
+    SostOborudovania
+    sostoyanie_metalla_truboprovodaID
+    zamena_kanala_procent
+    zamena_kompensatorov
+    rekonstrukciya_kamery_nachalnogo_uzla
+    rekonstrukciya_kamery_konechnogo_uzla
+    ustanovka_i_zamena_zadvizhek
+Результаты замеров
+   document_analiz_vlazhnost
+   document_analiz_korrozia
+   document_potenzial
+   document_analiz_vytyazhka

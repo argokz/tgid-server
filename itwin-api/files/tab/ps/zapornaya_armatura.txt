@@ -1,0 +1,35 @@
+-!Основные
+Основные
+--  mestoraspolozhenie Месторасположение старое
+-- Наменование узла ПТС местонахождения
+  stateID
+  nodeID_pts
+  nomer2
+  priznak_truboprovoda
+  diametr
+  god_vvoda
+  purposeTypesID Назначение 1
+  naznachenie Назначение 2
+  shema
+  locationTypesID Месторасположение
+  primechanie Примечание 1
+  nomer Примечание 2
+  prinadlezhnost Принадлежность (устарело)
+-!Конструкция
+Конструкция
+--
+--  naimenovanie_nachalnogo_uzla_truby
+--  naimenovanie_konechnogo_uzla_truby
+  naimenovanie_uzla_kamery_pavilona
+  armatureTypesID Тип арматуры
+  designTypesID Исполнение
+  materialTypesID Материал
+  constructionTypesID Конструкция
+  rabochee_davlenie
+  tip_prisoedineniya
+  vid_sharovogo_krana
+  tip_otklyucheniya
+  marka
+  zakrytaya
+  sposob_prisoedineniya
+-- Принадлеж

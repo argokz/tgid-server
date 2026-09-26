@@ -1,0 +1,14 @@
+Ввод в здание
+  nodeName Наименование ИТП/ЦТП
+  istochnik_tepla Принадлежность источнику тепла
+  prinadlezhnostTypesID
+  numberContract
+  address
+  meters
+  raschetnayaNagruzkaCO
+  srednyayaNagruzkaGV
+  maxNagruzkaGV
+  raschetnayaNagruzkaSV
+  vysotnaya_otmetka
+  sposob_vvoda
+  primechanie

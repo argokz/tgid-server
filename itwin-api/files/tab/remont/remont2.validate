@@ -1,0 +1,23 @@
+otchet_po_defektu NotNull Unique
+remontTypeID NotNull
+remontCatID NotNull
+data_utverzhdeniya_plana CurrentSea1son
+len_tube_plan NotNull
+diametr_trub_plan NotNull
+len_izol_plan NotNull
+len_channel_plan NotNull
+asfaltirovanie_plan NotNull
+vydelennye_sredstva_plan NotNull
+remontnyj_personal_plan NotNull
+teplovaya_setID NotNull
+-- Exists nomer_prikaza
+nomer_prikaza NotNIfExists data_prikaza_vvoda_v_ekspluataciyu
+
+data_prikaza_vvoda_v_ekspluataciyu NotNIfExists nomer_prikaza
+
+data_zaversheniya_remonta CheckFaktoryRiskaForRemont After data_nachala_remonta
+
+data_nachala_plan NotNull CurrentSeason
+data_okonchaniya_plan NotNull CurrentSeason After data_nachala_plan
+
+data_nachala_remonta NotNull CurrentSeason

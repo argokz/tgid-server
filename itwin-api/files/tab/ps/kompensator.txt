@@ -1,0 +1,20 @@
+Основные
+--   naimenovanie_nachalnogo_uzla_truby
+--   naimenovanie_konechnogo_uzla_truby
+   priznak_truboprovoda
+   constructionTypesID Конструкция
+--   tip_kompensatora
+   forma_radialnogo_kompensatora
+   vid_osevogo_kompensatora
+   diametr_truboprovoda
+   spina
+   vylet
+   nomer_kompensatora
+   god_vvoda
+   prinadlezhnost
+   shema
+   primechanie
+-   fizicheskoe_litso
+-   yuridicheskoe_litso
+-Добавили
+-   constructionTypesID

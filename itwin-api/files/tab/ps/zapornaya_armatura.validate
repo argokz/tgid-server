@@ -1,0 +1,5 @@
+stateID NotNull
+nodeID_pts NotNull
+nomer2 NotNull
+priznak_truboprovoda NotNull
+diametr NotNull

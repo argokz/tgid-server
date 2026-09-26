@@ -1,0 +1,19 @@
+Основные
+--  mestoraspolozhenie Месторасположение старое
+  locationTypesID Месторасположение
+--  naimenovanie_nachalnogo_uzla_truby
+--  naimenovanie_konechnogo_uzla_truby
+  naimenovanie_uzla_kamery_pavilona
+  priznak_truboprovoda
+  purposeTypesID Назначение
+  armatureTypesID Тип арматуры
+  designTypesID Исполнение
+  materialTypesID Материал
+  constructionTypesID Конструкция
+  diametr
+  rabochee_davlenie
+  god_vvoda
+  nomer
+  shema
+  primechanie
+  prinadlezhnost

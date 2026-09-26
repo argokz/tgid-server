@@ -1,0 +1,29 @@
+Основные
+--   naimenovanie_lep
+   naimenovanie_priemnika
+--   tip_priemnika
+   naimenovanie_istochnika
+--   tip_istochnika
+   mestopolozhenie
+   napryazhenie__kv
+   tip_prokladki_lep
+   marka_kabelya_linii
+   count_lep
+   protyazhennost__linii_m
+   protyazhennost__m
+   fidera
+   fidera_rez
+   data_vvoda_v_ekspluatatsiyu
+   vladelets_lep
+--   isp_s
+   primechanie
+   $view_documents$electroDocuments$remontDocumentTypes$ Документы
+Объекты ЛЭП
+   $table_view_priemnik_elektrosnabzheniya Приемник электроснабжения
+   $table_view_istochnik_elektrosnabzheniya Источник электроснабжения
+-----   
+   $table_view_opora_es Опора ЭС
+   $table_view_kabelnyy_kanal_es Кабельный канал
+   $table_view_mufta Муфта
+   $table_view_gilza_es Гильза
+

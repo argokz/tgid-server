@@ -1,0 +1,22 @@
+remontTypeID
+    1
+      len_tube_inv
+      len_izol_inv
+      $view_meropr$remontInvestTube$remontInvestTubeTypes$
+      len_channel_inv
+      $view_meropr$remontInvestChannel$remontInvestChannelTypes$
+      $view_meropr$remontInvestKamera$remontInvestChannelTypes$
+    2
+      len_tube_cap
+      len_izol_cap
+      $view_meropr$remontCapitalTube$remontCapitalTubeTypes$
+      len_channel_cap
+      $view_meropr$remontCapitalChannel$remontCapitalChannelTypes$
+      $view_meropr$remontCapitalKamera$remontCapitalChannelTypes$
+    3
+      len_tube_cur
+      len_izol_cur
+      $view_meropr$remontTube$remontTubeTypes$
+      len_channel_cur
+      $view_meropr$remontChannel$remontChannelTypes$
+      $view_meropr$remontKamera$remontChannelTypes$

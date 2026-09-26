@@ -1,0 +1,17 @@
+-!–егул€тор перепада давлени€
+–егул€тор перепада давлени€
+  regulatorStateID
+  nodeID
+-- Ќаименование узла с регулируемым напором
+  pipelineSignID
+  pressDropMean 
+--«начение регулируемого перепада давлени€, м.в.ст.
+  deltaH
+--
+--  regValveHydroRes
+--  consThroughRegValve
+--  thrustDropMean
+  regValveRelCap
+  maxLeakageCloseValve
+  consDrip
+  workAttrID

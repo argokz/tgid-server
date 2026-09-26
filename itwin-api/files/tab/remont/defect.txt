@@ -1,0 +1,120 @@
+--Для проверки
+--  $view_meropr$defectChannel$remontChannelTypes$ Перечень работ (канал)
+--  $view_meropr$defectKamera$remontChannelTypes$ Перечень работ (камеры)
+--    $view_meropr$defectTube$remontTubeTypes$ Перечень работ (трубопроводы)
+--    $view_meropr$defectMeropr$defectMeroprType$ Мероприятия
+--    $defect_elem Ремонт трубопроводов и элементов
+Местоположение
+--   show_map
+   $view_UT$ Участок теплопровода
+   $view_UTBIG$ Участок теплопровода ПТС
+   data_osmotra
+   vremya_osmotra
+   ulicaID
+   nomer_doma
+   remontTypeID
+   mestoPovrezhdenijaID
+   priznak_truboprovoda
+   nodeID_bizhajshej_kamery
+   rasstoyanieDoPovrezhdeniyaNachKamery
+   tipPoverhnostiID
+   dreniruemyj_truboprovodID
+-- Дренируемый трубопровод   Подача - обратка - оба
+--
+-- Камеры открытия дренажей  - список камер, из которых выливается вода
+   $kamery_list_for_defect Камеры открытия дренажей
+---
+   defectDescription
+   opresID
+--   osmotrID
+Документы
+--    Номер акта
+    $karta_povrezhaemosti Карта нарушения
+----
+    nomer_akta
+    data_sostavleniya_akta
+    $akt_rasledovania Акт расследования
+    nomer_prikaza
+    data_prikaza_vvoda_v_ekspluataciyu
+    prikaz_vvoda_v_ekspluataciyu
+    $view_documents$defectDocuments$remontDocumentTypes$ Документы
+--    $komissia Комиссия по расследованию (!!)
+-- -1 попробовать улучшить
+    $zhurnal_defect История нарушений на участке
+    $zhurnal_defect_word История нарушений на участке в MS Word
+--    $zhurnal_remont Журнал ремонтов на участке
+Нарушение
+   vid_narusheniyaID
+   remontCatID
+   $view_filtr$povrezhdennyiElementForDefect$povrezhdennyiElement$ Поврежденные элементы
+--   povrezhdennyiElementID
+   tipPovrezhdeniaID
+   tsentrPovrezhdenia
+   vysotaPovrezhdenia
+   shirinaPovrezhdenia
+   ploshchadPovrezhdenia
+   $view_filtr$prichinyPovrezhdeniaForDefect$prichinyPovrezhdenia$ Причины нарушения (технические)
+   $view_filtr$prichiny_narusheniya_organizacionnye_for_defect$prichiny_narusheniya_organizacionnye$ Причины нарушения (организационные)
+-
+   $view_filtr$soputstvuiushchiePrichinyForDefect$soputstvuiushchiePrichiny$ Сопутствующие причины
+-
+Дополнительные сведения
+   $view_filtr$sostKonstruktsiiKanalaForDefect$sostKonstruktsiiKanala$ Состояние конструкции канала
+   $view_filtr$sostKonstruktsiiKameryForDefect$sostKonstruktsiiKamery$ Состояние конструкции камеры
+   sostTeploizolID
+   sostNaruzhnoiPoverkhnostiID
+   sostVnutrenneiPoverkhnostiID
+Ремонт
+   stateID
+   vid_rabotID
+--   $vyd_rabot Вид работ (вставить!!!)
+--  Способ ликвидации нарушения (из списка)
+-- Начальная камера отключения от сети (выбрать)
+-- Конечная камера отключения от сети (выбрать)
+   nodeID1
+   nodeID2
+   meropriyatiya
+--   data_shurfovki
+   data_nachala_remonta
+   vremiaNachalaRemonta
+   data_zaversheniya_remonta
+   vremiaZaversheniaRemonta
+   trudozatratyNaRemont
+   stoimostRemonta
+   otchet_po_defektu
+Отключенные потребители
+    kolichestvo_otklyuchennyh_potrebitelej
+    $spisok_otkl_potr Список отключенных потребителей
+    kolichestvo_nedootpushchennoj_teplovoj_energii
+    zatraty_na_vosstanovlenie
+    inye_socialnye_posledstviya
+Описание ремонтных работ
+--   $view_filtr$defectTube$remontTubeTypes$spisokElementov$ Ремонт трубопроводов и элементов
+--   $view_filtr$defectTube$remontTruboprovodaSpisok$spisokElementov$ Ремонт трубопроводов и элементов
+   $defect_elem Ремонт трубопроводов и элементов
+   vysotaZaplatki
+   shirinaZaplatki
+   len_tube_cur
+   remontIzolKonstruktsiiID
+   len_izol_cur
+--   $view_filtr$defectChannel$remont_kanala$ Ремонт канала
+   remont_kanalaID
+   len_channel_cur
+   remont_kameryID
+--   $view_filtr$defectKamera$remont_kamery$ Ремонт камеры
+Комиссия по расследованию
+   predsedatel
+   dolzhnost_predsedatelya
+   chlen_tn_1
+   dolzhnost_tn_1
+   chlen_tn_2
+   dolzhnost_tn_2
+   chlen_tn_3
+   dolzhnost_tn_3
+Ответственный за ремонт
+  subdivisionID
+  responsibleID
+--  brigadesID
+--Все остальное
+--  primechanie
+

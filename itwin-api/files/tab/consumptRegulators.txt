@@ -1,0 +1,11 @@
+-!Регулятор расхода
+Регулятор расхода
+  regulatorStateID
+  regConsMean
+  deltaH
+  hydroResOpen
+  hydroResClose
+  regValveCap
+  relatLeakage
+  plumsConsumption
+  workAttrID

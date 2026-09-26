@@ -1,0 +1,57 @@
+--Самое начало
+Контур ремонта
+   utverdit
+--   plan_flag
+   $faktory_riska_truboprovoda_remont$ Список участков для ремонта
+   otchet_po_defektu
+   stateID
+   teplovaya_setID
+   harakteristika_uchastkov_remontiruemoj_teplovoj_seti
+   opisanie_rabot
+   remontTypeID
+План ремонта
+   remontCatID
+   data_nachala_plan
+   data_okonchaniya_plan
+   data_utverzhdeniya_plana
+   len_tube_plan
+   diametr_trub_plan
+   len_izol_plan
+   len_channel_plan
+   asfaltirovanie_plan
+   vydelennye_sredstva_plan
+   remontnyj_personal_plan
+--   $remont_utverdit Утвердить ремонт
+Ремонт
+   data_nachala_remonta
+   data_zaversheniya_remonta
+   harakteristika_rabot
+--   stateID
+---- ???
+   len_tube_cur
+   len_izol_cur
+   len_channel_cur
+   asfaltirovanie
+   vydelennye_sredstva
+   remontnyj_personal
+   rezultaty_remonta
+Нарушения
+--  $osmotr_defect_new_pick Новое нарушение
+  $remont_defect_list Список нарушений
+Отключенные потребители  
+--   $444 Список камер отключения от сети ???
+   kolichestvo_otklyuchennyh_potrebitelej
+   $spisok_otkl_potr Список отключенных потребтелей
+   kolichestvo_nedootpushchennoj_teplovoj_energii
+Документы
+   nomer_prikaza
+   data_prikaza_vvoda_v_ekspluataciyu
+   prikaz_vvoda_v_ekspluataciyu
+--   $view_documents$defectDocuments$remontDocumentTypes$ Документы
+   $view_documents$remontDocuments$remontDocumentTypes$ Документы
+   primechanie
+Ответственный за ремонт
+--   data_osmotra
+   subdivisionID
+   responsibleID
+--   debug

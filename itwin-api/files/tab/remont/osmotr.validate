@@ -1,0 +1,5 @@
+--otvetstvennoe_lico_ID ReadOnly
+otvetstvennoe_lico_ID NotNull
+data_osmotra NotNull
+name NotNull Unique
+

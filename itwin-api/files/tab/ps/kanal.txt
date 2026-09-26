@@ -1,0 +1,24 @@
+Основные
+  channelTypeID
+  constructionTypesID
+  overlapTypesID
+  materialTypesID
+  shirina__mm
+  vysota__mm
+  shirina__mm__out
+  vysota__mm__out
+  dlina__mm
+  diametr_truby__uslovnyy__mm
+  kolichestvo_drenazhnyh_liniy
+  nalichie_gidroizolyatsii
+  god_vvoda_poslednego_remonta
+  god_vvoda_v_ekspluatatsiyu
+  shema
+  primechanie
+  yuridicheskoe_litso
+  fizicheskoe_litso
+--Старые
+--  tip_kanala
+--  konstruktsiya
+--  material
+--Ремонт

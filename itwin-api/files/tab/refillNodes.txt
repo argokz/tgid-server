@@ -1,0 +1,17 @@
+Узел подпитки
+--  nodeID
+  externalSignID
+  refillExpend
+  WDO
+  refillLoss
+Бак аккумулятор
+  diameterInternal
+  waterVolUp
+  waterVolDown
+  waterVolUpSet
+  potsCount
+  potsSumVol
+  potWorkingSign
+  chargeExpend
+  dischargeExpend
+  setPressRet

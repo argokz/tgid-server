@@ -1,0 +1,4 @@
+Основные
+    naimenovanie_istochnika
+    tip_istochnika
+    shema

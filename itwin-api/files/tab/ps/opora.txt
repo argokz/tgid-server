@@ -1,0 +1,18 @@
+Основные
+  mestoraspolozhenie
+  geodezicheskaya_otmetka
+  priznak_truboprovoda
+--  naimenovanie_nachalnogo_uzla_truby
+--  naimenovanie_konechnogo_uzla_truby
+  naimenovanie_uzla_kamery_pavilona
+  vysotnaya_otmetka
+  stroitelnaya_konstruktsiya
+  nomer_opory
+  nomer_shvellera
+  vid_opory
+  constructionTypesID Тип конструкции
+  kolichestvo_uporov
+  prinadlezhnost
+  shema
+  primechanie
+  vysota_stroitelnaya_konstruktsi Высота строительной конструкции

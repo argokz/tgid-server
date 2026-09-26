@@ -1,0 +1,42 @@
+Расчетная схема
+  name Наименование
+  objectID Объект РС
+-  exploitRegionID Район эксплуатации ТСС
+  exploitSite Участок эксплуатации
+  belongMagistral Принадлежность магистрали
+  heatSourceID Источник тепла
+-  master Начальник Магистральных сетей
+-  performer Лицо, ответственное за подготовку данных
+-  fillDate Дата заполнения
+-  powerSystem МС,РС
+-  region РС
+-  passportNum МС,РС
+-  networkType Водянная, Паровая МС
+-  heatSource МС,РС
+-  projectOrganization Наименование проектной организации
+-  projectNum МС,РС
+-  avgWayLength м. Подача + Обратка МС,РС
+-  operPressure Давление МПа (кгс/см2)
+-  operTemperature Температура Град.С
+-  constructDate МС,РС
+-  exploitInitDate МС,РС
+-  balanceValue тенге МС
+-  balanceValueYear МС
+-  initChamber МС
+-  finalChamber МС
+-  lifetime лет МС,РС
+-  calcLifetime часов МС,РС
+-  calcStartsNum МС,РС
+-  purpose комунальные,промышленные,смешанные
+-  connectNode РС
+-  finalNode РС
+-  kod2
+-  uzel2
+-  registNum Регистрационный номер РС
+-  owner Предприятие владелец трубопроводов РС
+-  ownerAddress
+-  workingEnv вода,пар,
+-  projectDocuments Перечень схем, чертежей, свидетельств и др. на изг. и монтаж, предствленных при регистрации
+  responsiblePerson Ответственный
+-  passport` text,
+-  fileID` int(11) DEFAULT NULL

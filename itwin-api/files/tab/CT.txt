@@ -1,0 +1,47 @@
+ќсновные
+ id
+ name Ќаименование
+ nasel_point
+ year
+ begin_year
+ end_year
+ a
+ќжидаема€ среднемес€чна€ температура наружного воздуха
+ tn_long_1 €нварь 
+ tn_long_2 февраль 
+ tn_long_3 март 
+ tn_long_4 апрель 
+ tn_long_5 май 
+ tn_long_6 июнь 
+ tn_long_7 июль 
+ tn_long_8 август 
+ tn_long_9 сент€брь 
+ tn_long_10 окт€брь 
+ tn_long_11 но€брь 
+ tn_long_12 декабрь 
+ќжидаема€ среднемес€чна€ температура грунта
+ tgr_long_1 €нварь 
+ tgr_long_2 февраль 
+ tgr_long_3 март 
+ tgr_long_4 апрель 
+ tgr_long_5 май 
+ tgr_long_6 июнь 
+ tgr_long_7 июль 
+ tgr_long_8 август 
+ tgr_long_9 сент€брь 
+ tgr_long_10 окт€брь 
+ tgr_long_11 но€брь 
+ tgr_long_12 декабрь 
+ќжидаема€ среднемес€чна€ температура воздуха в подвалах
+ tpod_long_1 €нварь 
+ tpod_long_2 февраль 
+ tpod_long_3 март 
+ tpod_long_4 апрель 
+ tpod_long_5 май 
+ tpod_long_6 июнь 
+ tpod_long_7 июль 
+ tpod_long_8 август 
+ tpod_long_9 сент€брь 
+ tpod_long_10 окт€брь 
+ tpod_long_11 но€брь 
+ tpod_long_12 декабрь 

@@ -1,0 +1,24 @@
+Основные
+-  Обслуживающая организация
+-  Номер телефона
+-  Техник Астана-Теплотранзит
+  -owner Владелец
+  -name_massi Жилой массив
+  -name_stree Улица
+  -number_1 Номер дома
+  -function Назначение
+  -floor Этажность
+  countConsumers Количество потребителей
+  countResidents
+  countBusinessConsumers
+  countFloors Количество этажей
+  builtYear Год постройки
+  area Площадь здания, м2
+  buildingVolume Объем здания, м3
+  basementVolume Объем подвала, м3
+  builtInVolume Объем встроенных помещений, м3
+  reduceBuildingVolume Приведенный объем здания, м3
+  cityID Город
+  districtID Район
+  streetID Улица
+  houseNumber Номер дома

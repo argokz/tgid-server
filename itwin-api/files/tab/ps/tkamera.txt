@@ -1,0 +1,63 @@
+--Участок трубопровода
+--Код расчетной схемы узла
+--Наименование начального узла
+--Код расчетной схемы конечного узла
+--Наименование конечного узла
+--Признак участка трубопровода
+--Диаметр условный, мм
+--Принадлежность ПТС
+--Наименование начального узла ПТС
+--Наименование конечного узла ПТС
+--Узел ПТС
+--Участок МС
+--Участок РС
+--Магистраль
+--Источник тепла
+--Владелец
+--Документы
+Камера
+  $view_documents$tkameraDocuments$remontDocumentTypes$ Документы
+  vnutr_vysota_kamery Внутренняя высота, мм
+  vnutr_dlina_kamery Внутренняя длина, мм
+  vnutr_shirina_kamery Внутренняя ширина, мм
+--Толщина стенки, мм
+  constructionOverlapTypesID
+--   Конструкция камеры
+  constructionTypesID
+--   Конструкция перекрытия
+  razmery_perekrytiya Размеры перекрытия, мм
+  overlapTypesID Марка плиты перекрытия
+  dno_kamery Дно камеры, м
+  vozvyshenie_verha_plity_perekry Возвышение верха плиты перекрытия, мм
+  zaglublenie_ot_verha_lyuka_do_n Заглубление от верха люка до низа, мм
+  fakticheskoe_kolichestvo_lyukov Фактическое количество люков, шт
+  kolichestvo_deystvuyuschiy_lyukov Действующее количество люков, шт
+  nalichie_reshetok Наличие решеток
+  kolichestvo_chugunnyh_lyukov Количество чугунных люков, шт
+  kolichestvo_stalnyh_lyukov Количество стальных люков, шт
+--- Добавили для Харькова
+  kolichestvo_zhelezobet_lyukov Количество железобетонных люков, шт
+  kolichestvo_polymer_lyukov Количество полимерных люков, шт
+----
+  kolichestvo_zapirayuschih_lyukov Количество запирающих люков, шт
+--Количество дренажных люков, шт
+  kolichestvo_dren_liniy Количество дренажных линий, шт
+  harakteristika_dren_liniy Характеристика дренажных линий
+  kolichestvo_dren_kolodtsev Количество дренажных колодцев, шт
+  kolichestvo_tochek_zamera Количество точек замера, шт
+  harakteristika_tochek_zamera Характеристика точек замера
+  organizationID Балансовая принадлежность
+  $view_documents$tkameraDocuments$remontDocumentTypes$ Документы
+--  shema
+Примечание
+  primechanie
+Эксплуатации
+ god_vvoda_v_jekspluataciju Год ввода в эксплуатацию
+--Год последнего ремонта
+--Участок эксплуатации
+--Участок эксплуатации
+--Начальник участка
+--Ремонт
+--Ремонты
+Диагностика
+  $table_view_tk_diagnostika Состояния

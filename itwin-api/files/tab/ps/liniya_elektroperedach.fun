@@ -1,0 +1,4 @@
+protyazhennost__linii_m length
+protyazhennost__m length
+naimenovanie_priemnika ReadOnly
+naimenovanie_istochnika ReadOnly

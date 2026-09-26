@@ -1,0 +1,9 @@
+Основной
+ adres
+ ploschad_doma
+ nagruzka_otoplenie
+ nagruzka_gvs
+ administrativnyy_rayon
+ priznak_nalichiya_opu
+ ekspluatatsionnyy_rayon
+ istochnik_tepla

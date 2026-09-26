@@ -1,0 +1,72 @@
+Основные
+--
+   name_massi Квартал
+   name_stree Улица
+   number_1 Номер дома 1
+   number_2 Номер дома 2
+   build_addr Адрес
+   eksp_organ Организация
+----------   building_a
+----------   all_buildi
+----------   floor_dop
+----------   kolflat
+----------   kadastr_nu
+----------   gk_number
+----------   gk_data
+----------   note_
+----------   caption
+--   id_street_
+--   id_street1
+----------   id_adr_mas
+----------   material
+----------   status_dop
+----------   state_dop
+----------   ground_con
+----------   planshet_c
+----------   number_con
+----------   territoryi
+----------   function_dop
+----------   owner_dop
+----------   street_pr
+----------   number_pr
+----------   address_no
+--   arhiv_stre
+--   arhiv_st_1
+--   arhiv_hous
+--   arhiv_ho_1
+----------   year_const
+----------   id_style
+----------   ss
+----------   nezhil_pom
+----------   parkovochn
+--shape_leng
+--shape
+--name_stree_old
+--name_massi_old
+----------------
+   gid идентификатор группы
+   usl условия
+   nb_floors количество этажей
+   build_tape тип строения
+   build_stat статус строения
+   caption заголовок
+   name_dop дополнительное название
+   address_st улица
+   address_nu номер дома
+   s площадь по координатам, м2
+   v внешний объем по координатам и этажам, м3
+   q нагрузка по внешнему объему, Гкал/ч
+   build_year год постройки
+   build_year_excel год постройки из Excel
+   kol_kvartir_excel количество квартир из Excel
+   kol_zhilcov_excel количество жильцов из Excel
+   oplach_s_excel Оплачиваемая площадь из Excel, м2
+   q_ot нагрузка на отопление из Excel, ккал/ч
+   q_gvs максимальная нагрузка на ГВС из Excel, ккал/ч
+   pr принадлежность из Excel
+   file_excel файл Excel
+   floor_excel этаж из Excel
+   n_id_excel идентификатор из Excel
+   street_excel улица из Excel
+   house_excel дом из Excel
+   e геодезическая отметка

@@ -1,0 +1,71 @@
+Ремонт
+    tubingTypeID
+    len_tube
+    diameterCondit
+    diameterExternal
+    diameterInternal
+    wallThickness
+    len_channel
+    len_izol
+    isolMaterialID
+    isolationTypeID
+    isolThickness
+    externMaterialID
+    externCoverThick
+    anticorrMaterialID
+    asfaltirovanie
+Работы
+   $view_filtr$remontCapitalTube$remontCapitalTubeTypes$ Перечень работ (трубопроводы)
+   $view_filtr$remontChannel$remontChannelTypes$ Перечень работ (канал)
+   $view_filtr$remontKamera$remontChannelTypes$ Перечень работ (камеры)
+Социальные факторы
+--    id
+--    lineID
+--    objID
+--    obj_type_faktory_riskaID
+    Elektrich
+    $view_filtr$nalichie_vblizi_kommunikacij_for_shurfy$nalichie_vblizi_kommunikacij$ Наличие вблизи коммуникаций
+--    nalichie_vblizi_kommunikacijID
+    TransportElekricht
+    Pesehod
+    ZhdDorogi
+    LudiProklad
+    harakter_gruntaID
+    podtoplenie_do_truby
+    zanos_kanala_gruntomID
+Технические факторы
+    SostKonstrukz
+    sostoyanie_stroitelnyh_konstrukcij_kanalaID
+    vnutrennee_sostoyanie_kanalaID
+    konstrukciya_drenazhnogo_ustrojstvaID
+    Vodootved
+    VnesniiVid
+    SostOborudovania
+    nalichie_korrozii_podachaID
+    nalichie_korrozii_obratkaID
+    sostoyanie_metalla_truboprovodaID
+    sostoyanie_teplovoj_izolyacii_podachaID
+    sostoyanie_teplovoj_izolyacii_obratkaID
+    sostoyanie_naruzhnogo_pokrytiya_podachaID
+    sostoyanie_naruzhnogo_pokrytiya_obratkaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_podachaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_obratkaID
+--    len_tube
+--    diameterCondit
+--    diameterExternal
+--    diameterInternal
+--    wallThickness
+--    len_channel
+--    len_izol
+--    isolMaterialID
+--    isolationTypeID
+--    isolThickness
+--    externMaterialID
+--    externCoverThick
+--    anticorrMaterialID
+--    asfaltirovanie
+    zamena_kanala_procent
+    zamena_kompensatorov
+    rekonstrukciya_kamery_nachalnogo_uzla
+    rekonstrukciya_kamery_konechnogo_uzla
+    ustanovka_i_zamena_zadvizhek

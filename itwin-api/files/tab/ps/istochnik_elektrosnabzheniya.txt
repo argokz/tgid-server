@@ -1,0 +1,14 @@
+Основные
+--    naimenovanie_lep
+    naimenovanie_istochnika_es
+    typID
+---    tip_istochnika_es
+---    vladelets_istochnika_es
+    vladeltsy_es_ID
+---    nomer_akta_razdela_es
+---    data_vydachi_akta_razdela_es
+---    marka_transformatora_rp
+---    maksimalno_dopustimaya_nagruzka_vneshnego_vvoda_rp__kvt
+    primechanie
+    $view_documents$electroDocumentsIst$remontDocumentTypes$ Документы
+-- Попробовать сделать одну таблицу для документов

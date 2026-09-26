@@ -27,10 +27,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Auth / RBAC unit tests
+      - name: Unit tests (auth, calculations vs desktop formulas, topology, contracts)
         env:
           JWT_SECRET: ci-test-secret
           AUTH_DISABLED: 'false'
           MUTATIONS_ENABLED: 'false'
           TOPOLOGY_MUTATIONS_ENABLED: 'false'
-        run: pytest tests/test_auth.py -q
+        run: pytest tests -q
+
+      - name: OpenAPI schema builds
+        env:
+          JWT_SECRET: ci-test-secret
+        run: python -c "import main; print(len(main.app.openapi()['paths']), 'paths')"

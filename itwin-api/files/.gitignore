@@ -1,0 +1,7 @@
+# Генерируемые файлы не храним; справочники kls/tab нужны API на старте (utils/ini.py)
+*
+!.gitignore
+!kls/
+!kls/**
+!tab/
+!tab/**

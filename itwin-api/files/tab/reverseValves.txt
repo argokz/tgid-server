@@ -1,0 +1,17 @@
+-!Обратный клапан
+Обратный клапан
+   stateID
+   standardRevValveID
+   diameterInternal
+   pipelineLength
+   lineID
+--   locInstall
+Дополнительные
+   standardID
+--   tubeID
+--   tubeRoughness
+--   resCoeffsSum
+--   revValveCap
+--   relatLeakage
+--   hydroResOpen
+--   hydroResClose

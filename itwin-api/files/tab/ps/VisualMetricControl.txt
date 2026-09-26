@@ -1,0 +1,32 @@
+Контроль технического состояния 1
+    controlDate
+    controlOrganizationID
+    controlServiceID
+    controlConditionID
+    controlStageID
+    techCardNumber
+    pipeSectVisControlParamID
+    pipeSectVisControlMetalParamID
+    pipeSectMetricControlMetalParamID
+    pipeSectMetricControlPlasticParamID
+    defectsOrientation
+    defectLocation
+    passportConformity
+    serviceAvailability
+    serviceAvailabilityReasonID
+    coverageID
+    isolationID
+    jamAbsence
+    hangerAttachSpringState
+Контроль технического состояния 2
+    reverseValve
+    armatureInscriptionConformity
+    regNumTablesExist
+    nextInspectTableExist
+    defectsImage
+    techDocNumber
+    visControlResult
+    metricControlMetalResult
+    metricControlPlasticResult
+    inspectActNumber
+    exploitStopSolution

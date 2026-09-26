@@ -1,0 +1,10 @@
+Основные
+  naimenovanie_lep
+--  nomer_opory_es
+  tip__marka__harakteristika_
+--  data_ustanovki
+--  dolzhnost_otvetstvennogo__ispolnitelya_
+--  fio_otvetstvennogo__ispolnitelya_
+--  kontaktnye_dannye_telefon__el_pochta_
+  primechanie
+  $view_documents$opora_esDocuments$remontDocumentTypes$ Документы

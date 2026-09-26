@@ -1,0 +1,19 @@
+sredstvoDiagID
+    1
+        mesto_vskr
+        naznachenie_vskrID
+        nomer_akta_vskr
+        otchet_vskr
+        $view_documents$docDiagVskr$remontDocumentTypes$
+    2
+        mesto_vyr
+        naznachenie_vyrID
+        nomer_akta_vyr
+        otchet_vyr
+        $view_documents$docDiagVyr$remontDocumentTypes$
+    3
+        vneshny_vidID
+        sost_oborudID
+        sost_konstrID
+        otchet_osv
+        $view_documents$docDiagOsv$remontDocumentTypes$

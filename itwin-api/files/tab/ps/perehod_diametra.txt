@@ -1,0 +1,10 @@
+Основные
+   geodezicheskaya_otmetka
+   priznak_truboprovoda
+-   naimenovanie_nachalnogo_uzla_truby
+   vysotnaya_otmetka
+   nachalnyy_diametr
+   konechnyy_diametr
+   mesto_raspolozheniya
+   primechanie
+   prinadlezhnost

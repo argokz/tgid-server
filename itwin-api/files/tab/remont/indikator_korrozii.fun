@@ -1,0 +1,8 @@
+sredniy_ves_plastiny_pri_ustanovke__g NoEdit_average31
+sredniy_ves_plastiny_posle_ispytaniy__g NoEdit_average32
+regimID Hidden
+spisok_plastin_pri_ustanovke Hidden
+spisok_plastin_posle_ispytaniy Hidden
+-$save_r ind_save
+-$result ind_result
+--sostoyanie ReadOnly

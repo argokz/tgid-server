@@ -1,0 +1,11 @@
+utverdit utverdit
+nodeID_bizhajshej_kamery node_pick$rasstoyanie_do_blizhajshej_kamery
+fio_utverzhdaemogo ReadOnly
+dolzhnost_utverzhdaemogoID ReadOnly
+sluzhba_utverzhdaemogoID ReadOnly
+fio_viziruemogo_1 ReadOnly
+dolzhnost_viziruemogoID_1 ReadOnly
+naznachenie ReadOnly
+--naznachenie_vskrID ReadOnly
+utverdit ReadOnly
+sostoyanie_shurfaID ReadOnly

@@ -1,0 +1,24 @@
+Основные
+  name_dop
+  amount_tr
+  material_u
+  diametr_up
+  material_d
+  1diametr_do
+  state_dop
+  position_
+  id_style
+  owner_dop
+  planshet_c
+  ground_con
+  territoryi
+  note_
+  type_dop
+  temp_up
+  temp_down
+  id_style1
+  out_diamet
+  data_intro
+  ss
+  priznak_truboprovoda
+  diameter

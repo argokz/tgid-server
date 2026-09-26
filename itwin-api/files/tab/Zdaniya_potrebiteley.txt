@@ -1,0 +1,8 @@
+Здание потребителей
+  id
+  gorod
+  mikrorayon
+  ulitsa
+  dom
+  kod_rs_uzla_prisoedineniya
+  uzel_prisoedineniya

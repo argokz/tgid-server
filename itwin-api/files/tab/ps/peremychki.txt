@@ -1,0 +1,8 @@
+Основные
+   mesto_ustanovki
+   diametr_peremychki
+   otklyuchayuschaya_armatura
+   diametr_otklyuch_armatury
+   spusknaya_armatura
+   diametr_spuskn_armatury
+   prinadlezhnost

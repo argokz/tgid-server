@@ -1,0 +1,17 @@
+--ÒÅÕÍÈ×ÅÑÊÈÅ ÔÀÊÒÎĞÛ ĞÈÑÊÀ
+Ğåçóëüòàò îñìîòğà
+    harakter_gruntaID
+    podtoplenie_do_truby
+    zanos_kanala_gruntomID
+    stroitelnye_konstrukcii_kanalaID
+    sostoyanie_stroitelnyh_konstrukcij_kanalaID
+    konstrukciya_drenazhnogo_ustrojstvaID
+    nalichie_korrozii_podachaID
+    nalichie_korrozii_obratkaID
+    vnutrennee_sostoyanie_kanalaID
+    sostoyanie_teplovoj_izolyacii_podachaID
+    sostoyanie_teplovoj_izolyacii_obratkaID
+    sostoyanie_naruzhnogo_pokrytiya_podachaID
+    sostoyanie_naruzhnogo_pokrytiya_obratkaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_podachaID
+    sostoyanie_protivokorrozionnogo_pokrytiya_obratkaID

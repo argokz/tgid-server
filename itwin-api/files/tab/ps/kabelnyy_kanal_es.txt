@@ -1,0 +1,12 @@
+Основные
+   naimenovanie_lep
+--   nomer_kanala_es
+   tip__marka__harakteristika_
+   dlina_kanala
+   shema_kanala_v_razreze
+   data_ustanovki
+--   dolzhnost_otvetstvennogo__ispolnitelya_
+--   fio_otvetstvennogo__ispolnitelya_
+--   kontaktnye_dannye__telefon__el_pochta_
+   primechanie
+  $view_documents$kabelnyy_kanal_esDocuments$remontDocumentTypes$ Документы

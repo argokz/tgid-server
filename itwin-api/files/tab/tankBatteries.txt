@@ -1,0 +1,7 @@
+Бак-Аккумулятор
+    designCapacity
+    quantity
+    height
+    diameter
+    nodeid Потребитель
+

@@ -1,0 +1,23 @@
+-!Регулирующая арматура
+Регулирующая арматура
+  damperArmatureStateID
+  lineID
+  nodeID
+  name
+  regPDmean Значение регулируемого перепада давления на участке с регулирующей арматурой
+  diameterCondit
+  regArmType
+  regArmSign
+  damperOpenDeg
+  relLeakage
+-  h
+-  deltaH
+-  deltaQ
+-  q
+Дополнительные
+   rotationCount
+--   turnCount
+   gateControl
+   clue
+   thrustCollar
+-   opc

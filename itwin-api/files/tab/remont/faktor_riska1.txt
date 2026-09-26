@@ -1,0 +1,18 @@
+Социальные факторы
+    Elektrich
+    $view_filtr$nalichie_vblizi_kommunikacij_for_shurfy$nalichie_vblizi_kommunikacij$ Вблизи лежащие коммуникации
+    TransportElekricht
+    floodIntensityBWid
+    floodIntensityFWid
+    floodIntensityGWid
+    floodIntensityTWid
+    Vodootved
+    SlozhOkluzh
+    AvariiVipoln
+    Pesehod
+    ZhdDorogi
+    LudiProklad
+    OtkluzhGkal
+    UzherbLudi
+    UzherbSity
+    poverhnost_nad_trassojID

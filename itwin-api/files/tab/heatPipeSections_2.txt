@@ -1,0 +1,43 @@
+-!Участок трубопровода
+Участок трубопровода
+-  id
+-  lineID
+--  pipeSectionID
+  pipeSectStateIDflow
+  pipeSectStateIDret
+--  standardID
+-  standardTubeLink
+  diameterCondit
+  diameterInternal
+  diameterExternal
+  wallThickness
+  tubesCount
+--  pipeSectLength
+--  tubeRoughness
+--  localResSum
+--  localLosesShare
+-!Конструкция
+Конструкция
+  tubingTypeID
+  pipeRemontTypeID
+  calcHeatLosSignID
+  tubeTypeID
+-- Тип трубы
+  tubeCharactID
+--  channelID
+  signNumWork
+  heatTestsCoeff
+  isolMaterialID
+  isolationTypeID
+-
+  isolThickness
+  externMaterialID
+  externCoverThick
+  anticorrMaterialID
+-
+  isolMaterialHCcoeff
+--  isolHTcoeffUnder
+--  airGroundHTcoeffUnder
+  isolHTcoeffAbove
+  groundHCcoeff
+  pipelineAxesDist

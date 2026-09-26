@@ -1,0 +1,7 @@
+-- data_osmotra !!!
+nomer_akta NotNull data_osmotra
+data_sostavleniya_akta NotNull nomer_akta
+-- data_nachala_remonta !!!
+data_zaversheniya_remonta NotNull data_nachala_remonta
+nomer_prikaza NotNull data_zaversheniya_remonta
+data_prikaza_vvoda_v_ekspluataciyu NotNull nomer_prikaza

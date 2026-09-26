@@ -1,0 +1,15 @@
+Архив
+-  externalSignLineID
+-  location
+-  hydroRes
+-  organizationID
+-  registNum
+-  firstPICdate
+-  lastMaintDate
+-  displaySign
+  archiveChangeDate
+  operatorID
+-  coords
+-  typ
+-  removed
+-  idRemoved

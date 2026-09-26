@@ -1,0 +1,70 @@
+Ремонт
+  remontTypeID Вид работ
+  remontCatID
+  data_nachala_remonta
+  data_zaversheniya_remonta
+  stateID Состояние
+  $view_documents$remontDocuments$remontDocumentTypes$ Документы
+  otchet_po_defektu Характеристика работ
+Текущий ремонт
+  len_tube_cur
+  len_izol_cur
+  $view_meropr$remontTube$remontTubeTypes$ Перечень работ (трубопроводы)
+  len_channel_cur
+  $view_meropr$remontChannel$remontChannelTypes$ Перечень работ (канал)
+  $view_meropr$remontKamera$remontChannelTypes$ Перечень работ (камеры)
+-  job_tube_cur
+-  job_channel_cur
+-  job_kam_cur
+Капитальный ремонт
+  len_tube_cap
+  len_izol_cap
+  $view_meropr$remontCapitalTube$remontCapitalTubeTypes$ Перечень работ (трубопроводы)
+  len_channel_cap
+  $view_meropr$remontCapitalChannel$remontCapitalChannelTypes$ Перечень работ (канал)
+  $view_meropr$remontCapitalKamera$remontCapitalChannelTypes$ Перечень работ (камеры)
+-  job_tube_cap
+-  job_channel_cap
+-  job_kam_cap
+Инвестиционный ремонт
+  len_tube_inv
+  len_izol_inv
+  $view_meropr$remontInvestTube$remontInvestTubeTypes$ Перечень работ (трубопроводы)
+  len_channel_inv
+  $view_meropr$remontInvestChannel$remontInvestChannelTypes$ Перечень работ (канал)
+  $view_meropr$remontInvestKamera$remontInvestChannelTypes$ Перечень работ (камеры)
+-  job_tube_inv
+-  job_channel_inv
+-  job_kam_inv
+Ответственный за ремонт
+    subdivisionID
+    responsibleID
+Все остальное
+  data_osmotra
+  vremya_osmotra
+  primechanie
+-  rayon_ekspluatatsii
+-  uchastok_ekspluatatsii
+-  magistral
+-  uchastok_ms
+-  uchastok_rs
+-
+-
+- lineID
+- stateID
+- data_osmotra
+- vremya_osmotra
+- rayon_ekspluatatsii
+- uchastok_ekspluatatsii
+- magistral
+- uchastok_ms
+- uchastok_rs
+- kod_rs_nachalnoy_kamery
+- nachalnaya_kamera
+- kod_rs_konechnoy_kamery
+- konechnaya_kamera
+- otchet_po_defektu
+- dlina_zamenennoy_truby
+- data_nachala_remonta
+- data_zaversheniya_remonta
+- shape

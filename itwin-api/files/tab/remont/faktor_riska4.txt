@@ -1,0 +1,4 @@
+Вырезка
+   sostoyanie_metalla_truboprovodaID
+   VnesnKorrozia
+   VnunrenKorrozia

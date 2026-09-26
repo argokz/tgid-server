@@ -1,0 +1,63 @@
+-!Источник тепла
+Источник тепла
+- sourceName
+- Наименование источника тепла
+ name Наименование источника тепла
+ stateID Состояние
+ hSourceTypeID Тип источника
+ hSourceID Источник из ПС
+ hSourcePower
+ hSourcePowerInst
+ hSeasonBeginDate
+ hSeasonEndDate
+- hSourceCode
+ managerPhone
+ controllerPhone
+- powerSet
+- powerAvailable
+ temperDWflowSummer
+ temperDWretSummer
+ specVolHS
+ specVolVent
+- repairWorks
+-Нормативный расход сетевой воды в год аудита, т/ч
+- expendDWnorm1 В 1 характерной точке
+- expendDWnorm2 В 2 характерной точке
+- expendDWnorm3 В 3 характерной точке
+- expendDWnorm4 В 4 характерной точке
+- expendDWnorm5 В 5 характерной точке
+-Температурный график
+- name_tg
+- graphTypeID
+- tn_1
+- tn_5
+- tvn_r
+- t1_r
+- t2_r
+- t3_r
+- q_r
+- t1_2r
+- t1_4r
+- tvb_tr
+- uf
+- t2_2r
+- q_gv
+- tg_r
+- tx_r
+- t2_gv
+- pr
+- g1
+- g2
+- t_gv1
+- v Ветер
+- date_on
+- name_exe
+- name_manager
+-Точка излома ГВС
+- dt2_co
+- t2pod_parl
+- dt2v_sm_noavm
+- dt2v_sm_avm
+- t1pod_sm
+- t1pod_posll
+- dt2v_posl

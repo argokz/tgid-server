@@ -1,0 +1,17 @@
+Колодец
+    priznak_truboprovoda
+    diametr
+    purposeTypesID
+    characteristicTypesID
+    otmetka_dna
+    shema
+    primechanie
+Люк
+    characteristicTypesIDlyuki
+    materialTypesIDlyuki
+    constructionTypesIDlyuki
+    diametrLyuki
+    otmetka_lyuka
+--    sostoyanie
+--    material
+

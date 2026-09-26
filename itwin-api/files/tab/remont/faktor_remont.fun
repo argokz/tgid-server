@@ -1,0 +1,7 @@
+diameterInternal diameter_std
+diameterCondit diameter_std
+diameterExternal diameter_std
+wallThickness diameter_std
+obj_type_faktory_riskaID ReadOnly
+len_channel
+

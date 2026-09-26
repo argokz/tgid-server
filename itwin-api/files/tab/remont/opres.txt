@@ -1,0 +1,108 @@
+--Для отладки
+--    name
+--    istochnik_tepla
+--    nodeOprID1
+--    nodeOprID2
+--Результат опрессовки
+--    data_opres
+--    defects
+--    $view_meropr$opresMeropr$defectMeroprType$ Мероприятия
+--Ответственные
+---------    subdivisionI1D
+---------    responsibleID
+--    primechanie
+----------------
+Контур опрессовки
+    utverdit
+    $list_uch Список участков
+    name
+    opisaniye_kontura
+    istochnik_tepla
+    opres_typeID
+--    vid_ispytaniID
+    sostoyanie_opresID
+    $list_ms Описание магистральных сетей контура
+    $list_rs Описание распределительных сетей контура 
+    $granizy_razdela_opr Границы раздела
+--    $4 Объект Опрессовочного насоса
+--    $5 Узел Опрессовочного насоса
+    nodeOprID1 Узел Опрессовочного насоса
+    granitsa_razdela Примечание
+План Опрессовки
+    data_nachala_plan
+    data_okonchaniya_plan
+    data_utverzhdeniya_plana
+    davlenie_opressovki_1_etap
+    davlenie_opressovki_2_etap
+    temperatura_raskholazhivaniya_kontura
+    kolichestvo_zvenjev_obhodchikov
+Опрессовка
+    date_opres
+--    data_provedeniya_opressovki
+    vremya_provedeniya_opressovki
+    prodolzhitelnost_opressovki
+    $list_US_1 Манометры, план установки
+    $list_US_2 Переносные расходомеры, план установки
+--    $Добавить_поле Список трубопроводов, не участвующих в опрессовке
+    spisok_trub_ne_uchav
+    $list_PT Список подключаемых потребителей к контуру
+    ne_preduprezhdennye_potrebiteli
+    spisok_trub_ne_uchav
+--    $13 Список не предупрежденных потребителей
+    reshenie_komissii
+    otchet
+    primechanie
+Нарушения
+  $opres_defect_new_pick Новое нарушение
+  $opres_defect_list Список нарушений
+Документы
+    $view_documents$opresDocuments$remontDocumentTypes$ Рабочая программа опрессовок
+    data_utverzhdeniya_akta_ispytanij
+--    $view_documents$opresActs$remontDocumentTypes$
+    $OpresTableAkt Акт на проведение гидравлических испытаний
+    $view_documents$opresActs$remontDocumentTypes$ Акт испытаний
+--    akt_ispytanij
+--    granitsa_razdela
+--    vid_ispytaniID
+    otchet
+--    subdivision2ID
+--    responsibleID
+    primechanie
+--    objekt_opressovochnogo_nasosaID
+Ответственные/руководители
+    fio_utverzhdaemogo
+    dolzhnost_utverzhdaemogoID
+    podrazdelenie_utverzhdaemogoID
+-
+---    fio_rukovoditel_ispytanij
+---    dolzhnost_rukovoditel_ispytanijID
+---    podrazdelenie_rukovoditel_ispytanijID
+---
+    responsibleID
+    dolzhnost_rukovoditel_ispytanijID
+    subdivisionID
+--
+    fio_otvetstvennyj_za_obespechenie_rezhimov
+    dolzhnost_otvetstvennyj_za_obespechenie_rezhimovID
+    podrazdelenie_otvetstvennyj_za_obespechenie_rezhimovID
+    fio_otvetstvennyj_za_blank_pereklyuchenij
+    dolzhnost_otvetstvennyj_za_blank_pereklyuchenijID
+    podrazdelenie_otvetstvennyj_za_blank_pereklyuchenijID
+    fio_otvetstvennyj_za_ustanovku_manometrov_i_raskhodomerov
+    dolzhnost_otvetstvennyj_za_ustanovku_manometrov_i_raskhodomerovID
+    podrazdelenie_otvetstvennyj_za_ustanovku_manometrov_i_raskhodomerovID
+    fio_otvetstvennyj_za_obespechenie_avtotransportom
+    dolzhnost_otvetstvennyj_za_obespechenie_avtotransportomID
+    podrazdelenie_otvetstvennyj_za_obespechenie_avtotransportomID
+    fio_otvetstvennyj_za_priem_zayavok_ot_potrebitelej_na_uchastie_v_sovmestnoj_opressovke
+    dolzhnost_otvetstvennyj_za_priem_zayavok_ot_potrebitelej_na_uchastie_v_sovmestnoj_opressovkeID
+    podrazdelenie_otvetstvennyj_za_priem_zayavok_ot_potrebitelej_na_uchastie_v_sovmestnoj_opressovkeID
+    fio_otvetstvennyj_za_obespechenie_raboty_elektrooborudovaniya
+    dolzhnost_otvetstvennyj_za_obespechenie_raboty_elektrooborudovaniyaID
+    podrazdelenie_otvetstvennyj_za_obespechenie_raboty_elektrooborudovaniyaID
+    fio_otvetstvennyj_po_snip_kontura_istochnika_tepla
+    dolzhnost_otvetstvennyj_po_snip_kontura_istochnika_teplaID
+    podrazdelenie_otvetstvennyj_po_snip_kontura_istochnika_teplaID
+    fio_otvetstvennyj_za_opoveshchenie_naseleniya_o_ispytaniyah
+    dolzhnost_otvetstvennyj_za_opoveshchenie_naseleniya_o_ispytaniyahID
+    podrazdelenie_otvetstvennyj_za_opoveshchenie_naseleniya_o_ispytaniyahID

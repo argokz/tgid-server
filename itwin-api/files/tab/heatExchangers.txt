@@ -1,0 +1,5 @@
+Основные
+  stateID Состояние
+  heatExchType
+  heatExchCode
+  location

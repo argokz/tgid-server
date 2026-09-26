@@ -1,0 +1,11 @@
+Основные
+  naimenovanie_lep
+--  nomer_mufty_es
+  tip__marka__harakteristika_
+  rasstoyanie_do_priemnika__m
+  data_ustanovki
+--  dolzhnost_otvetstvennogo__ispolnitelya_
+--  fio_otvetstvennogo__ispolnitelya_
+  responsibleID
+  primechanie
+  $view_documents$muftaDocuments$remontDocumentTypes$ Документы

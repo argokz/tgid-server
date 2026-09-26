@@ -1,0 +1,18 @@
+Основные
+ id
+ kodkv
+ kvpot
+Коэффициенты вариации
+ otoplz
+ otopln
+ ventil
+ kondiz
+ txz
+ txop
+ txoo
+ gvz
+ gvop
+ gvoo
+ ut
+ cher
+ diam

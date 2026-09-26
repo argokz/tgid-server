@@ -1,0 +1,20 @@
+Контроль технического состояния
+     data_kontrolya
+     organizatsiya
+     rayon_ekspluatatsii
+     uchastok_ekspluatatsii
+-     magistral
+-     uchastok_ms
+-     uchastok_rs
+-     kod_rs_nachalnoy_kamery
+-     nachalnaya_kamera
+-     kod_rs_konechnoy_kamery
+-     konechnaya_kamera
+     otchet_po_izmereniyu
+     tip_pribora
+     data_gospoverki
+     preobrazovatel
+     master
+     master_udostoverenie
+     defektoskopist
+     defektoskopist_udostoverenie

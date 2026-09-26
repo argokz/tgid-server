@@ -1,0 +1,33 @@
+Приемник электроснабжения  
+--    naimenovanie_lep
+    naimenovanie_priemnika_es
+    typID
+--    tip_priemnika_es Убрать
+    maksimalno_dopustimaya_nagruzka_vneshnego_vvoda_rp__kvt
+--    nomer_akta_razdela_es
+--    data_vydachi_akta_razdela_es
+--    documents
+Электрооборудование
+    trans_pro_kol
+    trans_sob_kol
+    edv_pod_kol
+    edv_obr_kol
+    edv_dren_kol
+    edv_opr_kol
+    diz_kol
+    chast_reg_reg
+--    gr_pod
+    $view_link$transf$Перечень_трансформаторов$ Трансформаторы
+    $view_link$edv$Электродвигатели$ Электродвигатели
+    $view_link$dgu$ДГУ$ Дизель-генераторные установки (ДГУ)
+    $view_link$gruzob$Грузовое_оборудование$ Грузовое оборудование
+Общие данные
+--    naimenovanie_lep
+----    nomer_akta_razdela_es
+----    data_vydachi_akta_razdela_es
+----    data_vydachi_akta_razdela_es
+--    marka_transformatora_rp
+------    vladelets_priemnika_es
+    vladeltsy_es_ID
+    primechanie
+    $view_documents$electroDocumentsPr$remontDocumentTypes$ Документы

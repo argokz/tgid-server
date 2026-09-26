@@ -1,0 +1,4 @@
+Основные
+   length
+   nomer_chertezha
+   primechanie

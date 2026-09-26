@@ -1,0 +1,27 @@
+Участок РС
+  nomer_uchastka
+  magistral
+  kadastrovyy_nomer
+  inventarnyy_nomer
+  data_prisvoeniya_inventarnogo_nomera
+  naimenovanie_uchastka_rs
+  uzel_podklyucheniya
+  konechnyy_uzel
+  data_zapolneniya
+  registratsionnyy_nomer
+  prinadlezhnostID
+  predpriyatie_vladelets
+  adres_predpriyatiya_vladeltsa
+  naznachenie_rs
+  rabochaya_sreda
+  rabochee_davlenie
+  rabochaya_temperatura
+  raschetnyy_srok_sluzhby_let
+  raschetnyy_resurs_chasov
+  raschetnoe_chislo_puskov
+  proektnye_dokumenty
+--  passport Паспорт
+  nomer_prikaza
+  data_prikaza
+--  dolzhnost
+  responsibleID

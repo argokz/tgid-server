@@ -1,0 +1,12 @@
+Основные
+    naimenovanie_lep
+--    nomer_gilzy_es
+    tip__marka__harakteristika_
+    dlina_gilzy
+    shema_gilzy_v_razreze
+    data_ustanovki
+--    dolzhnost_otvetstvennogo__ispolnitelya_
+--    fio_otvetstvennogo__ispolnitelya_
+--    naimenovanie_lep2
+    primechanie
+    $view_documents$gilza_esDocuments$remontDocumentTypes$ Документы

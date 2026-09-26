@@ -1,0 +1,176 @@
+-- Основные 1
+-- Нагрузки 2
+-- Дроссели 3
+-- Оборудование 4
+-- Характерные точки 5
+-- Здание 6
+-- Договор 7
+-- Вывод на схему 8
+-- Строка заголовка окна 9
+-- Остальные 10
+-!Основные
+Основные
+  consumerStateID
+  schemeNum
+  automDegID
+  name
+  buildHeight
+  buildingTypeID
+  specExpendID
+  calcTemperatureID
+  gvsLoadGraphID
+  varCoeffID
+  accumCoeff
+  setLeakageFlow
+  setLeakageRet
+  WEmeteringDeviceID
+  volWaterHS
+  volWaterVS
+--  nodeID
+---  Сюда вставить Источник тепла по расч схеме
+  heatSourcePTSID
+  heatPointID
+  note_1
+  note_2
+----------------
+Гидравлические сопротивления
+    hydroResCloseSys
+    hydroResCloseSysSummer
+    closeSysCalcSignID  
+    hydroResWDOFlow
+    calcSignOpenSysFlowID
+    hydroResWDORet
+    calcSignResWDORetID
+---  2021.12.28 Нужно проверить
+--    calcSignSetLoadCloseSys
+--    calcSignSetLoadOpenSysFlow
+--    calcSignSetLoadOpenSysRet
+  parallHeatersCount1
+  parallHeatersCount2
+  parallHeatersCountIndep
+-!Нагрузки
+Нагрузки
+--  schemeNum
+  calcHLdep
+  calcHLindep
+--  relLoadFacade
+  calcInternHD
+  calcHLventil
+--  avgHLcond
+--  avgHLcloseSys
+--  avgHLopenSysFlow
+--  avgHLopenSysRet
+  avgHLGVSopenFlow
+  avgHLGVSopenRet
+  avgHLGVScloseParall
+  avgHLGVScloseMix
+  avgHLGVScloseConseq
+  avgHLGVSclosePreON
+  hourIrregCoeff
+  circHLosOpen
+  tempRecircPipe
+  calcTempHR
+  calcTempVS
+  calcTempHWDO
+-!Дроссели
+Дроссели
+  hydroModeSignID
+  throtStageSignID
+  temperChartSignID
+  diameterThrotDiaph
+  diameterElevNozzle
+  mixFactCoeff
+  calcThrustLosHS
+  calcThrustLosAH
+--  calcThrustLosAC
+  calcThrustLosFlow
+  calcThrustLosFlowCirc
+  calcThrustInWDO
+  calcThrustLosHeaters1
+  calcThrustLosHeaters2
+  PDvalveInstallLocID
+  setPDonRegulator
+  calcFerDiameterSignID
+-!Нагрузки договорные и перспективные
+Нагрузки договорные
+--  contAvgHLcond
+--  contAvgHLcloseSys
+--  contAvgHLopenSysFlow
+--  contAvgHLopenSysRet
+--  contAvgHLopenRet
+  contCalcHLdep
+  contcalcHLindep
+  contInternHD
+  contCalcHLventil
+  contAvgHLGVSopenFlow
+  contAvgHLGVSopenRet
+  contAvgHLGVScloseParall
+  contAvgHLGVScloseMix
+  contAvgHLGVScloseConseq
+  contAvgHLGVSclosePreON
+--  contRelLoadFacade
+Нагрузки перспективные
+  perspCalcHLdep
+  perspcalcHLindep
+--  perspRelLoadFacade
+  perspInternHD
+  perspCalcHLventil
+--  perspAvgHLcond
+--  perspAvgHLclose
+--  perspAvgHLopenFlow
+  perspAvgHLGVSopenFlow
+  perspAvgHLGVSopenRet
+  perspAvgHLGVScloseParall
+  perspAvgHLGVScloseMix
+  perspAvgHLGVScloseConseq
+  perspAvgHLGVSclosePreON
+-!Дополнительные
+Прибор учета
+  WEmeteringDeviceID
+  meterDevWorkSign
+  meterDevSafety
+  meterDevStampNum
+------------
+-- Нагрузки
+--  expendHWpart
+------------ Расходы
+------------   calcExpendDep
+------------   calcExpendIndep
+------------   calcExpendVentil
+------------   calcExpendCond
+------------   calcExpendHWFlow
+------------   calcExpendHWRet
+------------   calcExpendRecircOpen
+------------   calcExpendHWparall
+------------   calcExpendHWmix
+------------   calcExpendHWconseq
+------------   calcExpendHWpreON
+Договор
+  contractNumber
+--- Договора с теплоснабжающей организацией (Цеплять несколько)
+  $view_documents$realConsumerDocuments1$remontDocumentTypes$ Договора с теплоснабжающей организацией
+  streetID
+  houseNumber
+  countFloors
+  countBusinessConsumers
+  countUserGV
+  area
+  buildingVolume
+  basementVolume
+  builtInVolume
+--  reduceBuildingVolume
+  responsibleID
+--Остальные
+------------  calcSignRes
+------------  calcSignHL
+------------  stopValveTypeID
+------------  isolationType
+-----------------------
+--  builtYear
+Документы
+  $view_documents$realConsumerDocuments2$remontDocumentTypes$ Документы Службы режимов 
+  note_regime
+--  note_pts
+Наладка
+  hydroThrustIn
+  hydroThrustOut

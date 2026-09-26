@@ -1,0 +1,103 @@
+utverdit
+  0
+     utverdit
+     Утвердить ремонт
+     remontTypeID
+     remontCatID
+     data_nachala_plan
+     data_okonchaniya_plan
+     len_tube_plan
+     diametr_trub_plan
+     len_izol_plan
+     len_channel_plan
+     asfaltirovanie_plan
+     vydelennye_sredstva_plan
+     remontnyj_personal_plan
+     Утвердить ремонт
+  1
+     Список участков для ремонта
+     utverdit
+     Утвердить ремонт
+     remontTypeID
+     remontCatID
+     data_nachala_plan
+     data_okonchaniya_plan
+     data_utverzhdeniya_plana
+     len_tube_plan
+     diametr_trub_plan
+     len_izol_plan
+     len_channel_plan
+     asfaltirovanie_plan
+     vydelennye_sredstva_plan
+     remontnyj_personal_plan
+     Утвердить ремонт
+     data_utverzhdeniya_plana
+     -
+     harakteristika_uchastkov_remontiruemoj_teplovoj_seti
+     opisanie_rabot
+     data_nachala_remonta
+     data_zaversheniya_remonta
+     harakteristika_rabot
+     len_tube_cur
+     len_izol_cur
+     len_channel_cur
+     asfaltirovanie
+     vydelennye_sredstva
+     remontnyj_personal
+     rezultaty_remonta
+     Список камер отключения от сети ???
+     kolichestvo_otklyuchennyh_potrebitelej
+     Список отключенных потребтелей
+     kolichestvo_nedootpushchennoj_teplovoj_energii
+     nomer_prikaza
+     data_prikaza_vvoda_v_ekspluataciyu
+     prikaz_vvoda_v_ekspluataciyu
+     Документы
+     primechanie
+     subdivisionID
+     responsibleID
+     debug
+  2
+     Список участков для ремонта
+     utverdit
+-------------
+_     Утвердить ремонт
+_     remontTypeID
+_     remontCatID
+_     data_nachala_plan
+_     data_okonchaniya_plan
+_     data_utverzhdeniya_plana
+_     len_tube_plan
+_     diametr_trub_plan
+_     len_izol_plan
+_     len_channel_plan
+_     asfaltirovanie_plan
+_     vydelennye_sredstva_plan
+_     remontnyj_personal_plan
+_     Утвердить ремонт
+_     data_utverzhdeniya_plana
+-------------
+     harakteristika_uchastkov_remontiruemoj_teplovoj_seti
+     opisanie_rabot
+     data_nachala_remonta
+     data_zaversheniya_remonta
+     harakteristika_rabot
+     len_tube_cur
+     len_izol_cur
+     len_channel_cur
+     asfaltirovanie
+     vydelennye_sredstva
+     remontnyj_personal
+     rezultaty_remonta
+     Список камер отключения от сети ???
+     kolichestvo_otklyuchennyh_potrebitelej
+     Список отключенных потребтелей
+     kolichestvo_nedootpushchennoj_teplovoj_energii
+     nomer_prikaza
+     data_prikaza_vvoda_v_ekspluataciyu
+     prikaz_vvoda_v_ekspluataciyu
+     Документы
+     primechanie
+     subdivisionID
+     responsibleID
+     debug

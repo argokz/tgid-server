@@ -1,0 +1,9 @@
+tubingTypeID NotNull
+len_tube NotNull
+len_channel NotNull
+diameterCondit NotNull
+diameterExternal NotNull
+diameterInternal NotNull
+wallThickness NotNull
+len_izol NotNull
+asfaltirovanie NotNull

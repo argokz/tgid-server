@@ -1,0 +1,25 @@
+name NotNull Unique
+istochnik_tepla NotNull
+--opisaniye_kontura NotNull
+--vid_ispytaniID NotNull
+date NotNull CurrentSeason
+data_utverzhdeniya_plana CurrentSea1son
+data_nachala_plan NotNull CurrentSeason
+data_okonchaniya_plan NotNull CurrentSeason data_okonchaniya_plan After data_nachala_plan
+subdivisionID NotNull
+responsibleID NotNull
+davlenie_opressovki_1_etap NotNull
+davlenie_opressovki_2_etap NotNull
+temperatura_raskholazhivaniya_kontura NotNull
+--kolichestvo_zvenjev_obhodchikov NotNull
+opres_typeID NotNull
+istochnik_tepla NotNull
+fio_utverzhdaemogo NotNull
+dolzhnost_utverzhdaemogoID NotNull
+podrazdelenie_utverzhdaemogoID NotNull
+date_opres NotNull
+vremya_provedeniya_opressovki Pattern "^(([0-1]?[0-9]|2[0-3]):[0-5][0-9])$" "Время нужно заполнить в формате чч:мм" NotNull
+prodolzhitelnost_opressovki NotNull
+reshenie_komissii NotNull
+--data_utverzhdeniya_akta_ispytanij NotNull
+
