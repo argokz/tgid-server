@@ -1,4 +1,4 @@
-﻿# Р¤6.РћРїРѕСЂС‹
+﻿# Ф6.Опоры
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook

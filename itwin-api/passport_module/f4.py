@@ -1,4 +1,4 @@
-﻿# Р¤4.РљР°РјРµСЂС‹
+﻿# Ф4.Камеры
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -162,7 +162,7 @@ def write_header(ws):
     excel.write_text2(ws, 'J3:J4', 'Балансовая принадлежность', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'K3:K4', 'Примечание', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'L3:L4', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'M3:M4', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'M3:M4', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'C4', 'Высота, мм', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'D4', 'Ширина, мм', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'E4', 'Ширина, мм', excel.thin_border, alignment=excel.center_alignment, bold=False)

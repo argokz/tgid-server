@@ -1,4 +1,4 @@
-﻿# Р¤7.РЎРїРµС†.РєРѕРЅСЃС‚СЂ.
+﻿# Ф7.Спец.констр.
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook

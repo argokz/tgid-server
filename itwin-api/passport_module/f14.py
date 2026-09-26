@@ -1,4 +1,4 @@
-﻿# Р¤14.РћРїСЂРµСЃСЃРѕРІРєРё
+﻿# Ф14.Опрессовки
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -30,13 +30,13 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
 [Описание повреждения],
 [Способ ликвидации нарушения],
 
-[Р¤РРћ СЂСѓРєРѕРІРѕРґРёС‚РµР»СЏ РёСЃРїС‹С‚Р°РЅРёР№],
+[ФИО руководителя испытаний],
 [Должность руководителя испытаний],
 [Подразделение руководителя испытаний],
             
             
 [Участок эксплуатации],
-[Р¤РРћ РЅР°С‡Р°Р»СЊРЅРёРєР° СѓС‡Р°СЃС‚РєР°]
+[ФИО начальника участка]
 
     from getPts_test({id},'{ms_rs}','{fragments}')
     '''
@@ -74,9 +74,9 @@ def write_header(ws):
     excel.write_text2(ws, 'B4', 'Конечный узел', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'L4', 'Подразделение производившего работы ', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'M4', 'Должность ответственного', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'N4', 'Р¤РРћ РѕС‚РІРµС‚СЃС‚РІРµРЅРЅРѕРіРѕ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'N4', 'ФИО ответственного', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'O4', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'P4', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'P4', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
 
     ws.row_dimensions[4].height = 25 
 

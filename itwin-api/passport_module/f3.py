@@ -1,4 +1,4 @@
-﻿# Р¤3.РљР°РЅР°Р»С‹
+﻿# Ф3.Каналы
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook

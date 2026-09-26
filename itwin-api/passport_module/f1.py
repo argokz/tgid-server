@@ -1,4 +1,4 @@
-﻿# Р¤1.РўСЂСѓР±С‹
+﻿# Ф1.Трубы
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -109,7 +109,7 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
 
     row0, col0 = excel.write_table(ws, conn, q, row0=row0, numbers=False, freez=False)
     
-    q = f'''select 'РС‚РѕРіРѕ:', '', '', sum(lenP), '', sum(lenO) FROM ({q0}) T'''
+    q = f'''select 'Итого:', '', '', sum(lenP), '', sum(lenO) FROM ({q0}) T'''
 
     row0, col0 = excel.write_table(ws, conn, q, row0=row0, numbers=False, freez=False)
 

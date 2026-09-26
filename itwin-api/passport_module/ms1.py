@@ -48,7 +48,7 @@ def write_ms(ws, vals):
     cell = excel.write_text2(ws, 'C7:F7', vals.get('naimenovanie_magistrali', ''), border=underline_border)  # Магистраль №
     cell = excel.write_text2(ws, 'I7:K7', vals.get('nomer_pasporta', ''), border=underline_border)  # Паспорт №
     cell = excel.write_text2(ws, 'C8:K8', vals.get('vid_seti', ''), border=underline_border)  # Вид сети
-    cell = excel.write_text2(ws, 'D10:K10', vals.get('naimenovanie_istochnika', ''), border=underline_border)  # РСЃС‚РѕС‡РЅРёРє С‚РµРїР»РѕСЃРЅР°Р±Р¶РµРЅРёСЏ
+    cell = excel.write_text2(ws, 'D10:K10', vals.get('naimenovanie_istochnika', ''), border=underline_border)  # Источник теплоснабжения
     cell = excel.write_text2(ws, 'G12:K12', vals.get('', ''), border=underline_border)  # Название проектной организации и номер проекта
 
     cell = excel.write_text2(ws, 'A13:K13', vals.get('proektnaya_organizatsiya', ''), border=underline_border)  # -------//------------
@@ -61,7 +61,7 @@ def write_ms(ws, vals):
     cell = excel.write_text2(ws, 'H16:K16', vals.get('god_vvoda_v_ekspluatatsiyu', ''), border=underline_border)  # Год ввода в эксплуатацию
     cell = excel.write_text2(ws, 'E21:G21', vals.get('', ''), border=underline_border)  #
 
-    cell = excel.write_text2(ws, 'A1:K1', 'РўР•РҐРќРР§Р•РЎРљРР™ РџРђРЎРџРћР Рў', bold=True)
+    cell = excel.write_text2(ws, 'A1:K1', 'ТЕХНИЧЕСКИЙ ПАСПОРТ', bold=True)
     cell.alignment = alignment
 
     cell = excel.write_text2(ws, 'A3:C3', 'Дата заполнения')
@@ -83,7 +83,7 @@ def write_ms(ws, vals):
     cell.alignment = small_alignment
     ws.row_dimensions[9].height = height_small  # Устанавливаем высоту 10 (уменьшенная)
 
-    cell = excel.write_text2(ws, 'A10:C10', 'РСЃС‚РѕС‡РЅРёРє С‚РµРїР»РѕСЃРЅР°Р±Р¶РµРЅРёСЏ')
+    cell = excel.write_text2(ws, 'A10:C10', 'Источник теплоснабжения')
     cell = excel.write_text2(ws, 'E11:K11', '(ТЭЦ, ГРЭС)')
     cell.font = small_font
     cell.alignment = small_alignment

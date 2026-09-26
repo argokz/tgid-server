@@ -1,4 +1,4 @@
-﻿# Р¤10.Р РµРјРѕРЅС‚
+﻿# Ф10.Ремонт
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook

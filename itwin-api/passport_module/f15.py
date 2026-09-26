@@ -1,4 +1,4 @@
-﻿# Р¤15.РћСЃРјРѕС‚СЂ
+﻿# Ф15.Осмотр
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -79,7 +79,7 @@ def write_header(ws):
     excel.write_text2(ws, 'P4', 'Ответственное лицо', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'Q4', 'Подразделение проводившее работу', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'R4', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'S4', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'S4', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
     '''
 
     excel.write_text2(ws, 'A1:K1', 'Форма 15. Записи результатов осмотра трубопроводов', bold=True)
@@ -121,7 +121,7 @@ def write_header(ws):
     excel.write_text2(ws, 'P4:P5', 'Ответственное лицо', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'Q4:Q5', 'Подразделение проводившее работу', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'R4:R5', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'S4:S5', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'S4:S5', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
 
     ws.row_dimensions[4].height = 20
     ws.row_dimensions[5].height = 20

@@ -1,4 +1,4 @@
-﻿# Р¤8.РР·РѕР»СЏС†РёСЏ С‚СЂСѓР±
+﻿# Ф8.Изоляция труб
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -92,7 +92,7 @@ from getIsolTubesPts({id},'{ms_rs}','{fragments}')
     q = q0 +  '\norder by ps_ord'
 
 
-#    ws = wb.create_sheet(title="Р¤8.РР·РѕР»СЏС†РёСЏ С‚СЂСѓР±")
+#    ws = wb.create_sheet(title="Ф8.Изоляция труб")
     row0 = write_header(ws)
 
     r2, c2 = excel.write_table(ws, conn, q, row0=row0)
@@ -106,7 +106,7 @@ from getIsolTubesPts({id},'{ms_rs}','{fragments}')
 
 def write_header(ws):
 
-    excel.write_text2(ws, 'A1:K1', 'Р¤РѕСЂРјР° 8. РР·РѕР»СЏС†РёСЏ С‚СЂСѓР±', bold=True)
+    excel.write_text2(ws, 'A1:K1', 'Форма 8. Изоляция труб', bold=True)
 
     excel.write_text2(ws, 'A3:B3', 'Участок трассы', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'C3:D3', 'Теплоизоляционный материал', excel.thin_border, alignment=excel.center_alignment, bold=False)

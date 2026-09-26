@@ -1,4 +1,4 @@
-﻿# Р¤9.РћС‚РІРµС‚СЃС‚РІ.Р»РёС†Рѕ
+﻿# Ф9.Ответств.лицо
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -32,12 +32,12 @@ def write_header(ws):
     excel.write_text2(ws, 'A3:A4', 'Наименование фрагмента тепловой сети ', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'B3:B4', 'Район эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'C3:C4', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'D3:D4', 'Р¤РРћ РЅР°С‡Р°Р»СЊРЅРёРєР° СѓС‡Р°СЃС‚РєР°', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'D3:D4', 'ФИО начальника участка', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'E3:H3', 'Лицо, ответственное за исправное состояние и безопасную эксплуатацию трубопровода', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'E4', 'Номер приказа о назначении', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'F4', 'Дата приказа о назначении', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'G4', 'Должность', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'H4', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'H4', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
 
     ws.row_dimensions[4].height = 25 
 

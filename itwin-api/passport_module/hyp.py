@@ -19,7 +19,7 @@ def hyphen(sentence):
 
     dir = os.path.dirname(os.path.abspath(__file__)) + '/pyhyphen'
 
-    # РРЅРёС†РёР°Р»РёР·РёСЂСѓРµРј Hyphenator РґР»СЏ СЂСѓСЃСЃРєРѕРіРѕ СЏР·С‹РєР°
+    # Инициализируем Hyphenator для русского языка
     h = Hyphenator('ru_RU', directory=dir)
 
     words = sentence.split()  # Разделяем предложение на слова

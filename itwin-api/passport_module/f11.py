@@ -1,4 +1,4 @@
-﻿# Р¤11.РќР°СЂСѓС€РµРЅРёРµ
+﻿# Ф11.Нарушение
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -71,9 +71,9 @@ select distinct top 2147483647
     t.len_channel as 'Длина участка ремонта канала',
     t.subdivision as 'Подразделение производившего работы',
     t.dolzhnost as 'Должность ответственного',
-    t.fio_otv as 'Р¤РРћ РѕС‚РІРµС‚СЃС‚РІРµРЅРЅРѕРіРѕ',
+    t.fio_otv as 'ФИО ответственного',
     t.naimenovanie_uchastka as 'Участок эксплуатации',
-    t.fio as 'Р¤РРћ',
+    t.fio as 'ФИО',
     t.primechanie
 /*
     ,
@@ -216,9 +216,9 @@ def get_f11_old(id, ms_rs, fragments):
 
 [Подразделение производившего работы],
 [Должность ответственного],
-[Р¤РРћ РѕС‚РІРµС‚СЃС‚РІРµРЅРЅРѕРіРѕ],
+[ФИО ответственного],
 [Участок эксплуатации],
-[Р¤РРћ],
+[ФИО],
 [primechanie]
     
 
@@ -261,9 +261,9 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
 
 #        '\'Подразделение производившего работы\' as qq1',
 #        '\'Должность ответственного\' as qq2',
-#        '\'Р¤РРћ РѕС‚РІРµС‚СЃС‚РІРµРЅРЅРѕРіРѕ\' as qq3',
+#        '\'ФИО ответственного\' as qq3',
 #        '\'Участок эксплуатации\' as qq4',
-#        '\'Р¤РРћ\' as qq5',
+#        '\'ФИО\' as qq5',
 #        '\'Примечание\' as qq6',
 
     ]
@@ -409,9 +409,9 @@ def write_header(ws):
     excel.write_text2(ws, 'R4:R6', 'Длина участка ремонта канала, м', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'S4:S6', 'Подразделение производившего работы ', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'T4:T6', 'Должность ответственного', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'U4:U6', 'Р¤РРћ РѕС‚РІРµС‚СЃС‚РІРµРЅРЅРѕРіРѕ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'U4:U6', 'ФИО ответственного', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'V4:V6', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'W4:W6', 'Р¤РРћ ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'W4:W6', 'ФИО ', excel.thin_border, alignment=excel.center_alignment, bold=False)
 
 #    ws.row_dimensions[4].height = 25 
 

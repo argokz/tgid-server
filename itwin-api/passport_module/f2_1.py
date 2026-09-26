@@ -1,4 +1,4 @@
-﻿# Р¤2_1.РњРµС…Р°РЅРёС‡РµСЃРєРѕРµ РѕР±РѕСЂСѓРґРѕРІР°РЅРёРµ
+﻿# Ф2_1.Механическое оборудование
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -129,7 +129,7 @@ def write_header(ws):
     for ii in range(2):
         excel.write_text2(ws, 'D5', 'Назначение', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
         excel.write_text2(ws, 'E5', 'Тип', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
-        excel.write_text2(ws, 'F5', 'РСЃРїРѕР»РЅРµРЅРёРµ', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
+        excel.write_text2(ws, 'F5', 'Исполнение', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
         excel.write_text2(ws, 'G5', 'Материал', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
         excel.write_text2(ws, 'H5', 'Конструкция', excel.thin_border, alignment=excel.center_alignment, dx=ii*5, bold=True)
 

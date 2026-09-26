@@ -32,7 +32,7 @@ def write_rs(ws, vals):
 
     alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-    cell = excel.write_text2(ws, 'A1:K1', 'РўР•РҐРќРР§Р•РЎРљРР™ РџРђРЎРџРћР Рў')
+    cell = excel.write_text2(ws, 'A1:K1', 'ТЕХНИЧЕСКИЙ ПАСПОРТ')
     cell.alignment = alignment
    
     cell = excel.write_text2(ws, 'A4:C4', 'Дата заполнения')

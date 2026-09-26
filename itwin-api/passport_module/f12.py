@@ -1,4 +1,4 @@
-﻿# Р¤12.РЁСѓСЂС„РѕРІРєРё
+﻿# Ф12.Шурфовки
 
 import psycopg2 as pyodbc
 from openpyxl import Workbook
@@ -30,12 +30,12 @@ def do_passport(c, ws, ms_rs, id, fragments, mark_line, mark_pts):
 [Номер акта],
 [Результаты осмотра],
 [Примечание],
-[Р¤РРћ СѓС‚РІРµСЂР¶РґР°СЋС‰РµРіРѕ],
+[ФИО утверждающего],
 [Должность утверждающего],
 
 [Служба утверждающего],
 [Участок эксплуатации],
-[Р¤РРћ РЅР°С‡Р°Р»СЊРЅРёРєР° СѓС‡Р°СЃС‚РєР°]
+[ФИО начальника участка]
     
 
     from getPts_shurf({id},'{ms_rs}','{fragments}')
@@ -137,11 +137,11 @@ def write_header(ws):
 
     excel.write_text2(ws, 'A4', 'Начальный узел', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'B4', 'Конечный узел', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'M4', 'Р¤РРћ СѓС‚РІРµСЂР¶РґР°СЋС‰РµРіРѕ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'M4', 'ФИО утверждающего', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'N4', 'Должность утверждающего', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'O4', 'Служба утверждающего', excel.thin_border, alignment=excel.center_alignment, bold=False)
     excel.write_text2(ws, 'P4', 'Участок эксплуатации', excel.thin_border, alignment=excel.center_alignment, bold=False)
-    excel.write_text2(ws, 'Q4', 'Р¤РРћ', excel.thin_border, alignment=excel.center_alignment, bold=False)
+    excel.write_text2(ws, 'Q4', 'ФИО', excel.thin_border, alignment=excel.center_alignment, bold=False)
 
     ws.row_dimensions[4].height = 25 
 
