@@ -234,6 +234,6 @@ def test_outage_rejects_line_of_internal_scheme():
     invalidate_outage_cache()
     conn = AsyncMock()
     conn.fetch = _net_fetch([_line(10, 1, 2)], [])
-    conn.fetchrow = AsyncMock(return_value={"id": 77, "internalnodeid": 2})
+    conn.fetchrow = AsyncMock(return_value={"id": 77, "internalnodeid": 2, "nodeid1": 5, "nodeid2": 6, "removed": 0})
     with pytest.raises(ValueError, match="внутреннюю схему узла 2"):
         asyncio.run(simulate_outage_isolation(conn, line_id=77))

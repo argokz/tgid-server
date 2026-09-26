@@ -170,16 +170,25 @@ async def simulate_outage_isolation(
     if line_id is not None:
         if line_id not in line_info:
             db_line = await conn.fetchrow(
-                "SELECT id, internalnodeid FROM linesobj WHERE id = $1", line_id
+                "SELECT id, internalnodeid, nodeid1, nodeid2, COALESCE(removed, 0) AS removed "
+                "FROM linesobj WHERE id = $1",
+                line_id,
             )
             if not db_line:
                 raise ValueError(f"Трубопровод с ID {line_id} не найден в базе данных.")
+            if db_line["removed"]:
+                raise ValueError(f"Трубопровод {line_id} удалён.")
+            if db_line["nodeid1"] is None or db_line["nodeid2"] is None:
+                raise ValueError(
+                    f"Трубопровод {line_id} не привязан к узлам расчётной схемы (нет nodeid1/nodeid2): "
+                    "это линия ГИС без топологии, отключение по ней не рассчитывается."
+                )
             if db_line["internalnodeid"] is not None:
                 raise ValueError(
                     f"Трубопровод {line_id} входит во внутреннюю схему узла {db_line['internalnodeid']}: "
                     "укажите этот узел или магистральный участок."
                 )
-            raise ValueError(f"Трубопровод с ID {line_id} удалён или отключён (обе трубы).")
+            raise ValueError(f"Трубопровод {line_id} отключён (обе трубы, pipesectstateid = 2).")
 
         target = line_info[line_id]
         isolated_lines.add(line_id)
