@@ -1,5 +1,6 @@
 -- gid6 excel2/sql2/Регулятор перепада.sql (шаблон gre). В исходнике признаки П/О были
--- испорчены двойной перекодировкой; здесь восстановлены.
+-- испорчены двойной перекодировкой; здесь восстановлены. Внутренний узел и узел отбора — LEFT JOIN,
+-- как в соседних запросах регуляторов: иначе регулятор вне внутренней схемы не выводился.
 -- $1: фрагмент
 SELECT eci.name AS kod_p, ni.externalnodename AS uzel_p, esi.name AS pr_p,
        ec1.name AS kod1,
@@ -21,15 +22,15 @@ SELECT eci.name AS kod_p, ni.externalnodename AS uzel_p, esi.name AS pr_p,
   JOIN nodes n2 ON n2.id = l.nodeid2
   JOIN externalcodes ec1 ON n1.externalcodeid = ec1.id
   JOIN externalcodes ec2 ON n2.externalcodeid = ec2.id
-  JOIN nodes ni ON ni.id = n1.internalnodeid
-  JOIN externalcodes eci ON ni.externalcodeid = eci.id
-  JOIN externalsigns esi ON ni.externalsignid = esi.id
-  JOIN nodes pdrn ON pdrn.id = pdr.nodeid
-  JOIN externalcodes pdrec ON pdrec.id = pdrn.externalcodeid
-  JOIN externalsigns pdres ON pdres.id = pdrn.externalsignid
+  LEFT JOIN nodes ni ON ni.id = n1.internalnodeid
+  LEFT JOIN externalcodes eci ON ni.externalcodeid = eci.id
+  LEFT JOIN externalsigns esi ON ni.externalsignid = esi.id
+  LEFT JOIN nodes pdrn ON pdrn.id = pdr.nodeid
+  LEFT JOIN externalcodes pdrec ON pdrec.id = pdrn.externalcodeid
+  LEFT JOIN externalsigns pdres ON pdres.id = pdrn.externalsignid
   LEFT JOIN workattributes wa ON wa.id = pdr.workattrid
   LEFT JOIN regulatorstates rs ON rs.id = pdr.regulatorstateid
   LEFT JOIN operators o ON o.id = l.operatorid
   LEFT JOIN organizations org ON org.id = l.organizationid
  WHERE n1.fileid = $1 AND l.removed = 0 AND n1.removed = 0 AND n2.removed = 0 AND n1.fileid = n2.fileid
- ORDER BY eci.name, ni.externalnodename, ec1.name, n1.externalnodename, l.id
+ ORDER BY eci.name NULLS FIRST, ni.externalnodename NULLS FIRST, ec1.name, n1.externalnodename, l.id
