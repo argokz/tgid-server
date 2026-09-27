@@ -1,24 +1,37 @@
-"""Изменение топологии сети: узлы, участки, разрезание, слияние, разворот.
+"""Изменение топологии сети: узлы, участки, разрезание, слияние, разворот, геометрия, отмена.
 
 Все операции (этап 8, Stage B):
-  * транзакционны: изменения, перенос зависимых объектов и запись audit_log — в одной
-    транзакции (audit через SAVEPOINT той же транзакции);
+  * транзакционны: изменения, перенос зависимых объектов, запись audit_log и журнала
+    отмены — в одной транзакции (audit через SAVEPOINT той же транзакции);
   * с оптимистичной блокировкой: клиент передаёт версию объекта, которую он видел
     (`version_token`), сервер берёт строку `SELECT … FOR UPDATE` и при несовпадении
     отвечает TopologyConflictError (HTTP 409 «объект изменён другим пользователем»);
   * «опасные» операции (split, merge, reverse) поддерживают dry-run: выполняются в
-    транзакции и откатываются, возвращая отчёт «что и куда будет перенесено».
+    транзакции и откатываются, возвращая отчёт «что и куда будет перенесено»;
+  * отменяемы (B5): before-image затронутых строк пишется в topology_undo_log
+    (database/topology_journal.py), `undo_last_operation` откатывает последнюю операцию
+    пользователя, если её объекты после неё не менялись (иначе 409).
 """
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Optional
 
 from audit import write_audit_log
 from database.connect import get_pool
 from database.outage_simulation import invalidate_outage_cache
+from database.topology_journal import (
+    JOURNAL_TABLE,
+    OperationJournal,
+    changed_since,
+    current_hashes,
+    journal_available,
+    restore_rows,
+)
 from database.topology_transfer import (
+    SPLIT_TRANSFER_RULES,
     apply_node_merge,
     line_dependency_report,
     node_dependency_report,
@@ -40,6 +53,10 @@ class _DryRunRollback(Exception):
 
 # Допуск для концов новой геометрии участка относительно его узлов, м (SRID 9998 — метры).
 GEOMETRY_ENDPOINT_TOLERANCE_M = 5.0
+# Радиус поиска узла-образца для нового узла (фрагмент, код, признак подачи/обратки), м.
+NEW_NODE_REFERENCE_RADIUS_M = 300.0
+# Парная труба при развороте: макс. расхождение трасс подачи и обратки (Хаусдорф), м.
+PAIR_LINE_MAX_DEVIATION_M = 1.0
 
 
 class TopologyDependencyError(Exception):
@@ -56,6 +73,10 @@ class TopologyConflictError(Exception):
     def __init__(self, conflicts: dict, message: str = "Объект изменён другим пользователем"):
         super().__init__(message)
         self.conflicts = conflicts
+
+
+class TopologyNothingToUndo(Exception):
+    """У пользователя нет неотменённых операций (404)."""
 
 
 # ---------------------------------------------------------------------------
@@ -175,30 +196,88 @@ async def get_versions(node_ids: list[int], line_ids: list[int]) -> dict:
         return result
 
 
-async def _audit(conn, actor: Optional[str], operation: str, table: str, record_id: Optional[int], data: dict) -> None:
-    if actor:
-        await write_audit_log(
-            changed_by=actor,
-            operation=operation,
-            table_name=table,
-            record_id=record_id,
-            new_data=data,
-            conn=conn,
-        )
+# ---------------------------------------------------------------------------
+# Транзакция операции: группа аудита + журнал отмены
+# ---------------------------------------------------------------------------
+
+class _Op:
+    """Контекст операции в транзакции: группа изменений, журнал before-image, аудит."""
+
+    def __init__(self, conn, journal: OperationJournal, group_id: str, actor: Optional[str]):
+        self.conn = conn
+        self.journal = journal
+        self.group_id = group_id
+        self.actor = actor
+
+    async def audit(self, operation: str, table: str, record_id: Optional[int], data: dict) -> None:
+        if self.actor:
+            await write_audit_log(
+                changed_by=self.actor,
+                operation=operation,
+                table_name=table,
+                record_id=record_id,
+                new_data=data,
+                change_group_id=self.group_id,
+                conn=self.conn,
+            )
 
 
-async def _run(dry_run: bool, body):
-    """Выполняет body(conn) в транзакции; dry_run — откатывает и возвращает отчёт."""
+def _journal_summary(operation: str, result: dict) -> dict:
+    """Краткое описание операции для списка отмены (без громоздких отчётов)."""
+    keep = (
+        "id", "node_id", "line_id", "pair_line_id", "new_node_id", "new_line_id",
+        "target_node_id", "source_node_id", "removed_lines", "relinked_lines", "fileid",
+    )
+    return {"operation": operation, **{k: result[k] for k in keep if k in result}}
+
+
+async def _run(dry_run: bool, body, operation: Optional[str] = None, actor: Optional[str] = None):
+    """Выполняет body(conn, op) в транзакции; dry_run — откатывает и возвращает отчёт.
+
+    operation задан (и не dry-run) — после body пишется запись журнала отмены, её id
+    возвращается в `operation_id` (None — журнал на этой БД не установлен).
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
         try:
             async with conn.transaction():
-                result = await body(conn)
+                group_id = str(uuid.uuid4())
+                if not dry_run:
+                    # триггеры legacy-аудита (log_changes) пишут строки с этой группой
+                    await conn.execute("SELECT set_config('tgid.current_group_id', $1, true)", group_id)
+                journal = await OperationJournal.open(conn, dry_run=dry_run or operation is None)
+                op = _Op(conn, journal, group_id, actor)
+                result = await body(conn, op)
                 if dry_run:
                     raise _DryRunRollback({"dry_run": True, **result})
+                if operation:
+                    result["operation_id"] = await journal.commit(
+                        conn,
+                        actor=actor,
+                        operation=operation,
+                        group_id=group_id,
+                        summary=_journal_summary(operation, result),
+                    )
                 return result
         except _DryRunRollback as e:
             return e.payload
+
+
+async def _capture_lines_with_passports(conn, op: _Op, line_ids: list[int]) -> None:
+    if not op.journal.enabled or not line_ids:
+        return
+    await op.journal.capture_ids(conn, "linesobj", line_ids)
+    await op.journal.capture(conn, "heatpipesections", "_r.lineid = ANY($1::int[])", list(line_ids))
+
+
+async def _capture_incident_lines(conn, op: _Op, node_ids: list[int]) -> None:
+    if not op.journal.enabled:
+        return
+    ids = await op.journal.capture(
+        conn, "linesobj", "(_r.nodeid1 = ANY($1::int[]) OR _r.nodeid2 = ANY($1::int[]))", list(node_ids),
+    )
+    if ids:
+        await op.journal.capture(conn, "heatpipesections", "_r.lineid = ANY($1::int[])", ids)
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +291,10 @@ async def move_node(
     expected_version: Optional[str] = None,
     actor: Optional[str] = None,
 ) -> dict:
-    async def body(conn):
+    async def body(conn, op):
         await _lock_active(conn, "node", [node_id], {node_id: expected_version})
+        await op.journal.capture_ids(conn, "nodes", [node_id])
+        await _capture_incident_lines(conn, op, [node_id])
         now = datetime.now()
         await conn.execute(
             """
@@ -263,10 +344,10 @@ async def move_node(
             "recalculated_lines": len(affected),
             "versions": await _versions(conn, "node", [node_id]),
         }
-        await _audit(conn, actor, "MOVE", "nodes", node_id, {"lng": lng, "lat": lat, **result})
+        await op.audit("MOVE", "nodes", node_id, {"lng": lng, "lat": lat, **result})
         return result
 
-    return await _run(False, body)
+    return await _run(False, body, "MOVE", actor)
 
 
 async def delete_node(
@@ -281,7 +362,7 @@ async def delete_node(
     другие ссылки (nodeid в зависимых таблицах) — чтобы не осиротить объекты молча.
     cascade=True — удалить узел вместе с инцидентными линиями и их паспортами.
     """
-    async def body(conn):
+    async def body(conn, op):
         await _lock_active(conn, "node", [node_id], {node_id: expected_version})
         now = datetime.now()
         incident_lines = await conn.fetch(
@@ -298,6 +379,8 @@ async def delete_node(
                 },
             )
         removed_lines = [r["id"] for r in incident_lines]
+        await op.journal.capture_ids(conn, "nodes", [node_id])
+        await _capture_lines_with_passports(conn, op, removed_lines)
         if removed_lines:
             await conn.execute(
                 "UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = ANY($1::int[])",
@@ -306,33 +389,138 @@ async def delete_node(
             await _soft_remove_heatpipesections(conn, removed_lines, now)
         await conn.execute("UPDATE nodes SET removed = 1, archivechangedate = $2 WHERE id = $1", node_id, now)
         result = {"node_id": node_id, "removed_lines": removed_lines, "cleared_references": node_deps}
-        await _audit(conn, actor, "DELETE", "nodes", node_id, {"cascade": cascade, **result})
+        await op.audit("DELETE", "nodes", node_id, {"cascade": cascade, **result})
         return result
 
-    return await _run(False, body)
+    result = await _run(False, body, "DELETE_NODE", actor)
+    invalidate_outage_cache()
+    return result
 
 
-async def create_node(lng: float, lat: float, actor: Optional[str] = None) -> int:
-    """Новый узел: блокировать нечего (объекта ещё нет)."""
-    async def body(conn):
+async def _new_node_reference(
+    conn,
+    lng: float,
+    lat: float,
+    fileid: Optional[int],
+    near_node_id: Optional[int],
+    near_line_id: Optional[int],
+) -> dict:
+    """Откуда новый узел берёт фрагмент (fileid), код (externalcodeid) и признак (externalsignid).
+
+    Без fileid/externalcodeid расчёт (sety читает узлы по fileID и JOIN externalCodes) узел
+    не увидит, а merge с соседним узлом ответит «разные фрагменты». Как при split:
+      1. явно указанный узел-образец (near_node_id);
+      2. участок (near_line_id): его начальный узел, fileid участка, internalnodeid участка;
+      3. ближайший активный узел основной сети в радиусе NEW_NODE_REFERENCE_RADIUS_M
+         (при явном fileid — ближайший узел этого фрагмента).
+    Явный fileid имеет приоритет; код тогда — от узла этого фрагмента или первый код фрагмента.
+    """
+    ref = None
+    source = None
+    if near_node_id is not None:
+        ref = await conn.fetchrow(
+            """
+            SELECT id, fileid, externalcodeid, externalsignid, internalnodeid
+            FROM nodes WHERE id = $1 AND COALESCE(removed, 0) = 0
+            """,
+            near_node_id,
+        )
+        if ref is None:
+            raise ValueError(f"Узел-образец {near_node_id} не найден или удалён")
+        source = "node"
+    elif near_line_id is not None:
+        ref = await conn.fetchrow(
+            """
+            SELECT n1.id, COALESCE(n1.fileid, l.fileid) AS fileid, n1.externalcodeid,
+                   n1.externalsignid, l.internalnodeid
+            FROM linesobj l LEFT JOIN nodes n1 ON n1.id = l.nodeid1
+            WHERE l.id = $1 AND COALESCE(l.removed, 0) = 0
+            """,
+            near_line_id,
+        )
+        if ref is None:
+            raise ValueError(f"Участок-образец {near_line_id} не найден или удалён")
+        source = "line"
+    if ref is None or (fileid is not None and ref["fileid"] != fileid):
+        nearest = await conn.fetchrow(
+            """
+            WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998) AS g)
+            SELECT n.id, n.fileid, n.externalcodeid, n.externalsignid, n.internalnodeid,
+                   ST_Distance(n.shape, p.g) AS distance
+            FROM nodes n, p
+            WHERE COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL AND n.fileid IS NOT NULL
+              AND n.internalnodeid IS NULL
+              AND ($4::int IS NULL OR n.fileid = $4)
+              AND ST_DWithin(n.shape, p.g, $3)
+            ORDER BY n.shape <-> p.g
+            LIMIT 1
+            """,
+            lng, lat, NEW_NODE_REFERENCE_RADIUS_M, fileid,
+        )
+        if nearest is not None:
+            ref, source = nearest, "nearest_node"
+    if fileid is not None and (ref is None or ref["fileid"] != fileid):
+        code = await conn.fetchval(
+            "SELECT min(id) FROM externalcodes WHERE fileid = $1 AND COALESCE(removed, 0) = 0", fileid,
+        )
+        return {"fileid": fileid, "externalcodeid": code, "externalsignid": 1,
+                "internalnodeid": None, "reference_node_id": None, "source": "fileid"}
+    if ref is None or ref["fileid"] is None:
+        raise ValueError(
+            "Не удалось определить фрагмент нового узла: рядом нет узлов сети "
+            f"(радиус {NEW_NODE_REFERENCE_RADIUS_M:g} м). Укажите фрагмент (fileid) или узел-образец."
+        )
+    return {
+        "fileid": ref["fileid"],
+        "externalcodeid": ref["externalcodeid"],
+        "externalsignid": ref["externalsignid"] if ref["externalsignid"] is not None else 1,
+        "internalnodeid": ref["internalnodeid"],
+        "reference_node_id": ref["id"],
+        "source": source,
+    }
+
+
+async def create_node(
+    lng: float,
+    lat: float,
+    actor: Optional[str] = None,
+    fileid: Optional[int] = None,
+    near_node_id: Optional[int] = None,
+    near_line_id: Optional[int] = None,
+) -> dict:
+    """Новый узел с фрагментом/кодом/признаком от узла-образца (см. _new_node_reference)."""
+    async def body(conn, op):
+        ref = await _new_node_reference(conn, lng, lat, fileid, near_node_id, near_line_id)
         new_id = await conn.fetchval(
             """
-            INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid)
+            INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
+                               fileid, externalcodeid, externalsignid, internalnodeid)
             VALUES (
               ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
               ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
               -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
               0,
               $3,
-              1 -- default node type (e.g. unknown or simple node)
+              1, -- простой узел
+              $4, $5, $6, $7
             ) RETURNING id
             """,
             lng, lat, datetime.now(),
+            ref["fileid"], ref["externalcodeid"], ref["externalsignid"], ref["internalnodeid"],
         )
-        await _audit(conn, actor, "INSERT", "nodes", new_id, {"lng": lng, "lat": lat})
-        return {"id": new_id}
+        op.journal.created("nodes", new_id)
+        result = {
+            "id": new_id,
+            "fileid": ref["fileid"],
+            "externalcodeid": ref["externalcodeid"],
+            "externalsignid": ref["externalsignid"],
+            "internalnodeid": ref["internalnodeid"],
+            "reference": {"source": ref["source"], "node_id": ref["reference_node_id"]},
+        }
+        await op.audit("INSERT", "nodes", new_id, {"lng": lng, "lat": lat, **result})
+        return result
 
-    return (await _run(False, body))["id"]
+    return await _run(False, body, "CREATE_NODE", actor)
 
 
 # ---------------------------------------------------------------------------
@@ -345,11 +533,11 @@ async def create_line(
     nodeid1_version: Optional[str] = None,
     nodeid2_version: Optional[str] = None,
     actor: Optional[str] = None,
-) -> int:
+) -> dict:
     if nodeid1 == nodeid2:
         raise ValueError("A line requires two different nodes")
 
-    async def body(conn):
+    async def body(conn, op):
         # Узлы-концы блокируются: их не должны удалить/сдвинуть, пока строится участок
         await _lock_active(conn, "node", [nodeid1, nodeid2], {nodeid1: nodeid1_version, nodeid2: nodeid2_version})
         valid = await conn.fetchval(
@@ -361,17 +549,19 @@ async def create_line(
         now = datetime.now()
         line_id = await conn.fetchval(
             """
-            INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate)
+            INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate, fileid)
             VALUES (
               $1,
               $2,
               ST_MakeLine((SELECT shape FROM nodes WHERE id = $1), (SELECT shape FROM nodes WHERE id = $2)),
               0,
-              $3
+              $3,
+              (SELECT fileid FROM nodes WHERE id = $1)
             ) RETURNING id
             """,
             nodeid1, nodeid2, now,
         )
+        op.journal.created("linesobj", line_id)
         try:
             # В asyncpg вложенная transaction создаёт SAVEPOINT. Без него любая SQL-ошибка
             # оставляет внешнюю транзакцию aborted, даже если исключение было поймано.
@@ -385,10 +575,11 @@ async def create_line(
                 )
         except Exception as e:
             logger.error(f"Error creating heatPipeSection (table might not exist or schema differs): {e}")
-        await _audit(conn, actor, "INSERT", "linesobj", line_id, {"nodeid1": nodeid1, "nodeid2": nodeid2})
+        await op.journal.created_where(conn, "heatpipesections", "_r.lineid = $1", line_id)
+        await op.audit("INSERT", "linesobj", line_id, {"nodeid1": nodeid1, "nodeid2": nodeid2})
         return {"id": line_id}
 
-    return (await _run(False, body))["id"]
+    return await _run(False, body, "CREATE_LINE", actor)
 
 
 async def delete_line(line_id: int, expected_version: Optional[str] = None, actor: Optional[str] = None) -> dict:
@@ -398,17 +589,20 @@ async def delete_line(line_id: int, expected_version: Optional[str] = None, acto
     (soft-delete сохраняет данные), но возвращается в отчёте, чтобы оператор
     знал, какие объекты теперь ссылаются на снятый участок.
     """
-    async def body(conn):
+    async def body(conn, op):
         await _lock_active(conn, "line", [line_id], {line_id: expected_version})
+        await _capture_lines_with_passports(conn, op, [line_id])
         now = datetime.now()
         equipment = await line_dependency_report(conn, line_id)
         await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = $1", line_id, now)
         await _soft_remove_heatpipesections(conn, [line_id], now)
         result = {"line_id": line_id, "dependent_equipment": equipment}
-        await _audit(conn, actor, "DELETE", "linesobj", line_id, result)
+        await op.audit("DELETE", "linesobj", line_id, result)
         return result
 
-    return await _run(False, body)
+    result = await _run(False, body, "DELETE_LINE", actor)
+    invalidate_outage_cache()
+    return result
 
 
 async def _soft_remove_heatpipesections(conn, line_ids: list, now) -> None:
@@ -426,6 +620,45 @@ async def _soft_remove_heatpipesections(conn, line_ids: list, now) -> None:
         )
 
 
+async def get_line_geometry(line_id: int) -> dict:
+    """Полная геометрия участка (WGS84) для правки вершин + узлы-концы и версия.
+
+    Геометрия из векторных тайлов для этого не годится: она обрезана по тайлам и упрощена.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT l.id, l.nodeid1, l.nodeid2, COALESCE(l.removed, 0) AS removed,
+                   l.archivechangedate, l.xmin::text AS xmin,
+                   ST_AsGeoJSON(ST_Transform(l.shape, 4326), 9) AS geojson,
+                   ST_Length(l.shape) AS length,
+                   ST_AsGeoJSON(ST_Transform(n1.shape, 4326), 9) AS n1,
+                   ST_AsGeoJSON(ST_Transform(n2.shape, 4326), 9) AS n2
+            FROM linesobj l
+            LEFT JOIN nodes n1 ON n1.id = l.nodeid1
+            LEFT JOIN nodes n2 ON n2.id = l.nodeid2
+            WHERE l.id = $1
+            """,
+            line_id,
+        )
+    if row is None or row["removed"]:
+        raise ValueError(f"Участок {line_id} не найден или удалён")
+    if row["geojson"] is None:
+        raise ValueError(f"У участка {line_id} нет геометрии")
+    return {
+        "line_id": line_id,
+        "nodeid1": row["nodeid1"],
+        "nodeid2": row["nodeid2"],
+        "coordinates": json.loads(row["geojson"])["coordinates"],
+        "node1": json.loads(row["n1"])["coordinates"] if row["n1"] else None,
+        "node2": json.loads(row["n2"])["coordinates"] if row["n2"] else None,
+        "length_m": round(float(row["length"]), 2) if row["length"] is not None else None,
+        "version": version_token(row["archivechangedate"], row["xmin"]),
+        "endpoint_tolerance_m": GEOMETRY_ENDPOINT_TOLERANCE_M,
+    }
+
+
 async def split_line(
     line_id: int,
     lng: float,
@@ -433,30 +666,60 @@ async def split_line(
     dry_run: bool = False,
     expected_version: Optional[str] = None,
     actor: Optional[str] = None,
+    review_to_new: Optional[dict] = None,
 ) -> dict:
     """Разрезает участок точкой, перенося зависимые объекты на нужную половину.
 
     dry_run=True — выполнить всё в транзакции, вернуть отчёт и откатить (ничего не
-    сохраняется). Отчёт показывает, что будет перенесено и что требует ручной проверки,
-    и версию участка (`versions`) — её клиент передаёт при подтверждении.
+    сохраняется). Отчёт показывает, что будет перенесено, что требует решения оператора
+    (`transferred.review_items`), и версию участка (`versions`) — её клиент передаёт при
+    подтверждении.
+
+    review_to_new (B2) — решение оператора по оборудованию без узла и позиции (задвижки,
+    диафрагмы, элеваторы, насосы…): {таблица: [id, …]} переносятся на новую (вторую)
+    половину, остальные остаются на первой. Если такое оборудование на участке есть, а
+    решения нет (None) — 409 с перечнем (угадывать размещение нельзя); {} — «всё на первой».
     """
-    async def body(conn):
+    async def body(conn, op):
         rows = await _lock_active(conn, "line", [line_id], {line_id: expected_version})
         before = _tokens("line", rows)
-        result = await _split_line_body(conn, line_id, lng, lat)
+        if op.journal.enabled:
+            await _capture_lines_with_passports(conn, op, [line_id])
+            for rule in SPLIT_TRANSFER_RULES:
+                try:
+                    async with conn.transaction():
+                        await op.journal.capture(conn, rule.table, "_r.lineid = $1", line_id)
+                except Exception:  # noqa: BLE001 - таблицы нет в этой БД
+                    continue
+        result = await _split_line_body(conn, line_id, lng, lat, review_to_new=review_to_new)
         if dry_run:
             return {**result, "versions": before}
+        review = result["transferred"].get("review") or {}
+        if review and review_to_new is None:
+            raise TopologyDependencyError(
+                "На участке есть оборудование без узла и позиции — укажите, на какую половину его отнести",
+                blockers={
+                    "review": result["transferred"].get("review_items", review),
+                    "requires_resolution": True,
+                },
+            )
+        op.journal.created("nodes", result["new_node_id"])
+        op.journal.created("linesobj", result["new_line_id"])
+        await op.journal.created_where(conn, "heatpipesections", "_r.lineid = $1", result["new_line_id"])
         result["versions"] = {
             **await _versions(conn, "line", [line_id, result["new_line_id"]]),
             **await _versions(conn, "node", [result["new_node_id"]]),
         }
-        await _audit(conn, actor, "SPLIT", "linesobj", line_id, {"lng": lng, "lat": lat, **result})
+        await op.audit("SPLIT", "linesobj", line_id, {"lng": lng, "lat": lat, **result})
         return result
 
-    return await _run(dry_run, body)
+    result = await _run(dry_run, body, "SPLIT", actor)
+    if not dry_run:
+        invalidate_outage_cache()
+    return result
 
 
-async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
+async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to_new: Optional[dict] = None) -> dict:
     now = datetime.now()
 
     # 1. Locate the clicked point on the original geometry. The fraction is
@@ -535,6 +798,7 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
         new_line_id=new_line_id,
         split_fraction=split_fraction,
         orig_nodeid2=orig_nodeid2,
+        review_to_new=review_to_new,
     )
 
     # 5. Усечение исходного участка до 0..f и перенос его конца на новый узел
@@ -588,75 +852,160 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Разворот участка (вместе с парной трубой подачи/обратки)
+# ---------------------------------------------------------------------------
+
+PAIR_SIGN = {2: 3, 3: 2}
+
+
+async def find_pair_line(conn, line_id: int, candidate: Optional[int] = None) -> Optional[dict]:
+    """Парная труба участка (подача ↔ обратка), как её видит десктоп.
+
+    gid8 (read_lines.cpp) склеивает в одну двухтрубную линию графа участки с теми же
+    nodeID1/nodeID2, тем же типом и теми же coords, если их externalSignLineID — 2 и 3
+    (подающий/обратный); GidWidget::swap затем разворачивает оба (`WHERE ID=nomP OR
+    ID=nomO`). Для участков, нарисованных в web (coords пуст), та же трасса проверяется по
+    геометрии: расхождение (Хаусдорф) не больше PAIR_LINE_MAX_DEVIATION_M.
+    candidate — проверить конкретный участок (пара из превью всё ещё пара?).
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT b.id,
+               CASE WHEN a.coords IS NOT NULL AND a.coords = b.coords THEN 'coords' ELSE 'geometry' END AS matched_by,
+               CASE WHEN a.shape IS NOT NULL AND b.shape IS NOT NULL
+                    THEN ST_HausdorffDistance(a.shape, b.shape) END AS deviation
+        FROM linesobj a
+        JOIN linesobj b
+          ON b.id <> a.id AND COALESCE(b.removed, 0) = 0
+         AND b.nodeid1 = a.nodeid1 AND b.nodeid2 = a.nodeid2
+         AND b.externalsignlineid = (CASE a.externalsignlineid WHEN 2 THEN 3 WHEN 3 THEN 2 END)
+         AND b.typ IS NOT DISTINCT FROM a.typ
+        WHERE a.id = $1 AND COALESCE(a.removed, 0) = 0
+          AND ($2::int IS NULL OR b.id = $2)
+          AND (
+                (a.coords IS NOT NULL AND a.coords = b.coords)
+             OR (a.shape IS NOT NULL AND b.shape IS NOT NULL
+                 AND ST_HausdorffDistance(a.shape, b.shape) <= $3)
+          )
+        ORDER BY (a.coords IS NOT NULL AND a.coords = b.coords) DESC,
+                 ST_HausdorffDistance(a.shape, b.shape) NULLS LAST, b.id
+        LIMIT 1
+        """,
+        line_id, candidate, PAIR_LINE_MAX_DEVIATION_M,
+    )
+    if row is None:
+        return None
+    return {
+        "line_id": row["id"],
+        "matched_by": row["matched_by"],
+        "deviation_m": round(float(row["deviation"]), 3) if row["deviation"] is not None else None,
+    }
+
+
+async def _reverse_report(conn, line_id: int) -> dict:
+    row = await conn.fetchrow(
+        """
+        SELECT nodeid1, nodeid2, externalsignlineid,
+               CASE WHEN shape IS NOT NULL THEN ST_NumPoints(shape) END AS points,
+               ST_Length(shape) AS length
+        FROM linesobj WHERE id = $1
+        """,
+        line_id,
+    )
+    n1, n2 = row["nodeid1"], row["nodeid2"]
+    sign_before = row["externalsignlineid"]
+    sign_after = reversed_external_sign(sign_before)
+    equipment = await plan_line_reverse(conn, line_id, n1, n2)
+    return {
+        "line_id": line_id,
+        "nodeid1": n2,
+        "nodeid2": n1,
+        "before": {"nodeid1": n1, "nodeid2": n2, "externalsignlineid": sign_before},
+        "after": {"nodeid1": n2, "nodeid2": n1, "externalsignlineid": sign_after},
+        "geometry": {
+            "reversed": row["points"] is not None,
+            "points": row["points"],
+            "length_m": round(float(row["length"]), 2) if row["length"] is not None else None,
+        },
+        "equipment": equipment,
+        "requires_confirmation": bool(equipment["directional"]),
+    }
+
+
 async def reverse_line(
     line_id: int,
     dry_run: bool = False,
     expected_version: Optional[str] = None,
     accept_direction_change: bool = False,
     actor: Optional[str] = None,
+    include_pair: bool = True,
+    pair_line_id: Optional[int] = None,
+    pair_version: Optional[str] = None,
 ) -> dict:
     """Разворот участка: nodeid1 <-> nodeid2, ST_Reverse(shape), externalsignlineid 4 <-> 5.
 
-    Как десктоп (GidWidget::swap). Оборудование остаётся на участке:
+    Как десктоп (GidWidget::swap): вместе с участком разворачивается парная труба
+    (подача ↔ обратка, см. find_pair_line), обе — в одной транзакции; dry-run отдаёт
+    отчёт по обеим (`pair`). Клиент подтверждает пару из превью (`pair_line_id`,
+    `pair_version`); если она перестала быть парой — 409. include_pair=False — только участок.
+
+    Оборудование остаётся на участке:
       * привязанное к узлу (регуляторы: nodeid — регулируемый узел) сохраняет узел;
       * не зависящее от направления (задвижки, диафрагмы…) не меняется;
       * зависящее от направления (насосы, обратные клапаны, элеваторы) меняет
         направление действия вместе с участком — применяется только с
         accept_direction_change=True (иначе 409 с отчётом), dry-run показывает список.
     """
-    async def body(conn):
-        rows = await _lock_active(conn, "line", [line_id], {line_id: expected_version})
-        row = await conn.fetchrow(
-            """
-            SELECT nodeid1, nodeid2, externalsignlineid,
-                   CASE WHEN shape IS NOT NULL THEN ST_NumPoints(shape) END AS points,
-                   ST_Length(shape) AS length
-            FROM linesobj WHERE id = $1
-            """,
-            line_id,
-        )
-        n1, n2 = row["nodeid1"], row["nodeid2"]
-        sign_before = row["externalsignlineid"]
-        sign_after = reversed_external_sign(sign_before)
-        equipment = await plan_line_reverse(conn, line_id, n1, n2)
-        report = {
-            "line_id": line_id,
-            "nodeid1": n2,
-            "nodeid2": n1,
-            "before": {"nodeid1": n1, "nodeid2": n2, "externalsignlineid": sign_before},
-            "after": {"nodeid1": n2, "nodeid2": n1, "externalsignlineid": sign_after},
-            "geometry": {
-                "reversed": row["points"] is not None,
-                "points": row["points"],
-                "length_m": round(float(row["length"]), 2) if row["length"] is not None else None,
-            },
-            "equipment": equipment,
-            "requires_confirmation": bool(equipment["directional"]),
-        }
+    async def body(conn, op):
+        pair = None
+        if include_pair:
+            pair = await find_pair_line(conn, line_id, candidate=pair_line_id)
+            if pair_line_id is not None and pair is None:
+                raise TopologyDependencyError(
+                    f"Участок {pair_line_id} больше не парный к {line_id} — обновите превью",
+                    blockers={"pair": {"line_id": pair_line_id, "valid": False}},
+                )
+        pid = pair["line_id"] if pair else None
+        ids = sorted({line_id, pid} - {None})
+        rows = await _lock_active(conn, "line", ids, {line_id: expected_version, **({pid: pair_version} if pid else {})})
+        report = await _reverse_report(conn, line_id)
+        pair_report = {**pair, **await _reverse_report(conn, pid)} if pid else None
+        directional = dict(report["equipment"]["directional"])
+        if pair_report:
+            for t, n in pair_report["equipment"]["directional"].items():
+                directional[t] = directional.get(t, 0) + n
+        report["pair"] = pair_report
+        report["pair_line_id"] = pid
+        report["requires_confirmation"] = bool(directional)
         if dry_run:
             return {**report, "versions": _tokens("line", rows)}
-        if equipment["directional"] and not accept_direction_change:
+        if directional and not accept_direction_change:
             raise TopologyDependencyError(
                 "Разворот изменит направление действия оборудования — подтвердите в превью",
-                blockers={"equipment": equipment["directional"], "requires_confirmation": True},
+                blockers={"equipment": directional, "requires_confirmation": True},
             )
-        await conn.execute(
-            """
-            UPDATE linesobj
-            SET nodeid1 = $2,
-                nodeid2 = $3,
-                externalsignlineid = $4,
-                shape = CASE WHEN shape IS NOT NULL THEN ST_Reverse(shape) ELSE NULL END,
-                archivechangedate = $5
-            WHERE id = $1
-            """,
-            line_id, n2, n1, sign_after, datetime.now(),
-        )
-        report["versions"] = await _versions(conn, "line", [line_id])
-        await _audit(conn, actor, "REVERSE", "linesobj", line_id, report)
+        await op.journal.capture_ids(conn, "linesobj", ids)
+        now = datetime.now()
+        for part in [report] + ([pair_report] if pair_report else []):
+            await conn.execute(
+                """
+                UPDATE linesobj
+                SET nodeid1 = $2,
+                    nodeid2 = $3,
+                    externalsignlineid = $4,
+                    shape = CASE WHEN shape IS NOT NULL THEN ST_Reverse(shape) ELSE NULL END,
+                    archivechangedate = $5
+                WHERE id = $1
+                """,
+                part["line_id"], part["after"]["nodeid1"], part["after"]["nodeid2"],
+                part["after"]["externalsignlineid"], now,
+            )
+        report["versions"] = await _versions(conn, "line", ids)
+        await op.audit("REVERSE", "linesobj", line_id, report)
         return {"success": True, **report}
 
-    result = await _run(dry_run, body)
+    result = await _run(dry_run, body, "REVERSE", actor)
     if not dry_run:
         invalidate_outage_cache()
     return result
@@ -685,7 +1034,7 @@ async def merge_nodes(
     if target_node_id == source_node_id:
         raise ValueError("Невозможно объединить узел с самим собой.")
 
-    async def body(conn):
+    async def body(conn, op):
         locked = await _lock_active(
             conn, "node", [target_node_id, source_node_id],
             {target_node_id: target_version, source_node_id: source_version},
@@ -787,6 +1136,14 @@ async def merge_nodes(
         if blockers:
             raise TopologyDependencyError("Узлы нельзя объединить: есть блокирующие объекты", blockers=blockers)
 
+        # before-image: оба узла, все участки источника (с паспортами), все переносимые ссылки
+        if op.journal.enabled:
+            await op.journal.capture_ids(conn, "nodes", [target_node_id, source_node_id])
+            await _capture_lines_with_passports(conn, op, relinked + connecting)
+            for ref_key in plan["transfer"]:
+                table, col = ref_key.split(".", 1)
+                await op.journal.capture(conn, table, f'_r."{col}" = $1', source_node_id)
+
         now = datetime.now()
         if connecting:
             await conn.execute(
@@ -839,14 +1196,18 @@ async def merge_nodes(
             **await _versions(conn, "node", [target_node_id]),
             **await _versions(conn, "line", relinked),
         }
-        await _audit(conn, actor, "MERGE", "nodes", target_node_id, report)
+        await op.audit("MERGE", "nodes", target_node_id, report)
         return {"success": True, **report}
 
-    result = await _run(dry_run, body)
+    result = await _run(dry_run, body, "MERGE", actor)
     if not dry_run:
         invalidate_outage_cache()
     return result
 
+
+# ---------------------------------------------------------------------------
+# Геометрия участка (правка вершин)
+# ---------------------------------------------------------------------------
 
 async def update_line_geometry(
     line_id: int,
@@ -854,11 +1215,11 @@ async def update_line_geometry(
     expected_version: Optional[str] = None,
     actor: Optional[str] = None,
 ) -> dict:
-    """Обновление геометрии полилинии (добавление/перемещение промежуточных вершин)."""
+    """Обновление геометрии полилинии (добавление/перемещение/удаление промежуточных вершин)."""
     if len(coordinates) < 2:
         raise ValueError("Полилиния должна содержать как минимум 2 точки.")
 
-    async def body(conn):
+    async def body(conn, op):
         await _lock_active(conn, "line", [line_id], {line_id: expected_version})
         line = await conn.fetchrow("SELECT id, nodeid1, nodeid2 FROM linesobj WHERE id = $1", line_id)
         geojson_geom = json.dumps({"type": "LineString", "coordinates": coordinates})
@@ -890,6 +1251,7 @@ async def update_line_geometry(
                 f"(допуск {GEOMETRY_ENDPOINT_TOLERANCE_M:g} м); для переноса конца переместите узел."
             )
 
+        await _capture_lines_with_passports(conn, op, [line_id])
         new_len = await conn.fetchval(
             """
             UPDATE linesobj l
@@ -910,9 +1272,120 @@ async def update_line_geometry(
             "new_length": round(float(new_len or 0), 2),
             "versions": await _versions(conn, "line", [line_id]),
         }
-        await _audit(conn, actor, "UPDATE_GEOMETRY", "linesobj", line_id, {"point_count": len(coordinates), **result})
+        await op.audit("GEOMETRY", "linesobj", line_id, {"point_count": len(coordinates), **result})
         return result
 
-    result = await _run(False, body)
+    result = await _run(False, body, "GEOMETRY", actor)
+    invalidate_outage_cache()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Отмена (B5)
+# ---------------------------------------------------------------------------
+
+def _journal_entry(row) -> dict:
+    summary = row["summary"]
+    if isinstance(summary, str):
+        summary = json.loads(summary)
+    return {
+        "operation_id": row["id"],
+        "operation": row["operation"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "summary": summary or {},
+        "objects": row["objects"],
+        "undo_supported": not row["unsupported"],
+    }
+
+
+async def last_undoable_operation(actor: Optional[str]) -> Optional[dict]:
+    """Последняя неотменённая операция пользователя (для кнопки «Отменить»); None — нечего."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if not await journal_available(conn):
+            return None
+        row = await conn.fetchrow(
+            f"""
+            SELECT id, operation, created_at, summary, unsupported,
+                   jsonb_array_length(before_rows) AS objects
+            FROM {JOURNAL_TABLE}
+            WHERE actor IS NOT DISTINCT FROM $1 AND undone_at IS NULL
+            ORDER BY id DESC LIMIT 1
+            """,
+            actor,
+        )
+    return _journal_entry(row) if row else None
+
+
+async def undo_last_operation(actor: Optional[str], operation_id: Optional[int] = None) -> dict:
+    """Отмена последней операции пользователя.
+
+    operation_id — операция, которую клиент показывал на кнопке: если последней стала другая
+    (отменили/сделали в другой вкладке) — 409. Строки, затронутые операцией, блокируются и
+    сверяются с их образом «после» (md5): изменённые после операции — 409 version_conflict,
+    ничего не трогаем. Иначе образы «до» восстанавливаются, созданные операцией строки
+    удаляются; запись журнала помечается отменённой, в audit_log пишется UNDO.
+    """
+    async def body(conn, op):
+        if not await journal_available(conn):
+            raise TopologyNothingToUndo("Журнал отмены не установлен в этой БД")
+        row = await conn.fetchrow(
+            f"""
+            SELECT id, operation, created_at, summary, unsupported, change_group_id::text AS group_id,
+                   after_hashes::text AS after_hashes, jsonb_array_length(before_rows) AS objects
+            FROM {JOURNAL_TABLE}
+            WHERE actor IS NOT DISTINCT FROM $1 AND undone_at IS NULL
+            ORDER BY id DESC LIMIT 1
+            FOR UPDATE
+            """,
+            actor,
+        )
+        if row is None:
+            raise TopologyNothingToUndo("Нет операций для отмены")
+        entry = _journal_entry(row)
+        if operation_id is not None and row["id"] != operation_id:
+            raise TopologyConflictError(
+                {"operation": {"expected": operation_id, "actual": row["id"]}},
+                "Последняя операция изменилась — обновите список",
+            )
+        if row["unsupported"]:
+            raise TopologyDependencyError(
+                "Операцию нельзя отменить: она затронула таблицы без первичного ключа",
+                blockers={"unsupported": row["unsupported"]},
+            )
+        after = json.loads(row["after_hashes"])
+        by_table: dict[str, list[int]] = {}
+        for k in after:
+            table, rid = k.rsplit(":", 1)
+            by_table.setdefault(table, []).append(int(rid))
+        current = await current_hashes(conn, by_table, lock=True)
+        changed = changed_since(after, current)
+        if changed:
+            raise TopologyConflictError(
+                {k: {**v, "removed": v["actual"] is None} for k, v in changed.items()},
+                "Объекты изменены после операции — отмена невозможна",
+            )
+        items = [
+            {"t": r["t"], "id": r["id"], "row": r["img"]}
+            for r in await conn.fetch(
+                f"""
+                SELECT e->>'t' AS t, (e->>'id')::int AS id,
+                       CASE WHEN jsonb_typeof(e->'row') = 'null' THEN NULL ELSE (e->'row')::text END AS img
+                FROM {JOURNAL_TABLE} j, jsonb_array_elements(j.before_rows) AS e
+                WHERE j.id = $1
+                """,
+                row["id"],
+            )
+        ]
+        report = await restore_rows(conn, items)
+        await conn.execute(
+            f"UPDATE {JOURNAL_TABLE} SET undone_at = now(), undone_by = $2, undo_group_id = $3::uuid WHERE id = $1",
+            row["id"], actor, op.group_id,
+        )
+        result = {"success": True, **entry, **report, "undone_group_id": row["group_id"]}
+        await op.audit("UNDO", JOURNAL_TABLE, row["id"], result)
+        return result
+
+    result = await _run(False, body, None, actor)
     invalidate_outage_cache()
     return result

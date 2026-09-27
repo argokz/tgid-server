@@ -10,8 +10,10 @@
   NODE      — объект привязан к узлу (nodeid): следует за своим узлом; узел nodeid2
               исходной линии теперь принадлежит новой половине.
   REVIEW    — нет ни геометрии, ни узла (задвижки, диафрагмы, элеваторы, насосы):
-              автоматически НЕ переносим (остаётся на первой половине), но помечаем
-              к ручной проверке оператором — «угадывать» размещение оборудования нельзя.
+              автоматически НЕ переносим — «угадывать» размещение оборудования нельзя.
+              Сценарий разрешения (B2): dry-run перечисляет объекты поштучно
+              (`review_items`), оператор указывает, какие уходят на вторую половину
+              (`review_to_new`), без решения запись разрезания отклоняется (409).
 
 Правила сверяются с реальной схемой БД при выполнении (таблицы/колонки, которых нет,
 пропускаются) — это защищает от расхождений схемы между базами.
@@ -117,6 +119,32 @@ def node_transfer_sql(table: str, node_column: str) -> str:
         WHERE d.lineid = $1 AND d.{col} = $3
         RETURNING d.id
     """
+
+
+# Колонки, по которым оператор узнаёт объект «на ручную проверку» в превью разрезания.
+REVIEW_LABEL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "dampers": ("name", "diametercondit", "damperarmaturestateid"),
+    "diaphragms": ("throtdiaphloc", "diameterinternal", "entrymark"),
+    "elevators": ("elevatortype", "diameternozzle", "entrymark"),
+    "systemradiators": ("name", "type", "count"),
+    "pumps": ("number", "thrust", "pumpstationid"),
+    "heatexchangers": ("heatexchtype", "heatexchcode", "location"),
+    "airheaters": ("airheatertype", "location"),
+}
+
+
+def review_items_sql(table: str, columns: tuple[str, ...]) -> str:
+    """Объекты на ручную проверку с опознавательными колонками. Параметр: $1 = line_id."""
+    cols = "".join(f", {_ident(c)}" for c in columns)
+    return f"SELECT id{cols} FROM {_ident(table)} WHERE lineid = $1 ORDER BY id"
+
+
+def review_transfer_sql(table: str) -> str:
+    """Перенос выбранных оператором объектов на новую половину.
+
+    Параметры: $1 = orig_line_id, $2 = new_line_id, $3 = id[]; только объекты исходной линии.
+    """
+    return f"UPDATE {_ident(table)} SET lineid = $2 WHERE lineid = $1 AND id = ANY($3::int[]) RETURNING id"
 
 
 def review_count_sql(table: str) -> str:
@@ -232,20 +260,32 @@ async def transfer_dependents(
     new_line_id: int,
     split_fraction: float,
     orig_nodeid2: int,
+    review_to_new: Optional[dict] = None,
 ) -> dict:
     """Переносит зависимые объекты на новую половину и возвращает отчёт.
 
     Должно вызываться ВНУТРИ транзакции split_line и ДО усечения геометрии
-    исходной линии. Возвращает:
+    исходной линии. review_to_new — решение оператора по REVIEW-оборудованию
+    ({table: [id, …]} → на новую половину; остальное остаётся на первой). Возвращает:
       {
         "moved": {table: n, ...},           # реально перенесено на новую половину
-        "review": {table: n, ...},          # оставлено на первой половине, к проверке
+        "review": {table: n, ...},          # оборудование без узла/позиции на участке (решает оператор)
+        "review_items": {table: [{id, attrs}]},  # оно же поштучно — для превью
+        "review_moved": {table: [id, ...]}, # перенесено по решению оператора
         "skipped": [table, ...],            # таблицы/колонки отсутствуют в схеме
       }
+    ValueError — в review_to_new id, которого нет на исходном участке.
     """
     moved: dict[str, int] = {}
     review: dict[str, int] = {}
+    review_items: dict[str, list] = {}
+    review_moved: dict[str, list] = {}
     skipped: list[str] = []
+    wanted = {str(t): {int(i) for i in ids} for t, ids in (review_to_new or {}).items() if ids}
+    review_tables = {r.table for r in SPLIT_TRANSFER_RULES if r.kind is TransferKind.REVIEW}
+    unknown_tables = sorted(set(wanted) - review_tables)
+    if unknown_tables:
+        raise ValueError(f"Решение по таблицам вне ручной проверки: {', '.join(unknown_tables)}")
 
     for rule in SPLIT_TRANSFER_RULES:
         if not await _table_exists(conn, rule.table):
@@ -271,11 +311,37 @@ async def transfer_dependents(
                 moved[rule.table] = len(rows)
 
         elif rule.kind is TransferKind.REVIEW:
-            n = await conn.fetchval(review_count_sql(rule.table), orig_line_id)
-            if n:
-                review[rule.table] = int(n)
+            label_cols = tuple(
+                [c for c in REVIEW_LABEL_COLUMNS.get(rule.table, ()) if await _column_exists(conn, rule.table, c)]
+            )
+            rows = await conn.fetch(review_items_sql(rule.table, label_cols), orig_line_id)
+            if not rows:
+                if wanted.get(rule.table):
+                    raise ValueError(f"{rule.table}: на участке {orig_line_id} нет объектов для переноса")
+                continue
+            review[rule.table] = len(rows)
+            review_items[rule.table] = [
+                {"id": r["id"], "attrs": {c: r[c] for c in label_cols if r[c] is not None}} for r in rows
+            ]
+            ids = wanted.get(rule.table)
+            if ids:
+                present = {r["id"] for r in rows}
+                missing = sorted(ids - present)
+                if missing:
+                    raise ValueError(
+                        f"{rule.table}: объекты {', '.join(map(str, missing))} не на участке {orig_line_id}"
+                    )
+                done = await conn.fetch(review_transfer_sql(rule.table), orig_line_id, new_line_id, sorted(ids))
+                review_moved[rule.table] = sorted(r["id"] for r in done)
+                moved[rule.table] = moved.get(rule.table, 0) + len(done)
 
-    return {"moved": moved, "review": review, "skipped": skipped}
+    return {
+        "moved": moved,
+        "review": review,
+        "review_items": review_items,
+        "review_moved": review_moved,
+        "skipped": skipped,
+    }
 
 
 # ---------------------------------------------------------------------------

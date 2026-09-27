@@ -11,15 +11,19 @@ from auth import AuthUser, require_mutations_enabled, require_roles
 from database.topology import (
     TopologyConflictError,
     TopologyDependencyError,
+    TopologyNothingToUndo,
     create_line,
     create_node,
     delete_line,
     delete_node,
+    get_line_geometry,
     get_versions,
+    last_undoable_operation,
     merge_nodes,
     move_node,
     reverse_line,
     split_line,
+    undo_last_operation,
     update_line_geometry,
 )
 
@@ -42,6 +46,10 @@ class MoveNodeParams(BaseModel):
 class CreateNodeParams(BaseModel):
     lng: float
     lat: float
+    # Откуда взять фрагмент/код/признак узла (иначе — ближайший узел сети):
+    fileid: Optional[int] = None
+    near_node_id: Optional[int] = None
+    near_line_id: Optional[int] = None
 
 
 class CreateLineParams(BaseModel):
@@ -58,6 +66,10 @@ class SplitLineRequest(BaseModel):
     # dry_run=true — вернуть отчёт «что перенесётся» без сохранения (превью в UI)
     dry_run: bool = False
     expected_version: VersionField = None
+    # Решение оператора по оборудованию без узла/позиции (transferred.review_items превью):
+    # {таблица: [id, …]} — на новую (вторую) половину, остальное — на первой; {} — всё на первой.
+    # Если такое оборудование есть, а решения нет — 409 requires_resolution.
+    review_to_new: Optional[dict[str, list[int]]] = None
 
 
 class ReverseLineRequest(BaseModel):
@@ -66,6 +78,16 @@ class ReverseLineRequest(BaseModel):
     expected_version: VersionField = None
     # подтверждение оператора: насосы/обратные клапаны/элеваторы поменяют направление действия
     accept_direction_change: bool = False
+    # парная труба (подача ↔ обратка) разворачивается вместе, как в десктопе;
+    # pair_line_id/pair_version — пара из превью (если перестала быть парой — 409)
+    include_pair: bool = True
+    pair_line_id: Optional[int] = None
+    pair_version: VersionField = None
+
+
+class UndoRequest(BaseModel):
+    # операция, которую показывала кнопка «Отменить»; другая последняя — 409
+    operation_id: Optional[int] = None
 
 
 class MergeNodesRequest(BaseModel):
@@ -99,6 +121,8 @@ def _topology_http_error(exc: Exception, what: str) -> HTTPException:
     """
     if isinstance(exc, HTTPException):
         return exc
+    if isinstance(exc, TopologyNothingToUndo):
+        return HTTPException(status_code=404, detail={"code": "nothing_to_undo", "message": str(exc)})
     if isinstance(exc, TopologyConflictError):
         return HTTPException(
             status_code=409,
@@ -165,8 +189,14 @@ async def create_node_endpoint(
 ):
     require_topology_mutations_enabled()
     try:
-        new_id = await create_node(params.lng, params.lat, actor=user.username)
-        return {"success": True, "id": new_id}
+        result = await create_node(
+            params.lng, params.lat,
+            actor=user.username,
+            fileid=params.fileid,
+            near_node_id=params.near_node_id,
+            near_line_id=params.near_line_id,
+        )
+        return {"success": True, **result}
     except Exception as e:
         raise _topology_http_error(e, "creating node")
 
@@ -198,14 +228,14 @@ async def create_line_endpoint(
 ):
     require_topology_mutations_enabled()
     try:
-        new_id = await create_line(
+        result = await create_line(
             params.nodeid1,
             params.nodeid2,
             nodeid1_version=params.nodeid1_version,
             nodeid2_version=params.nodeid2_version,
             actor=user.username,
         )
-        return {"success": True, "id": new_id}
+        return {"success": True, **result}
     except Exception as e:
         raise _topology_http_error(e, "creating line")
 
@@ -241,6 +271,7 @@ async def api_split_line(
             dry_run=req.dry_run,
             expected_version=req.expected_version,
             actor=user.username,
+            review_to_new=req.review_to_new,
         )
         return {"status": "success", **result}
     except Exception as e:
@@ -263,6 +294,9 @@ async def api_reverse_line(
             expected_version=req.expected_version,
             accept_direction_change=req.accept_direction_change,
             actor=user.username,
+            include_pair=req.include_pair,
+            pair_line_id=req.pair_line_id,
+            pair_version=req.pair_version,
         )
     except Exception as e:
         raise _topology_http_error(e, f"reversing line {req.line_id}")
@@ -290,6 +324,19 @@ async def api_merge_nodes(
         raise _topology_http_error(e, f"merging nodes {req.target_node_id} and {req.source_node_id}")
 
 
+@router.get("/api/topology/line/{line_id}/geometry")
+@router.get("/api/v1/topology/line/{line_id}/geometry")
+async def api_get_line_geometry(
+    line_id: int,
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+):
+    """Полная геометрия участка (WGS84), узлы-концы и версия — для правки вершин."""
+    try:
+        return await get_line_geometry(line_id)
+    except Exception as e:
+        raise _topology_http_error(e, f"reading geometry for line {line_id}")
+
+
 @router.put("/api/topology/line/{line_id}/geometry")
 @router.put("/api/v1/topology/line/{line_id}/geometry")
 async def api_update_line_geometry(
@@ -304,3 +351,28 @@ async def api_update_line_geometry(
         )
     except Exception as e:
         raise _topology_http_error(e, f"updating geometry for line {line_id}")
+
+
+@router.get("/api/topology/undo")
+@router.get("/api/v1/topology/undo")
+async def api_last_undoable(user: Annotated[AuthUser, Depends(require_roles("admin"))]):
+    """Последняя неотменённая операция топологии пользователя (для кнопки «Отменить»)."""
+    return {"operation": await last_undoable_operation(user.username)}
+
+
+@router.post("/api/topology/undo")
+@router.post("/api/v1/topology/undo")
+async def api_undo(
+    req: UndoRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+):
+    """Отмена последней операции топологии пользователя.
+
+    404 — отменять нечего; 409 version_conflict — объекты операции изменены после неё
+    (или последней стала другая операция); 409 blocked — операцию отменить нельзя.
+    """
+    require_topology_mutations_enabled()
+    try:
+        return await undo_last_operation(user.username, operation_id=req.operation_id)
+    except Exception as e:
+        raise _topology_http_error(e, "undoing topology operation")
