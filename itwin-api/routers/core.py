@@ -13,11 +13,19 @@ from database.db import (
     get_all_fragments,
     get_lookup_data,
 )
+from database.sql_ident import UnknownIdentifierError
 from utils.russian_names import russian_names_manager
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["core"])
+
+
+def _identifier_http_error(exc: UnknownIdentifierError) -> HTTPException:
+    """Неизвестная таблица → 404, неизвестная колонка/идентификатор → 400 (без SQL в ответе)."""
+    if exc.kind == "table":
+        return HTTPException(status_code=404, detail="Неизвестная таблица")
+    return HTTPException(status_code=400, detail=f"Недопустимый идентификатор ({exc.kind})")
 
 
 async def _add_russian_names_to_response(data: dict, table: str) -> dict:
@@ -215,6 +223,8 @@ async def get_line(table: str, id: int, include_russian_names: bool = False):
             data = await _add_russian_names_to_response(data, table)
 
         return {"data": data}
+    except UnknownIdentifierError as e:
+        raise _identifier_http_error(e)
     except UndefinedColumnError:
         # Таблица не относится к линейным объектам (нет lineID) — это ошибка
         # запроса клиента, а не сбой сервера
@@ -225,7 +235,7 @@ async def get_line(table: str, id: int, include_russian_names: bool = False):
         )
     except Exception as e:
         logger.error(f"Error fetching line data: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error fetching line data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при получении данных линейного объекта")
 
 
 @router.get("/node/{table}/{id}")
@@ -243,6 +253,8 @@ async def get_node(table: str, id: int, include_russian_names: bool = False):
             data = await _add_russian_names_to_response(data, table)
 
         return {"data": data}
+    except UnknownIdentifierError as e:
+        raise _identifier_http_error(e)
     except UndefinedColumnError:
         raise HTTPException(
             status_code=400,
@@ -251,7 +263,7 @@ async def get_node(table: str, id: int, include_russian_names: bool = False):
         )
     except Exception as e:
         logger.error(f"Error fetching node data: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error fetching node data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при получении данных точечного объекта")
 
 
 @router.get("/lookup")
@@ -261,6 +273,8 @@ async def get_lookup(table: str, id_col: str, name_col: str, sort_col: str = 'no
     try:
         data = await get_lookup_data(table, id_col, name_col, sort_col)
         return {"data": data}
+    except UnknownIdentifierError as e:
+        raise _identifier_http_error(e)
     except Exception as e:
-        logger.error(f"Error getting lookup for {table}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ошибка при получении справочника: {str(e)}")
+        logger.error(f"Error getting lookup for {table!r}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Ошибка при получении справочника")

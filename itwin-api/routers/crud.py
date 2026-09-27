@@ -16,11 +16,18 @@ from auth import (
 )
 from database.db import create_object, delete_object, update_object_attributes
 from database.ops_mutations import filter_ops_fields
+from database.sql_ident import UnknownIdentifierError
 from database.tu_mutations import filter_tu_fields
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["crud"])
+
+
+def _identifier_error(exc: UnknownIdentifierError) -> HTTPException:
+    if exc.kind == "table":
+        return HTTPException(status_code=403, detail="Table is not in the mutation allow-list")
+    return HTTPException(status_code=400, detail=f"Unknown column: {exc.name}")
 
 
 class UpdateAttributesParams(BaseModel):
@@ -60,9 +67,11 @@ async def update_object(
             new_data=fields,
         )
         return {"success": success, "message": "Атрибуты успешно обновлены"}
+    except UnknownIdentifierError as e:
+        raise _identifier_error(e)
     except Exception as e:
         logger.error(f"Error updating object {table} {id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ошибка при обновлении: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при обновлении")
 
 
 @router.post("/create/{table}")
@@ -88,9 +97,11 @@ async def api_create_object(
             new_data=fields,
         )
         return {"success": True, "id": new_id, "message": "Объект успешно создан"}
+    except UnknownIdentifierError as e:
+        raise _identifier_error(e)
     except Exception as e:
         logger.error(f"Error creating object {table}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ошибка при создании: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при создании")
 
 
 @router.delete("/delete/{table}/{id}")
@@ -114,6 +125,8 @@ async def api_delete_object(
             record_id=id,
         )
         return {"success": success, "message": "Объект успешно удален"}
+    except UnknownIdentifierError as e:
+        raise _identifier_error(e)
     except Exception as e:
         logger.error(f"Error deleting object {table} {id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ошибка при удалении: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при удалении")

@@ -1,10 +1,36 @@
 import json
 from typing import Optional, Dict, List, Tuple
 from database.connect import acquire_conn, query_log
-from utils.ini import parse_filtr, storage
+from database.sql_ident import (
+    UnknownIdentifierError,
+    quote_ident,
+    resolve_column,
+    resolve_columns,
+    resolve_table,
+)
+from utils.ini import list_tab_tables, parse_filtr, storage
 import logging
 
-logger = logging.getLogger(__name__)  
+logger = logging.getLogger(__name__)
+
+
+def card_tables() -> frozenset:
+    """Allow-list карточек /line и /node: таблицы с описанием tab/*.txt и таблицы CRUD."""
+    from auth import MUTABLE_TABLES
+
+    return list_tab_tables() | frozenset(t.lower() for t in MUTABLE_TABLES)
+
+
+def mutable_tables() -> frozenset:
+    from auth import MUTABLE_TABLES
+
+    return frozenset(t.lower() for t in MUTABLE_TABLES)
+
+
+def _sql_table(name: str) -> str:
+    """Имя таблицы для FROM: как у прежнего некавыченного имени (PostgreSQL приводит к lower)."""
+    return quote_ident(name.lower())
+
 async def br_text(text: str) -> str:
     return f'"{text}"'
 
@@ -50,7 +76,7 @@ async def get_obj_line(defect: str, prefix: str, prefix_l: str) -> str:
 async def get_3_param(tn: str, prefix: str, i: int, par1: str, par2: str, joins: str, filtr: Optional[List[str]]) -> Tuple[int, str, str, str]:
     async with acquire_conn() as conn:
         logger.debug(f"Fetching columns for table {tn}")
-        rows = await query_log(conn, f'SELECT * FROM {tn} LIMIT 1')
+        rows = await query_log(conn, f'SELECT * FROM {_sql_table(tn)} LIMIT 1')
         columns = list(rows[0].keys()) if rows else []
         logger.debug(f"Columns fetched for {tn}: {columns[:5]}...")
 
@@ -108,8 +134,10 @@ async def get_3_param(tn: str, prefix: str, i: int, par1: str, par2: str, joins:
         return (i, par1, par2, joins)
 
 async def create_select_line(tn: str, id: int) -> str:
-    logger.info(f"Creating select for line: table={tn}, id={id}")
+    logger.info(f"Creating select for line: table={tn!r}, id={id}")
     async with acquire_conn() as conn:
+        # Имя таблицы — из URL: allow-list карточек + сверка с каталогом (UnknownIdentifierError)
+        actual = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
         joins += 'LEFT JOIN linesobj L ON T.lineID=L.id\n'
         (i, par1, par2, joins) = await get_3_param("linesobj", "L", i, par1, par2, joins, ['externalSignLineID','organizationID','hydroRes','archiveChangeDateoperatorID'])
@@ -119,32 +147,34 @@ async def create_select_line(tn: str, id: int) -> str:
         (i, par1, par2, joins) = await get_3_param("nodes", "N2", i, par1, par2, joins, ['externalCodeID','externalNodeName'])
         
         filtr = await storage.read_tab2(tn)
-        (i, par1, par2, joins) = await get_3_param(tn, "T", i, par1, par2, joins, filtr)
+        (i, par1, par2, joins) = await get_3_param(actual, "T", i, par1, par2, joins, filtr)
 
-        q = f'SELECT \nT.id,L.id as L_id,N1.id AS N1_id,N2.id AS N2_id,\n{par1}{par2}\nFROM {tn} T\n{joins}\nWHERE L.id=$1'
+        q = f'SELECT \nT.id,L.id as L_id,N1.id AS N1_id,N2.id AS N2_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE L.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
         return await print_q(conn, 'L', tn, q, id, filtr)
 
 async def create_select_node(tn: str, id: int) -> str:
-    logger.info(f"Creating select for node: table={tn}, id={id}")
+    logger.info(f"Creating select for node: table={tn!r}, id={id}")
     if tn == 'nodes':
         result = await create_select(tn, id)
         return result
     async with acquire_conn() as conn:
+        actual = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
         joins += 'LEFT JOIN nodes N ON N.id=T.nodeID\n'
         (i, par1, par2, joins) = await get_3_param("nodes", "N", i, par1, par2, joins, ['externalCodeID','externalNodeName','externalSignID','geoMarkTopTube','geoMarkNodeArea'])
         
         filtr = await storage.read_tab2(tn)
-        (i, par1, par2, joins) = await get_3_param(tn, "T", i, par1, par2, joins, filtr)
+        (i, par1, par2, joins) = await get_3_param(actual, "T", i, par1, par2, joins, filtr)
 
-        q = f'SELECT \nT.id,N.id as N_id,\n{par1}{par2}\nFROM {tn} T\n{joins}\nWHERE N.id=$1'
+        q = f'SELECT \nT.id,N.id as N_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE N.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
         return await print_q(conn, 'N', tn, q, id, filtr)
 
 async def create_select_geoline(tn: str) -> str:
-    logger.info(f"Creating select for geoline: table={tn}")
+    logger.info(f"Creating select for geoline: table={tn!r}")
     async with acquire_conn() as conn:
+        tn = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
         filtr = await storage.read_tab2(tn)
         (i, par1, par2, joins) = await get_3_param(tn, "T", i, par1, par2, joins, filtr)
@@ -159,18 +189,19 @@ async def create_select_geoline(tn: str) -> str:
         joins += 'LEFT JOIN nodes N2 ON N2.id=PSS.nodeID2\n'
         (i, par1, par2, joins) = await get_3_param('nodes', "N2", i, par1, par2, joins, ['externalCodeID','externalNodeName','nodeName'])
 
-        q = f'SELECT TOP 10\nT.id,\n{par1}{par2}\nFROM {tn} T\n{joins}'
+        q = f'SELECT TOP 10\nT.id,\n{par1}{par2}\nFROM {quote_ident(tn)} T\n{joins}'
         logger.debug(f"Generated query: {q[:100]}...")
         return q
 
 async def create_select(tn: str, id: int) -> str:
-    logger.info(f"Creating select: table={tn}, id={id}")
+    logger.info(f"Creating select: table={tn!r}, id={id}")
     async with acquire_conn() as conn:
+        actual = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
         filtr = await storage.read_tab2(tn)
-        (i, par1, par2, joins) = await get_3_param(tn, "T", i, par1, par2, joins, filtr)
+        (i, par1, par2, joins) = await get_3_param(actual, "T", i, par1, par2, joins, filtr)
 
-        q = f'SELECT\nT.id,\n{par1}{par2}\nFROM {tn} T\n{joins}\nWHERE T.id=$1'
+        q = f'SELECT\nT.id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE T.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
         return await print_q(conn, '?', tn, q, id, filtr)
 
@@ -303,21 +334,21 @@ async def update_object_attributes(table: str, obj_id: int, fields: Dict[str, an
     
     set_clauses = []
     values = []
-    
-    for i, (key, val) in enumerate(fields.items(), start=1):
-        # Если значение пустая строка и это может быть NULL, можно обрабатывать
-        # Но пока просто передаем
-        set_clauses.append(f'"{key}" = ${i}')
-        values.append(val)
-        
-    values.append(obj_id)
-    id_index = len(values)
-    
-    q = f'UPDATE "{table}" SET {", ".join(set_clauses)} WHERE id = ${id_index}'
-    
-    logger.info(f"Updating object in {table}: ID {obj_id}, Fields: {list(fields.keys())}")
-    
+
     async with acquire_conn() as conn:
+        # Таблица — только из allow-list CRUD, колонки — только из каталога этой таблицы
+        actual = await resolve_table(conn, table, mutable_tables())
+        columns = await resolve_columns(conn, actual, fields.keys())
+        for i, (key, val) in enumerate(fields.items(), start=1):
+            set_clauses.append(f'{quote_ident(columns[key])} = ${i}')
+            values.append(val)
+
+        values.append(obj_id)
+        id_index = len(values)
+
+        q = f'UPDATE {quote_ident(actual)} SET {", ".join(set_clauses)} WHERE id = ${id_index}'
+
+        logger.info(f"Updating object in {actual}: ID {obj_id}, Fields: {list(columns.values())}")
         try:
             await conn.execute(q, *values)
             return True
@@ -333,17 +364,18 @@ async def create_object(table: str, fields: Dict[str, any]) -> int:
     cols = []
     vals = []
     placeholders = []
-    
-    for i, (key, val) in enumerate(fields.items(), start=1):
-        cols.append(f'"{key}"')
-        vals.append(val)
-        placeholders.append(f'${i}')
-        
-    q = f'INSERT INTO "{table}" ({", ".join(cols)}) VALUES ({", ".join(placeholders)}) RETURNING id'
-    
-    logger.info(f"Creating object in {table}: Fields: {list(fields.keys())}")
-    
+
     async with acquire_conn() as conn:
+        actual = await resolve_table(conn, table, mutable_tables())
+        columns = await resolve_columns(conn, actual, fields.keys())
+        for i, (key, val) in enumerate(fields.items(), start=1):
+            cols.append(quote_ident(columns[key]))
+            vals.append(val)
+            placeholders.append(f'${i}')
+
+        q = f'INSERT INTO {quote_ident(actual)} ({", ".join(cols)}) VALUES ({", ".join(placeholders)}) RETURNING id'
+
+        logger.info(f"Creating object in {actual}: Fields: {list(columns.values())}")
         try:
             new_id = await conn.fetchval(q, *vals)
             return new_id
@@ -353,11 +385,10 @@ async def create_object(table: str, fields: Dict[str, any]) -> int:
 
 async def delete_object(table: str, obj_id: int) -> bool:
     """Удаляет объект из БД по ID."""
-    q = f'DELETE FROM "{table}" WHERE id = $1'
-    
-    logger.info(f"Deleting object in {table}: ID {obj_id}")
-    
     async with acquire_conn() as conn:
+        actual = await resolve_table(conn, table, mutable_tables())
+        q = f'DELETE FROM {quote_ident(actual)} WHERE id = $1'
+        logger.info(f"Deleting object in {actual}: ID {obj_id}")
         try:
             await conn.execute(q, obj_id)
             return True
@@ -366,15 +397,22 @@ async def delete_object(table: str, obj_id: int) -> bool:
             raise e
 
 async def get_lookup_data(table: str, id_col: str, name_col: str, sort_col: str) -> List[Dict[str, any]]:
-    """Получает данные справочника для селектов."""
-    q = f'SELECT "{id_col}" AS value, "{name_col}" AS title FROM "{table}"'
-    if sort_col and sort_col.lower() != 'none':
-        q += f' ORDER BY "{sort_col}"'
-    else:
-        q += f' ORDER BY "{name_col}"'
-        
-    logger.debug(f"Fetching lookup: {q}")
+    """Получает данные справочника для селектов.
+
+    Все четыре идентификатора приходят из query-строки: таблица — только из справочников
+    kls/gid.lookup, колонки — только из каталога этой таблицы. sort_col «none», пустой
+    или числовой (флаг сортировки из gid.lookup) — сортировка по name_col.
+    """
     async with acquire_conn() as conn:
+        actual = await resolve_table(conn, table, storage.lookup_tables())
+        id_sql = quote_ident(await resolve_column(conn, actual, id_col))
+        name_sql = quote_ident(await resolve_column(conn, actual, name_col))
+        if sort_col and sort_col.lower() != 'none' and not sort_col.isdigit():
+            order_sql = quote_ident(await resolve_column(conn, actual, sort_col))
+        else:
+            order_sql = name_sql
+        q = f'SELECT {id_sql} AS value, {name_sql} AS title FROM {quote_ident(actual)} ORDER BY {order_sql}'
+        logger.debug(f"Fetching lookup: {q}")
         rows = await query_log(conn, q)
         return [dict(r) for r in rows]
 

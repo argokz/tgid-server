@@ -125,6 +125,10 @@ class LookupStorage:
             logger.debug(f"[get_lookup2] Missing: {key}")
         return self.map_lookup2.get(key)
 
+    def lookup_tables(self) -> frozenset:
+        """Таблицы-справочники (lower) из kls/gid.lookup — allow-list для /lookup."""
+        return frozenset(v[2].lower() for v in self.map_lookup.values())
+
     def get_help(self, tn1: str, fn1: str) -> Tuple[str, str, str, Optional[str]]:
         key = (tn1.lower(), fn1.lower())
         if key not in self.map_help:
@@ -141,10 +145,26 @@ async def open_in_dirs(filename: str, dirs: List[str], encoding: str = "cp1251")
             return path
     raise FileNotFoundError(f"Файл '{filename}' не найден в каталогах: {dirs}")
 
+TAB_SUBDIRS = ["tab/gid8", "tab", "tab/remont", "tab/ps", "tab/pts"]
+
+
 async def open_tab(filename: str, encoding: str = "cp1251") -> str:
-    dirs = ["tab/gid8", "tab", "tab/remont", "tab/ps", "tab/pts"]
-    full_dirs = [os.path.join(ARG_PATH, d) for d in dirs]
+    full_dirs = [os.path.join(ARG_PATH, d) for d in TAB_SUBDIRS]
     return await open_in_dirs(filename, full_dirs, encoding)
+
+
+def list_tab_tables() -> frozenset:
+    """Имена таблиц (lower), для которых есть описание карточки tab/*.txt."""
+    names = set()
+    for d in TAB_SUBDIRS:
+        full = os.path.join(ARG_PATH, d)
+        if not os.path.isdir(full):
+            continue
+        for fn in os.listdir(full):
+            stem, ext = os.path.splitext(fn)
+            if ext.lower() == ".txt" and stem:
+                names.add(stem.lower())
+    return frozenset(names)
 
 async def open_arg(filename: str, encoding: str = "cp1251") -> str:
     path = os.path.join(ARG_PATH, filename)
