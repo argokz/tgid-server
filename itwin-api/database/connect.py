@@ -5,6 +5,7 @@ import os
 from contextlib import asynccontextmanager
 import time
 import logging
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from database.models import Base
@@ -34,9 +35,26 @@ USERS_DB_CONFIG = {
 pool: Optional[asyncpg.Pool] = None
 users_pool: Optional[asyncpg.Pool] = None
 
-# Асинхронный движок SQLAlchemy для UsersDB
-USERS_DB_URL = f"postgresql+asyncpg://{USERS_DB_CONFIG['user']}:{USERS_DB_CONFIG['password']}@{USERS_DB_CONFIG['host']}:{USERS_DB_CONFIG['port']}/{USERS_DB_CONFIG['database']}"
-users_engine = create_async_engine(USERS_DB_URL, echo=True)
+
+def safe_db_config(config: dict) -> dict:
+    """Копия конфига подключения для логов: пароль не выводится никогда."""
+    return {k: ("***" if k == "password" and v else v) for k, v in config.items()}
+
+
+# Асинхронный движок SQLAlchemy для UsersDB. URL.create экранирует спецсимволы пароля,
+# а str(URL) маскирует пароль (***), если URL попадёт в лог/исключение.
+USERS_DB_URL = URL.create(
+    "postgresql+asyncpg",
+    username=USERS_DB_CONFIG["user"],
+    password=USERS_DB_CONFIG["password"],
+    host=USERS_DB_CONFIG["host"],
+    port=USERS_DB_CONFIG["port"],
+    database=USERS_DB_CONFIG["database"],
+)
+# echo пишет в лог каждый SQL с параметрами (логины и т.п.) — только по явному флагу.
+users_engine = create_async_engine(
+    USERS_DB_URL, echo=os.getenv("USERS_DB_ECHO", "").lower() in ("1", "true", "yes")
+)
 async_session = sessionmaker(users_engine, class_=AsyncSession, expire_on_commit=False)
 
 class DatabaseConnectionError(Exception):
@@ -89,7 +107,7 @@ async def init_users_db_pool():
         # Проверяем существование базы и создаём, если её нет
         temp_config = USERS_DB_CONFIG.copy()
         temp_config["database"] = "postgres"
-        logger.info(f"Попытка подключения к системной базе: { {k: v for k, v in temp_config.items() if k != 'password'} }")
+        logger.info(f"Попытка подключения к системной базе: {safe_db_config(temp_config)}")
         try:
             temp_pool = await asyncpg.create_pool(**temp_config, min_size=1, max_size=10)
         except socket.gaierror as e:
@@ -107,7 +125,7 @@ async def init_users_db_pool():
         await temp_pool.close()
 
         # Инициализируем пул для UsersDB
-        logger.info(f"Инициализация пула для UsersDB: {USERS_DB_CONFIG}")
+        logger.info(f"Инициализация пула для UsersDB: {safe_db_config(USERS_DB_CONFIG)}")
         try:
             users_pool = await asyncpg.create_pool(**USERS_DB_CONFIG, min_size=1, max_size=10)
         except socket.gaierror as e:

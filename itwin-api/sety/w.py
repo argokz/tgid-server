@@ -269,7 +269,8 @@ def run(**db):
                     level=logging.INFO, filemode='a+')
 
     logging.info('-----------------')
-    logging.info(db)
+    # Параметры подключения — без пароля (лог пишется в файл рядом с программой)
+    logging.info({k: ('***' if k == 'password' and v else v) for k, v in db.items()})
 
     open_b5()
 

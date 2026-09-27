@@ -5,6 +5,7 @@ import re
 import shlex
 import uuid
 import time
+import locale
 import logging
 from celery import Celery
 from dotenv import load_dotenv
@@ -101,22 +102,126 @@ def _sety_base_cmd(out_file_path: str, dross: bool) -> list[str]:
 
 def _masked(cmd: list[str]) -> str:
     safe = ['***' if i > 0 and cmd[i - 1] == '-password' else c for i, c in enumerate(cmd)]
-    return ' '.join([f'"{c}"' if ' ' in c else c for c in safe])
+    return _redact(' '.join([f'"{c}"' if ' ' in c else c for c in safe]))
+
+
+def _redact(text):
+    """Убирает пароль БД из текста (вывод sety, ошибки драйвера) перед логом/ответом клиенту."""
+    password = os.getenv("DB_PASSWORD") or ""
+    if not text or not password:
+        return text
+    return text.replace(password, "***")
+
+
+def _sety_text_encoding() -> str:
+    """Кодировка, в которой sety пишет out_file и SQL-файл.
+
+    g2.write_po/make_G2_leto открывают файлы через open(..., 'w') / NamedTemporaryFile(mode='w')
+    без encoding — это кодировка локали дочернего интерпретатора (Windows: cp1251), либо UTF-8,
+    если у него включён UTF-8 mode (PYTHONUTF8=1, по умолчанию с Python 3.15). Интерпретатор и
+    окружение у ww.py те же, что у воркера (sys.executable, унаследованный env).
+    """
+    flag = os.environ.get("PYTHONUTF8")
+    if flag == "1" or (flag != "0" and sys.version_info >= (3, 15)):
+        return "utf-8"
+    return locale.getencoding()
+
+
+def _read_sety_text(path: str) -> str:
+    raw = open(path, "rb").read()
+    primary = _sety_text_encoding()
+    for enc in dict.fromkeys((primary, "utf-8", "cp1251")):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode(primary, errors="replace")
+
+
+def _po_db_connect():
+    """Соединение с той же БД, в которой считал sety (те же DB_* из окружения)."""
+    import psycopg2
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        dbname=os.getenv("DB_NAME"),
+    )
+
+
+_PO_SQL_RE = re.compile(r"^\s*UPDATE\s+generalizedconsumers\b", re.IGNORECASE)
+
+
+def _apply_out_file_sql(out_file_path: str) -> str | None:
+    """-save_po: sety кладёт в out_file путь к SQL-файлу (UPDATE generalizedconsumers ...).
+
+    Десктоп (gid8 GidWidget::onFinished в gidr_calc.cpp) после расчёта читает out.txt → имя
+    SQL-файла → текст (cp2utf, т.е. кодировка локали) и выполняет его одним query_exec на
+    соединении схемы (один оператор UPDATE — атомарен, autocommit). Здесь то же самое в явной
+    транзакции; SQL-файл удаляется. Возвращает строку для протокола или None, если писать нечего.
+    Исключение — ошибка записи (транзакция откатана).
+    """
+    if not os.path.exists(out_file_path):
+        return None
+    sql_path = _read_sety_text(out_file_path).strip()
+    if not sql_path:
+        return None
+    try:
+        if not sql_path.lower().endswith(".sql") or not os.path.isfile(sql_path):
+            raise RuntimeError(f"sety не создал SQL-файл записи ({os.path.basename(sql_path)})")
+        sql = _read_sety_text(sql_path).strip()
+        if not sql:
+            return None
+        if not _PO_SQL_RE.match(sql):
+            raise RuntimeError("Неожиданный SQL в файле записи sety (ожидается UPDATE generalizedconsumers)")
+        conn = _po_db_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return f"Запись в обобщённые потребители выполнена: обновлено строк {rows}"
+    finally:
+        try:
+            if os.path.isfile(sql_path) and sql_path.lower().endswith(".sql"):
+                os.remove(sql_path)
+        except OSError as e:
+            logger.error(f"Не удалось удалить SQL-файл sety: {e}")
 
 
 def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
-    """Один запуск ww.py; out_file и лог — временные, удаляются после расчёта."""
+    """Один запуск ww.py; out_file и лог — временные, удаляются после расчёта.
+
+    Если sety оставил в out_file SQL (-save_po), он выполняется в той же БД после успешного
+    расчёта; ошибка записи попадает в протокол и делает запуск ошибочным.
+    """
     out_file_path = cmd[cmd.index("-out_file") + 1]
     log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"ww_output_{request_id}_{label}.log")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        output = _redact(result.stdout)
         with open(log_file_path, "w", encoding="utf-8") as log_file:
-            log_file.write(result.stdout)
-        return {"status": "success", "output": result.stdout}
+            log_file.write(output or "")
+        try:
+            po_message = _apply_out_file_sql(out_file_path)
+        except Exception as e:
+            error_message = _redact(f"Расчёт выполнен, но запись в обобщённые потребители не выполнена: {e}")
+            logger.error(error_message)
+            return {"status": "error", "output": f"{output or ''}\n{error_message}\n", "error": error_message}
+        if po_message:
+            logger.info(po_message)
+            output = f"{output or ''}\n{po_message}\n"
+        return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        error_message = e.stderr if e.stderr else "Неизвестная ошибка"
+        error_message = _redact(e.stderr) if e.stderr else "Неизвестная ошибка"
         logger.error(f"Ошибка запуска ww.py: {error_message}")
-        return {"status": "error", "output": e.stdout, "error": error_message}
+        return {"status": "error", "output": _redact(e.stdout), "error": error_message}
     finally:
         try:
             if os.path.exists(out_file_path):

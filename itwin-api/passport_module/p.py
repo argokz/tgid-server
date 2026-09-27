@@ -110,8 +110,8 @@ def async_do_passport(c, wb, ms_rs, id, fragments, mark_line, mark_pts, mark_nod
 def passport(**c):
 #    try:
 
-    c_without_password = c
-    c_without_password.pop('password')
+    # Копия без пароля: раньше pop() удалял пароль из самого c, и connect(**c) шёл без него
+    c_without_password = {k: v for k, v in c.items() if k != 'password'}
 
 #    print(c)
 #    exit(0)
