@@ -278,6 +278,7 @@ def test_split_with_review_equipment_requires_resolution():
     conn = FakeConn([
         _lock_rule({100: (0, TS, "5")}),
         ("ST_LineLocatePoint", {"nodeid1": 1, "nodeid2": 2, "split_fraction": 0.4}),
+        ("FROM heatpipesections WHERE lineid", 1),  # участок — труба
         ("INSERT INTO nodes", 900),
         ("INSERT INTO linesobj", 901),
     ])

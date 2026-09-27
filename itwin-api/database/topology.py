@@ -29,9 +29,11 @@ from database.topology_journal import (
     current_hashes,
     journal_available,
     restore_rows,
+    table_columns,
 )
 from database.topology_transfer import (
     SPLIT_TRANSFER_RULES,
+    _ident,
     apply_node_merge,
     line_dependency_report,
     node_dependency_report,
@@ -57,6 +59,24 @@ GEOMETRY_ENDPOINT_TOLERANCE_M = 5.0
 NEW_NODE_REFERENCE_RADIUS_M = 300.0
 # Парная труба при развороте: макс. расхождение трасс подачи и обратки (Хаусдорф), м.
 PAIR_LINE_MAX_DEVIATION_M = 1.0
+
+# Паспорт нового участка (create_line) — конструктив трубы от участка-образца: смежного
+# (через общий узел) или ближайшего в радиусе NEW_NODE_REFERENCE_RADIUS_M того же фрагмента
+# и той же внутренней схемы. Без паспорта участок не попадает ни в слой карты (SQL view
+# GeoServer `heatpipesections` — INNER JOIN паспорта), ни в расчёт (sety читает участки
+# из heatpipesections); умолчания таблицы (Ду 1000 мм) дают неверную гидравлику.
+# Состояние (открыт/закрыт), повреждения, даты и номера образца не копируются.
+PASSPORT_TEMPLATE_COLUMNS: tuple[str, ...] = (
+    "standardid", "standardtubelink", "tubescount",
+    "diameterinternal", "diametercondit", "diameterexternal", "wallthickness",
+    "tuberoughness", "locallosesshare", "varcoeffidflow", "varcoeffidret",
+    "calcheatlossignid", "tubingtypeid", "channelid", "constrchanwidth", "constrchanheight",
+    "heattestscoeff", "isolmaterialid", "isolthickness", "isolmaterialhccoeff",
+    "pipelinelayingdepth", "isolhtcoeffabove", "isolhtcoeffunder", "airgroundhtcoeffunder",
+    "groundhccoeff", "pipelineaxesdist", "tubecharactid", "tubetypeid", "tubematerial",
+    "externmaterialid", "isolationtypeid", "externcoverthick", "anticorrmaterialid",
+    "organizationid", "magistralsite", "distsite", "net", "nettype", "magistral",
+)
 
 
 class TopologyDependencyError(Exception):
@@ -527,6 +547,55 @@ async def create_node(
 # Участки
 # ---------------------------------------------------------------------------
 
+async def _create_line_passport(conn, line_id: int, nodeid1: int, nodeid2: int) -> dict:
+    """Паспорт (heatpipesections) нового участка: конструктив от участка-образца.
+
+    Образец — активный участок того же фрагмента и той же схемы (fileid/internalnodeid
+    начального узла): сначала смежный через nodeid1/nodeid2, иначе ближайший в радиусе
+    NEW_NODE_REFERENCE_RADIUS_M. Копируются PASSPORT_TEMPLATE_COLUMNS (что есть в схеме),
+    длина — по геометрии нового участка. Нет образца — паспорт с умолчаниями таблицы.
+    Ошибка вставки не глотается: участок без паспорта не виден ни карте, ни расчёту.
+    """
+    template = await conn.fetchrow(
+        """
+        WITH nl AS (SELECT shape FROM linesobj WHERE id = $1),
+             ref AS (SELECT fileid, internalnodeid FROM nodes WHERE id = $2)
+        SELECT hps.id AS passport_id, l.id AS line_id,
+               (l.nodeid1 IN ($2, $3) OR l.nodeid2 IN ($2, $3)) AS adjacent
+        FROM linesobj l
+        JOIN heatpipesections hps ON hps.lineid = l.id
+        JOIN nodes o1 ON o1.id = l.nodeid1
+        CROSS JOIN nl CROSS JOIN ref
+        WHERE COALESCE(l.removed, 0) = 0 AND l.id <> $1 AND l.shape IS NOT NULL
+          AND o1.fileid IS NOT DISTINCT FROM ref.fileid
+          AND o1.internalnodeid IS NOT DISTINCT FROM ref.internalnodeid
+          AND ((l.nodeid1 IN ($2, $3) OR l.nodeid2 IN ($2, $3)) OR ST_DWithin(l.shape, nl.shape, $4))
+        ORDER BY adjacent DESC, ST_Distance(l.shape, nl.shape), l.id
+        LIMIT 1
+        """,
+        line_id, nodeid1, nodeid2, NEW_NODE_REFERENCE_RADIUS_M,
+    )
+    length_sql = "ST_Length((SELECT shape FROM linesobj WHERE id = $1))"
+    if template is None:
+        await conn.execute(
+            f"INSERT INTO heatpipesections (lineid, pipesectlength) VALUES ($1, {length_sql})", line_id,
+        )
+        return {"source": "defaults", "template_line_id": None}
+    existing = set(await table_columns(conn, "heatpipesections"))
+    cols = [c for c in PASSPORT_TEMPLATE_COLUMNS if c in existing]
+    target = "".join(f", {_ident(c)}" for c in cols)
+    source = "".join(f", hps.{_ident(c)}" for c in cols)
+    await conn.execute(
+        f"INSERT INTO heatpipesections (lineid, pipesectlength{target}) "
+        f"SELECT $1, {length_sql}{source} FROM heatpipesections hps WHERE hps.id = $2",
+        line_id, template["passport_id"],
+    )
+    return {
+        "source": "adjacent_line" if template["adjacent"] else "nearest_line",
+        "template_line_id": template["line_id"],
+    }
+
+
 async def create_line(
     nodeid1: int,
     nodeid2: int,
@@ -546,38 +615,44 @@ async def create_line(
         )
         if valid != 2:
             raise ValueError("Both active nodes with geometry are required")
+        ends = await conn.fetch(
+            "SELECT id, fileid, externalcodeid, internalnodeid FROM nodes WHERE id = ANY($1::int[])",
+            [nodeid1, nodeid2],
+        )
+        # Без фрагмента и кода узла участок не видят ни расчёт (sety: JOIN externalCodes,
+        # фильтр n.fileID), ни слой карты (JOIN externalcodes) — такой участок бесполезен.
+        incomplete = sorted(r["id"] for r in ends if r["fileid"] is None or r["externalcodeid"] is None)
+        if incomplete:
+            raise ValueError(
+                "У узлов " + ", ".join(map(str, incomplete)) + " нет фрагмента или кода (externalcodeid): "
+                "участок не попадёт в расчёт и на карту. Задайте узлу фрагмент/код или пересоздайте его."
+            )
+        if len({r["fileid"] for r in ends}) > 1:
+            raise ValueError("Узлы участка из разных фрагментов: участок соединяет узлы одного фрагмента")
+        if len({r["internalnodeid"] for r in ends}) > 1:
+            raise ValueError("Узлы участка из разных схем (основная сеть / внутренняя схема потребителя)")
         now = datetime.now()
         line_id = await conn.fetchval(
             """
-            INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate, fileid)
+            INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate, fileid, internalnodeid)
             VALUES (
               $1,
               $2,
               ST_MakeLine((SELECT shape FROM nodes WHERE id = $1), (SELECT shape FROM nodes WHERE id = $2)),
               0,
               $3,
-              (SELECT fileid FROM nodes WHERE id = $1)
+              (SELECT fileid FROM nodes WHERE id = $1),
+              (SELECT internalnodeid FROM nodes WHERE id = $1)
             ) RETURNING id
             """,
             nodeid1, nodeid2, now,
         )
         op.journal.created("linesobj", line_id)
-        try:
-            # В asyncpg вложенная transaction создаёт SAVEPOINT. Без него любая SQL-ошибка
-            # оставляет внешнюю транзакцию aborted, даже если исключение было поймано.
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO heatpipesections (lineid, pipesectlength)
-                    VALUES ($1, ST_Length((SELECT shape FROM linesobj WHERE id = $1)))
-                    """,
-                    line_id,
-                )
-        except Exception as e:
-            logger.error(f"Error creating heatPipeSection (table might not exist or schema differs): {e}")
+        passport = await _create_line_passport(conn, line_id, nodeid1, nodeid2)
         await op.journal.created_where(conn, "heatpipesections", "_r.lineid = $1", line_id)
-        await op.audit("INSERT", "linesobj", line_id, {"nodeid1": nodeid1, "nodeid2": nodeid2})
-        return {"id": line_id}
+        result = {"id": line_id, "passport": passport}
+        await op.audit("INSERT", "linesobj", line_id, {"nodeid1": nodeid1, "nodeid2": nodeid2, **result})
+        return result
 
     return await _run(False, body, "CREATE_LINE", actor)
 
@@ -738,6 +813,17 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to
     )
     if not old_line:
         raise ValueError("Line not found")
+    # В модели ТГИД участок графа типизирован одним объектом: труба (heatpipesections) или
+    # оборудование-звено (задвижка, насос, регулятор… — их lineid и есть этот участок, паспорта
+    # трубы у него нет). Половина звена без объекта выпала бы из расчёта (sety строит рёбра по
+    # таблицам типов) и разорвала бы сеть — поэтому режем только трубы.
+    if not await conn.fetchval("SELECT count(*) FROM heatpipesections WHERE lineid = $1", line_id):
+        kinds = await line_dependency_report(conn, line_id)
+        raise TopologyDependencyError(
+            f"Участок {line_id} — не труба (" + (", ".join(sorted(kinds)) or "нет паспорта трубы")
+            + "): разрезать можно только участок теплопровода. Вставьте узел на соседней трубе.",
+            blockers={"not_a_pipe": kinds or {"heatpipesections": 0}},
+        )
     orig_nodeid2 = old_line['nodeid2']
     split_fraction = float(old_line['split_fraction'])
     if split_fraction <= 1e-8 or split_fraction >= 1.0 - 1e-8:

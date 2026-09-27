@@ -308,6 +308,65 @@ def test_create_line_locks_both_nodes():
     assert list(exc.value.conflicts) == ["node:2"]
 
 
+def _ends_rule(rows):
+    return ("SELECT id, fileid, externalcodeid, internalnodeid FROM nodes", [
+        {"id": i, "fileid": f, "externalcodeid": c, "internalnodeid": inn} for i, f, c, inn in rows
+    ])
+
+
+def test_create_line_rejects_nodes_without_code():
+    """Узел без externalcodeid: участок не увидят ни sety, ни слой карты — 400, без вставки."""
+    conn = FakeConn([
+        _lock_rule({1: (0, TS, "1"), 2: (0, TS, "2")}),
+        ("SELECT count(*) FROM nodes", 2),
+        _ends_rule([(1, 74, 25, None), (2, 74, None, None)]),
+    ])
+    with pytest.raises(ValueError, match="2"):
+        _run(lambda: create_line(1, 2), conn)
+    assert not conn.executed("INSERT")
+    assert not [c for c in conn.calls if "INSERT INTO linesobj" in c[1]]
+
+    conn = FakeConn([
+        _lock_rule({1: (0, TS, "1"), 2: (0, TS, "2")}),
+        ("SELECT count(*) FROM nodes", 2),
+        _ends_rule([(1, 74, 25, None), (2, 5, 25, None)]),
+    ])
+    with pytest.raises(ValueError, match="разных фрагментов"):
+        _run(lambda: create_line(1, 2), conn)
+
+
+def test_create_line_copies_passport_from_adjacent_line():
+    conn = FakeConn([
+        _lock_rule({1: (0, TS, "1"), 2: (0, TS, "2")}),
+        ("SELECT count(*) FROM nodes", 2),
+        _ends_rule([(1, 74, 25, None), (2, 74, 25, None)]),
+        ("INSERT INTO linesobj", 500),
+        ("AS passport_id", {"passport_id": 70, "line_id": 42, "adjacent": True}),
+    ])
+    with patch("database.topology.table_columns",
+               AsyncMock(return_value=("id", "lineid", "diametercondit", "diameterinternal", "damagenum"))):
+        res, _, audit, _ = _run(lambda: create_line(1, 2, actor="u"), conn)
+    assert res["id"] == 500
+    assert res["passport"] == {"source": "adjacent_line", "template_line_id": 42}
+    sql, args = conn.executed("INSERT INTO heatpipesections")[0][1:]
+    # конструктив — от образца; повреждения и прочее — нет; длина — по новой геометрии
+    assert '"diametercondit"' in sql and '"diameterinternal"' in sql and "damagenum" not in sql
+    assert "ST_Length" in sql and args == (500, 70)
+    assert audit.await_args.kwargs["new_data"]["passport"]["template_line_id"] == 42
+
+
+def test_create_line_without_template_uses_table_defaults():
+    conn = FakeConn([
+        _lock_rule({1: (0, TS, "1"), 2: (0, TS, "2")}),
+        ("SELECT count(*) FROM nodes", 2),
+        _ends_rule([(1, 74, 25, None), (2, 74, 25, None)]),
+        ("INSERT INTO linesobj", 501),
+    ])
+    res, _, _, _ = _run(lambda: create_line(1, 2), conn)
+    assert res["passport"] == {"source": "defaults", "template_line_id": None}
+    assert conn.executed("INSERT INTO heatpipesections (lineid, pipesectlength) VALUES")
+
+
 def test_delete_line_conflict_on_stale_card_date():
     conn = FakeConn([_lock_rule({7: (0, TS, "1")})])
     with pytest.raises(TopologyConflictError):
@@ -319,6 +378,7 @@ def test_split_dry_run_returns_version_and_clone_avoids_h_column():
     conn = FakeConn([
         _lock_rule({100: (0, TS, "5")}),
         ("ST_LineLocatePoint", {"nodeid1": 1, "nodeid2": 2, "split_fraction": 0.4}),
+        ("FROM heatpipesections WHERE lineid", 1),  # участок — труба
         ("INSERT INTO nodes", 900),
         ("INSERT INTO linesobj", 901),
     ])
@@ -374,3 +434,14 @@ def test_router_maps_conflicts_and_blockers_to_409():
     e = _topology_http_error(TopologyDependencyError("b", {"equipment": {}}), "x")
     assert e.status_code == 409 and e.detail["code"] == "blocked" and "blockers" in e.detail
     assert _topology_http_error(ValueError("bad"), "x").status_code == 400
+
+def test_split_refuses_equipment_link_without_pipe_passport():
+    """Звено-задвижка (нет heatpipesections): половина без объекта выпала бы из расчёта."""
+    conn = FakeConn([
+        _lock_rule({100: (0, TS, "5")}),
+        ("ST_LineLocatePoint", {"nodeid1": 1, "nodeid2": 2, "split_fraction": 0.4}),
+    ])
+    with pytest.raises(TopologyDependencyError) as exc:
+        _run(lambda: split_line(100, 76.9, 43.2, dry_run=True), conn, line_deps={"dampers": 2})
+    assert exc.value.blockers == {"not_a_pipe": {"dampers": 2}}
+    assert not [c for c in conn.calls if "INSERT" in c[1]]
