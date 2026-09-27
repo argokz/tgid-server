@@ -13,6 +13,7 @@ from routers.core import router as core_router
 from routers.crud import router as crud_router
 from routers.equipment import router as equipment_router
 from routers.exports_p4 import router as exports_p4_router
+from routers.group_setters import router as group_setters_router
 from routers.heat import router as heat_router
 from routers.journals import router as journals_router
 from routers.operations import router as operations_router
@@ -32,6 +33,7 @@ all_routers = [
     registries_router,
     operations_router,
     journals_router,
+    group_setters_router,
     topology_router,
     reports_router,
     exports_p4_router,
