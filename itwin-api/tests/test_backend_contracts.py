@@ -16,6 +16,7 @@ def test_openapi_builds_with_key_paths():
         "/api/calculations/{calculation_id}/results/geojson",
         "/api/piezometer/excel",
         "/api/topology/merge-nodes",
+        "/api/v1/topology/versions",
         "/api/export/geojson",
     ):
         assert p in paths, p
