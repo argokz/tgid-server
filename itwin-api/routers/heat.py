@@ -233,8 +233,10 @@ async def run_heat_losses(
     """Launch seasonal heat-loss oriented sety job (-fileID … -tg, no -no_teplopoter).
 
     Full poteriNewPg desktop suite remains a follow-up; this wires the Celery path
-    used by web for fragment heat-loss runs.
+    used by web for fragment heat-loss runs. Расчёт теплопотерь пишет результаты в БД,
+    поэтому, кроме роли calculator, нужен MUTATIONS_ENABLED.
     """
+    require_mutations_enabled()
     from worker import run_sety_calculation, validate_sety_params
 
     params = f"-fileID {body.fragment_id} -tg"

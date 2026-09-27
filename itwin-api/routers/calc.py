@@ -40,6 +40,17 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["calculations"])
 
 
+# Флаги sety, после которых движок пишет в исходные таблицы, а не только в *_out:
+# -save_po/-save_po_yes — нагрузки обобщённых потребителей (SQL выполняет воркер),
+# -dross_yes — UPDATE сопротивлений realconsumers/generalizedConsumers (sety/out/pt_out.py),
+# -save_uf_new — коэффициенты смешения в том же UPDATE.
+SOURCE_WRITE_FLAGS = frozenset({"-save_po", "-save_po_yes", "-dross_yes", "-save_uf_new"})
+
+
+def writes_source_data(tokens: list[str]) -> bool:
+    return any(t in SOURCE_WRITE_FLAGS for t in tokens)
+
+
 class SetyCmdParams(BaseModel):
     params: str  # строка с параметрами для ww.py
 
@@ -51,9 +62,11 @@ async def run_sety_cmd(
     user: Annotated[AuthUser, Depends(require_roles("calculator"))],
 ):
     try:
-        validate_sety_params(body.params)
+        tokens = validate_sety_params(body.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if writes_source_data(tokens):
+        require_mutations_enabled()
     request_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
     # Отправляем задачу в очередь Celery (не блокируем FastAPI)
@@ -104,6 +117,10 @@ async def run_sety_mode(
     Аргументы sety собираются сервером из типизированных полей (sety_modes.build_sety_args)
     и проходят белый список воркера; автор (-user_gid) — пользователь из токена.
     """
+    args = build_sety_args(body, user.username)
+    if writes_source_data(args):
+        # -save_po/-dross_yes переписывают исходные данные потребителей, а не только результаты
+        require_mutations_enabled()
     async with acquire_conn() as conn:
         rows = await conn.fetch(
             "SELECT id FROM fragments WHERE id = ANY($1::int[]) AND COALESCE(removed, 0) = 0",
@@ -113,7 +130,6 @@ async def run_sety_mode(
     if missing:
         raise HTTPException(status_code=404, detail=f"Фрагменты не найдены: {', '.join(map(str, missing))}")
 
-    args = build_sety_args(body, user.username)
     params = args_to_params(args)
     try:
         validate_sety_params(params)
