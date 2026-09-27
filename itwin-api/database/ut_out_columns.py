@@ -19,6 +19,9 @@ UT_LOSS_LOCAL_M = "a16"       # Местные потери напора, м
 UT_LOSS_TOTAL_M = "a17"       # Общие потери напора, м
 UT_AVAIL_HEAD_END_M = "a18"   # Располагаемый напор в конечном узле, м
 UT_PIEZO_HEAD_END_M = "a19"   # Пьезометрический напор в конечном узле, м
+# sety/w_out.py пишет a18/a19 одинаково в строку подачи и в строку обратки:
+#   a19 = напор ПОДАЧИ в конечном узле, a18 = подача − обратка,
+# поэтому напор обратки в конечном узле = a19 − a18 (return_head_end_sql).
 UT_GROUND_END_M = "a20"       # Геодезическая отметка в конечном узле, м
 UT_FULL_HEAD_END_M = "a21"    # Полный напор в конечном узле, м
 
@@ -33,6 +36,11 @@ US_PIEZO_HEAD_M = "pih"       # Пьезометрический напор, м
 US_TEMPERATURE_C = "t"        # Температура сетевой воды, °C
 
 MM_WATER_TO_PA = 9.80665      # 1 мм вод. ст. = 9.80665 Па
+
+
+def return_head_end_sql(alias: str) -> str:
+    """SQL-выражение напора обратки в конечном узле по строке ut_out с псевдонимом alias."""
+    return f"({alias}.{UT_PIEZO_HEAD_END_M} - {alias}.{UT_AVAIL_HEAD_END_M})"
 
 
 def spec_loss_pa_per_m(spec_loss_mm_per_m: float) -> float:

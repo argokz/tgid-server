@@ -20,6 +20,7 @@ from database.ut_out_columns import (
     US_SIGN_RETURN,
     US_SIGN_SUPPLY,
     US_TEMPERATURE_C,
+    return_head_end_sql,
     spec_loss_pa_per_m,
 )
 
@@ -47,7 +48,8 @@ _LINE_RESULTS_SQL = f"""
         r.{UT_VELOCITY_MS} AS velocity_return,
         r.{UT_SPEC_LOSS_MM_M} AS spec_loss_return_mm_m,
         r.{UT_LOSS_TOTAL_M} AS loss_total_return,
-        r.{UT_PIEZO_HEAD_END_M} AS head_end_return
+        r.{UT_AVAIL_HEAD_END_M} AS avail_head_end_return,
+        {return_head_end_sql("r")} AS head_end_return
         {{geometry}}
     FROM ids
     JOIN linesobj l ON l.id = ids.lineid
@@ -140,7 +142,8 @@ async def get_calculation_results_geojson(conn: asyncpg.Connection, calculation_
                 "spec_loss_mm_m": _rounded(spec_mm, 2),
                 "is_over_resistance": is_over_res,
                 "head_end": _rounded(_num(row["head_end"] if has_supply else row["head_end_return"]), 2),
-                "avail_head_end": _rounded(_num(row["avail_head_end"]), 2),
+                "avail_head_end": _rounded(_num(row["avail_head_end"] if has_supply
+                                                else row["avail_head_end_return"]), 2),
             }
         })
 
@@ -232,7 +235,8 @@ async def get_calculation_results_excel(conn: asyncpg.Connection, calculation_id
             r['length_m'] if r['length_m'] is not None else r['length_return_m'],
             r['diameter_mm'] if r['diameter_mm'] is not None else r['diameter_return_mm'],
             r['flow'], r['velocity'], r['spec_loss_mm_m'],
-            r['loss_total'], r['head_end'], r['avail_head_end'],
+            r['loss_total'], r['head_end'],
+            r['avail_head_end'] if r['avail_head_end'] is not None else r['avail_head_end_return'],
             r['flow_return'], r['velocity_return'], r['spec_loss_return_mm_m'],
             r['loss_total_return'], r['head_end_return'],
         ])

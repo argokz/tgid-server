@@ -15,7 +15,7 @@ def _line(line_id, flow, velocity, spec_mm, *, supply=True):
         "line_id": line_id,
         "length_return_m": 50.0, "diameter_return_mm": 207.0,
         "flow_return": -flow, "velocity_return": velocity, "spec_loss_return_mm_m": spec_mm,
-        "loss_total_return": 0.3, "head_end_return": 30.0,
+        "loss_total_return": 0.3, "head_end_return": 30.0, "avail_head_end_return": 38.0,
         "geometry": '{"type":"LineString","coordinates":[[76.9,43.2],[76.91,43.21]]}',
     }
     row.update({"length_m": 50.0, "diameter_mm": 207.0, "flow": flow, "velocity": velocity,
@@ -51,6 +51,8 @@ def test_get_calculation_results_geojson_thematic():
         assert "s.a10 AS velocity" in line_sql
         assert "s.a14 AS spec_loss_mm_m" in line_sql
         assert "externalsignlineid = 2" in line_sql and "externalsignlineid = 3" in line_sql
+        # a19 в строке обратки — напор ПОДАЧИ в конечном узле (sety/w_out.py), обратка = a19 − a18
+        assert "(r.a19 - r.a18) AS head_end_return" in line_sql
 
         summary = result["summary"]
         assert summary == {"calculation_id": 42, "lines_count": 3, "nodes_count": 2,
@@ -64,6 +66,8 @@ def test_get_calculation_results_geojson_thematic():
         assert lines[1]["is_over_resistance"] is False
         # Участок без подачи раскрашивается по обратке
         assert lines[2]["pipe"] == "return" and lines[2]["flow"] == -40.0 and lines[2]["flow_dir"] == -1
+        assert lines[2]["head_end"] == 30.0 and lines[2]["avail_head_end"] == 38.0
+        assert lines[0]["head_end"] == 75.5 and lines[0]["avail_head_end"] == 40.0
 
         nodes = [f["properties"] for f in result["features"] if f["properties"]["kind"] == "node"]
         assert nodes[0]["delta_h"] == 45.0

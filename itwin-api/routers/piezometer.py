@@ -10,7 +10,7 @@ import time
 from typing import Optional
 
 import networkx as nx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,10 @@ from app_logging import get_logger
 from database.connect import get_pool
 from database.piezo_excel import generate_piezometer_excel
 from database.ut_out_columns import (
+    US_PIEZO_HEAD_M,
+    US_SIGN_RETURN,
+    US_SIGN_SUPPLY,
+    US_TEMPERATURE_C,
     UT_DIAMETER_MM,
     UT_FLOW_TH,
     UT_LENGTH_M,
@@ -91,36 +95,59 @@ def _build_route(G: nx.Graph, waypoints: list[int]) -> list[int]:
     return full_path
 
 
-async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int]) -> list[dict]:
-    """Собирает по узлам пути: расстояние, отметку, напоры, температуры, координаты."""
-    q_nodes = '''
+async def _route_calculation_id(conn, path_nodes: list[int], calculation_id: Optional[int]) -> Optional[int]:
+    """Один расчёт на весь маршрут: заданный или последний, в котором есть узлы маршрута.
+
+    Раньше для каждого узла и участка брался свой последний расчёт, и на одном графике
+    смешивались разные расчёты.
+    """
+    if calculation_id is not None:
+        return calculation_id
+    return await conn.fetchval(
+        "SELECT max(calculationid) FROM us_out WHERE nodeid = ANY($1::int[])", path_nodes
+    )
+
+
+async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int],
+                              calculation_id: Optional[int] = None) -> list[dict]:
+    """Собирает по узлам пути: расстояние, отметку, напоры, температуры, координаты.
+
+    Напоры и температуры — ровно us_out выбранного расчёта (sety/out/us_out.py: pih —
+    напор над отметкой, t — температура сетевой воды), пьезометрический напор = z + pih.
+    nodes.calcpressflow/calcpressret — ИЗМЕРЕННЫЕ давления (gid8 new_baza/baza.sql, pP_fact),
+    по умолчанию 0; они отдаются отдельно (h_pod_meas/h_obr_meas) и расчёт не подменяют.
+    """
+    q_nodes = f"""
         SELECT
             n.id,
             n.geomarktoptube,
-            n.calcpressflow,
-            n.calcpressret,
+            NULLIF(n.calcpressflow, 0) AS meas_pod,
+            NULLIF(n.calcpressret, 0) AS meas_obr,
             COALESCE(NULLIF(n.nodename, ''), NULLIF(n.externalnodename, ''), n.id::text) AS label,
             CASE WHEN n.shape IS NULL THEN NULL
                  ELSE ST_X(ST_Transform(n.shape, 4326)) END AS lng,
             CASE WHEN n.shape IS NULL THEN NULL
                  ELSE ST_Y(ST_Transform(n.shape, 4326)) END AS lat,
-            COALESCE(pt.t1, us1.t) AS t_pod,
-            COALESCE(pt.t2, us2.t) AS t_obr,
-            us1.pih AS pih_pod,
-            us2.pih AS pih_obr
+            COALESCE(us1.{US_TEMPERATURE_C}, pt.t1) AS t_pod,
+            COALESCE(us2.{US_TEMPERATURE_C}, pt.t2) AS t_obr,
+            us1.{US_PIEZO_HEAD_M} AS pih_pod,
+            us2.{US_PIEZO_HEAD_M} AS pih_obr
         FROM nodes n
-        LEFT JOIN pt_out pt ON pt.nodeid = n.id
+        LEFT JOIN us_out us1 ON us1.nodeid = n.id AND us1.calculationid = $2
+                            AND us1.externalsign = {US_SIGN_SUPPLY}
+        LEFT JOIN us_out us2 ON us2.nodeid = n.id AND us2.calculationid = $2
+                            AND us2.externalsign = {US_SIGN_RETURN}
         LEFT JOIN LATERAL (
-            SELECT max(calculationid) AS cid FROM us_out WHERE nodeid = n.id
-        ) lc ON true
-        LEFT JOIN us_out us1 ON us1.nodeid = n.id AND us1.calculationid = lc.cid
-                            AND us1.externalsign = 1
-        LEFT JOIN us_out us2 ON us2.nodeid = n.id AND us2.calculationid = lc.cid
-                            AND us2.externalsign = 2
+            SELECT t1, t2 FROM pt_out WHERE nodeid = n.id AND calculationid = $2
+            ORDER BY id LIMIT 1
+        ) pt ON true
         WHERE n.id = ANY($1::int[])
-    '''
-    rows = await conn.fetch(q_nodes, path_nodes)
+    """
+    rows = await conn.fetch(q_nodes, path_nodes, calculation_id)
     attrs_map = {r['id']: r for r in rows}
+
+    def head(z: float, pressure) -> Optional[float]:
+        return z + float(pressure) if pressure is not None else None
 
     path_data: list[dict] = []
     cum_dist = 0.0
@@ -133,16 +160,14 @@ async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int]) -> list[
         item: dict = {"node_id": n_id, "distance": round(cum_dist, 2)}
         if attrs:
             z = float(attrs['geomarktoptube'] or 0.0)
-            # Давление в узле, м: nodes.calcpress*, а если не записано —
-            # us_out.pih последнего расчёта (тоже напор над отметкой: a21 = a19 + a20)
-            h_pod = attrs['calcpressflow'] if attrs['calcpressflow'] is not None else attrs['pih_pod']
-            h_obr = attrs['calcpressret'] if attrs['calcpressret'] is not None else attrs['pih_obr']
             item.update({
                 "label": attrs['label'],
                 "z": z,
-                # Пьезометрический напор = отметка + давление; None если расчёта нет
-                "h_pod": z + float(h_pod) if h_pod is not None else None,
-                "h_obr": z + float(h_obr) if h_obr is not None else None,
+                # Пьезометрический напор = отметка + напор us_out; None если расчёта нет
+                "h_pod": head(z, attrs['pih_pod']),
+                "h_obr": head(z, attrs['pih_obr']),
+                "h_pod_meas": head(z, attrs['meas_pod']),
+                "h_obr_meas": head(z, attrs['meas_obr']),
                 "t_pod": float(attrs['t_pod']) if attrs['t_pod'] is not None else None,
                 "t_obr": float(attrs['t_obr']) if attrs['t_obr'] is not None else None,
                 "lng": float(attrs['lng']) if attrs['lng'] is not None else None,
@@ -150,6 +175,7 @@ async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int]) -> list[
             })
         else:
             item.update({"label": str(n_id), "z": 0.0, "h_pod": None, "h_obr": None,
+                         "h_pod_meas": None, "h_obr_meas": None,
                          "t_pod": None, "t_obr": None, "lng": None, "lat": None})
         path_data.append(item)
     return path_data
@@ -160,15 +186,16 @@ def _has_calc(path_data: list[dict]) -> bool:
 
 
 @router.get("/piezometer/path")
-async def get_piezometer_path(start: int, end: int):
+async def get_piezometer_path(start: int, end: int, calculation_id: Optional[int] = Query(None, ge=1)):
     """Кратчайший путь между двумя узлами (обратная совместимость)."""
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
             G = await _get_topology_graph(conn)
             path_nodes = _build_route(G, [start, end])
-            path_data = await _assemble_path_data(conn, G, path_nodes)
-            return {"path": path_data}
+            cid = await _route_calculation_id(conn, path_nodes, calculation_id)
+            path_data = await _assemble_path_data(conn, G, path_nodes, cid)
+            return {"path": path_data, "calculation_id": cid}
     except HTTPException:
         raise
     except Exception as e:
@@ -178,6 +205,7 @@ async def get_piezometer_path(start: int, end: int):
 
 class RouteRequest(BaseModel):
     nodes: list[int] = Field(..., min_length=2, max_length=MAX_WAYPOINTS, description="Последовательность узлов маршрута")
+    calculation_id: Optional[int] = Field(None, ge=1, description="Расчёт; по умолчанию последний, где есть узлы маршрута")
 
 
 @router.post("/piezometer/route")
@@ -188,10 +216,12 @@ async def build_piezometer_route(body: RouteRequest):
         async with pool.acquire() as conn:
             G = await _get_topology_graph(conn)
             path_nodes = _build_route(G, body.nodes)
-            path_data = await _assemble_path_data(conn, G, path_nodes)
+            cid = await _route_calculation_id(conn, path_nodes, body.calculation_id)
+            path_data = await _assemble_path_data(conn, G, path_nodes, cid)
             total_length = path_data[-1]["distance"] if path_data else 0.0
             return {
                 "path": path_data,
+                "calculation_id": cid,
                 "waypoints": body.nodes,
                 "node_count": len(path_data),
                 "total_length": total_length,
@@ -207,6 +237,7 @@ async def build_piezometer_route(body: RouteRequest):
 class PiezometerExcelRequest(BaseModel):
     waypoints: Optional[list[int]] = None
     nodes: Optional[list[int]] = None
+    calculation_id: Optional[int] = Field(None, ge=1)
 
     @property
     def target_nodes(self) -> list[int]:
@@ -232,13 +263,14 @@ async def api_download_piezometer_excel(body: PiezometerExcelRequest):
         async with pool.acquire() as conn:
             G = await _get_topology_graph(conn)
             path_nodes = _build_route(G, nodes)
-            path_data = await _assemble_path_data(conn, G, path_nodes)
+            cid = await _route_calculation_id(conn, path_nodes, body.calculation_id)
+            path_data = await _assemble_path_data(conn, G, path_nodes, cid)
 
             # Собираем данные по сегментам (трубопроводам) между последовательными узлами пути
             segment_details = []
             cum_dist = 0.0
 
-            # Подача и обратка участка из последнего расчёта, в котором он есть
+            # Подача и обратка участка из того же расчёта, что и узлы маршрута
             q_edge = f"""
                 SELECT
                     l.id as line_id,
@@ -261,12 +293,9 @@ async def api_download_piezometer_excel(body: PiezometerExcelRequest):
                     SELECT pipesectlength, diameterinternal FROM heatpipesections
                     WHERE lineid = l.id ORDER BY id LIMIT 1
                 ) hps ON true
-                LEFT JOIN LATERAL (
-                    SELECT max(calculationid) AS cid FROM ut_out WHERE lineid = l.id
-                ) lc ON true
-                LEFT JOIN ut_out s ON s.lineid = l.id AND s.calculationid = lc.cid
+                LEFT JOIN ut_out s ON s.lineid = l.id AND s.calculationid = $3
                                   AND s.externalsignlineid = {UT_SIGN_SUPPLY}
-                LEFT JOIN ut_out r ON r.lineid = l.id AND r.calculationid = lc.cid
+                LEFT JOIN ut_out r ON r.lineid = l.id AND r.calculationid = $3
                                   AND r.externalsignlineid = {UT_SIGN_RETURN}
                 WHERE ((l.nodeid1 = $1 AND l.nodeid2 = $2) OR (l.nodeid1 = $2 AND l.nodeid2 = $1))
                   AND COALESCE(l.removed, 0) = 0
@@ -278,7 +307,7 @@ async def api_download_piezometer_excel(body: PiezometerExcelRequest):
             for i in range(len(path_nodes) - 1):
                 n1_id = path_nodes[i]
                 n2_id = path_nodes[i + 1]
-                edge_row = await conn.fetchrow(q_edge, n1_id, n2_id)
+                edge_row = await conn.fetchrow(q_edge, n1_id, n2_id, cid)
                 n1_info = node_dict.get(n1_id, {})
                 n2_info = node_dict.get(n2_id, {})
 
