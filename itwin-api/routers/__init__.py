@@ -5,6 +5,7 @@
 модулями не влияет на маршрутизацию (наборы путей не пересекаются).
 """
 
+from routers.admin import router as admin_router
 from routers.analysis import router as analysis_router
 from routers.auth_routes import router as auth_router
 from routers.calc import router as calc_router
@@ -33,4 +34,5 @@ all_routers = [
     reports_router,
     exports_p4_router,
     analysis_router,
+    admin_router,
 ]

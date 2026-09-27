@@ -9,7 +9,9 @@ Roles (least → most privilege):
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Iterable, Optional
@@ -29,6 +31,8 @@ except ImportError:  # pragma: no cover
 
 ROLE_ORDER = {"viewer": 1, "calculator": 2, "editor": 3, "admin": 4}
 _DEFAULT_JWT_SECRET = "dev-insecure-change-me"
+
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto") if CryptContext else None
@@ -131,6 +135,78 @@ def decode_access_token(token: str) -> AuthUser:
     return AuthUser(sub=str(payload.get("sub") or username), role=role, username=username)
 
 
+def resolve_user_role(role: Optional[str], is_admin: Optional[bool]) -> str:
+    """Роль записи UsersDB: колонка role, иначе legacy is_admin → admin/viewer."""
+    resolved = role or ("admin" if is_admin else "viewer")
+    if resolved not in ROLE_ORDER:
+        resolved = "admin" if is_admin else "viewer"
+    return resolved
+
+
+# Живая проверка учётной записи: блокировка и смена роли администратором действуют
+# на уже выданные токены (кэш на USER_STATUS_TTL секунд, сброс при правке пользователя).
+_user_status_cache: dict[int, tuple[float, Optional[tuple[bool, str]]]] = {}
+
+
+def _user_status_ttl() -> float:
+    try:
+        return float(os.getenv("USER_STATUS_TTL", "30"))
+    except ValueError:
+        return 30.0
+
+
+def invalidate_user_status(user_id: Optional[int] = None) -> None:
+    if user_id is None:
+        _user_status_cache.clear()
+    else:
+        _user_status_cache.pop(user_id, None)
+
+
+async def _load_user_status(user_id: int) -> Optional[tuple[bool, str]]:
+    """(is_active, role) из UsersDB; None — пользователя нет."""
+    from sqlalchemy import select
+
+    from database.connect import async_session
+    from database.models import User
+
+    async with async_session() as session:
+        row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if row is None:
+            return None
+        return bool(row.is_active), resolve_user_role(row.role, row.is_admin)
+
+
+async def apply_live_user_status(user: AuthUser) -> AuthUser:
+    """Токен UsersDB (sub — числовой id): заблокированный → 401, роль — текущая из БД.
+
+    Токены dev-login (sub = имя) не сверяются. Если UsersDB недоступна — доверяем токену
+    (подпись и срок уже проверены), в лог пишется предупреждение.
+    """
+    if not user.sub.isdigit() or not _env_bool("AUTH_LIVE_USER_CHECK", "true"):
+        return user
+    user_id = int(user.sub)
+    now = time.monotonic()
+    cached = _user_status_cache.get(user_id)
+    if cached and now - cached[0] < _user_status_ttl():
+        status_row = cached[1]
+    else:
+        try:
+            status_row = await _load_user_status(user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("UsersDB status check failed, trusting token: %s", exc)
+            return user
+        _user_status_cache[user_id] = (now, status_row)
+    if status_row is None or not status_row[0]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Учётная запись заблокирована или удалена",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if status_row[1] != user.role:
+        return AuthUser(sub=user.sub, role=status_row[1], username=user.username)
+    return user
+
+
 async def get_current_user(
     credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)] = None,
 ) -> AuthUser:
@@ -142,7 +218,7 @@ async def get_current_user(
             detail="Authorization Bearer token required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return decode_access_token(credentials.credentials)
+    return await apply_live_user_status(decode_access_token(credentials.credentials))
 
 
 async def get_optional_user(
@@ -152,7 +228,7 @@ async def get_optional_user(
         return AuthUser(sub="dev", role="admin", username="dev")
     if credentials is None or not credentials.credentials:
         return None
-    return decode_access_token(credentials.credentials)
+    return await apply_live_user_status(decode_access_token(credentials.credentials))
 
 
 def require_roles(*roles: str):

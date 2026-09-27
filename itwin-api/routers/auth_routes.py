@@ -14,6 +14,7 @@ from auth import (
     dev_login_enabled,
     get_current_user,
     mutations_enabled,
+    resolve_user_role,
     strict_auth,
     verify_password,
 )
@@ -47,9 +48,7 @@ async def auth_login(body: LoginRequest):
             stored = user_row.hashed_password or ""
             if not verify_password(body.password, stored):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
-            resolved_role = user_row.role or ("admin" if user_row.is_admin else "viewer")
-            if resolved_role not in ROLE_ORDER:
-                resolved_role = "admin" if user_row.is_admin else "viewer"
+            resolved_role = resolve_user_role(user_row.role, user_row.is_admin)
             # Client cannot escalate role when auth is on
             token = create_access_token(
                 username=user_row.username,
