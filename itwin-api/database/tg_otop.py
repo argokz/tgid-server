@@ -10,6 +10,13 @@ import math
 from typing import Any, Mapping
 
 
+# Цикл «по нижней/верхней срезке»: при срезке обратной воды (t2_2r) CalculateOT1 поднимает
+# t1 на 0.05 °C за проход и повторяет, пока t2 не станет ≥ t2_2r; у десктопа цикл без
+# ограничения. 80 проходов (прежний общий max_iter) — это только +4 °C, и график
+# обрывался ниже срезки. 10000 проходов — до +500 °C, заведомо больше нужного.
+CUTOFF_MAX_PASSES = 10_000
+
+
 class OtopError(ValueError):
     """Invalid heatsource inputs for OTOP."""
 
@@ -117,7 +124,7 @@ def calculate_otop_point(
         qocn = qopc
         qoc = qocn
         tm = 1
-        for _cut in range(max_iter):
+        for _cut in range(CUTOFF_MAX_PASSES):
             tau02 = tau01 - dtau * qopc
             tau03 = tau02 + teta * qopc
             for _room in range(max_iter):

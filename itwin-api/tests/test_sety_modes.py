@@ -21,6 +21,7 @@ def test_plan_args_follow_desktop_getDoItDr():
     args = _args(fragment_ids=[74], name="Плановый тест", tn=-25, tg=True, teplopoter=False, dross_yes=True)
     s = " ".join(args)
     assert "-iter 20" in s and "-trtp 0" in s and "-Tn -25" in s
+    assert "-tp_metod 0" in s  # десктоп всегда передаёт индекс combo_Metod (= 0), sety по умолчанию 1
     assert "-tg" in args and "-no_teplopoter" in args and "-dross_yes" in args
     assert "-a" not in args and "-GWS" not in args and "-leto" not in args
     assert args[-2:] == ["-user_gid", "ivanov"]

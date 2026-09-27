@@ -133,8 +133,9 @@ def build_sety_args(req: SetyRunRequest, user_gid: str) -> list[str]:
         args.append("-ro_temp")
 
     if req.mode == "plan":
-        # getDoItDr: "-iter N -dross -Tn T -tp_metod M -trtp K" + флаги
-        args += ["-iter", str(req.iter), "-trtp", str(req.trtp)]
+        # getDoItDr: "-iter N -dross -Tn T -tp_metod M -trtp K" + флаги. M — индекс
+        # combo_Metod, где у десктопа один пункт «нормы» → всегда 0 (умолчание sety — 1).
+        args += ["-iter", str(req.iter), "-tp_metod", "0", "-trtp", str(req.trtp)]
         if req.dross_yes:
             args.append("-dross_yes")
         if req.avtomat:
