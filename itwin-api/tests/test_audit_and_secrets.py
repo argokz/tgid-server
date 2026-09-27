@@ -41,6 +41,49 @@ def test_audit_legacy_column_names_and_no_columns():
     assert _audit({"changed_at"}) is None
 
 
+def test_audit_with_conn_writes_in_callers_transaction(monkeypatch):
+    """conn= — запись аудита через SAVEPOINT транзакции операции, без своего соединения."""
+    import asyncio
+
+    import audit
+
+    class _Tx:
+        entered = 0
+
+        async def __aenter__(self):
+            _Tx.entered += 1
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Conn:
+        executed = []
+
+        def transaction(self):
+            return _Tx()
+
+        async def fetchval(self, sql, *a):
+            return True
+
+        async def fetch(self, sql, *a):
+            return [{"column_name": c} for c in ("changed_by", "operation", "table_name", "new_data")]
+
+        async def execute(self, sql, *args):
+            self.executed.append((sql, args))
+
+    def _no_own_connection():
+        raise AssertionError("с conn свой пул не используется")
+
+    monkeypatch.setattr(audit, "acquire_conn", _no_own_connection)
+    conn = _Conn()
+    asyncio.run(audit.write_audit_log(
+        changed_by="u", operation="MERGE", table_name="nodes", new_data={"a": 1}, conn=conn,
+    ))
+    assert _Tx.entered == 1
+    (sql, args), = conn.executed
+    assert sql.startswith("INSERT INTO audit_log") and list(args[:3]) == ["u", "MERGE", "nodes"]
+
+
 def _write_po_files(tmp_path, sql_text, encoding=None):
     enc = encoding or worker._sety_text_encoding()
     sql_file = tmp_path / "tmp_po.sql"
