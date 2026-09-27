@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from database.connect import acquire_conn
 from database import regime_queries
+from database.travel_time import travel_time
 from database.network_queries import (
+    query_closed_consumers,
     query_heat_consumption,
     query_length_by_diameter,
     query_length_by_diameter_and_laying,
@@ -18,6 +20,7 @@ from database.network_queries import (
     query_network_volume,
 )
 from database.outage_simulation import simulate_outage_isolation
+from routers.piezometer import _build_route, _get_topology_graph
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["analysis"])
@@ -96,6 +99,36 @@ async def network_query_length_by_diameter_laying(
     frags = _parse_fragments(fragment_id, fragments)
     async with acquire_conn() as conn:
         return await query_length_by_diameter_and_laying(conn, fragment_ids=frags)
+
+
+@router.get("/api/network-queries/closed-consumers")
+async def network_query_closed_consumers(
+    fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Comma-separated fileIDs"),
+):
+    """Zap6: закрытые (физически отключённые) потребители."""
+    frags = _parse_fragments(fragment_id, fragments)
+    async with acquire_conn() as conn:
+        items = await query_closed_consumers(conn, fragment_ids=frags)
+        await regime_queries.attach_coords(conn, items["items"])
+        return items
+
+
+class TravelTimeRequest(BaseModel):
+    nodes: list[int] = Field(..., min_length=2, max_length=200,
+                             description="Узлы маршрута (waypoints, как у пьезометра)")
+    calculation_id: Optional[int] = Field(None, ge=1, description="Расчёт; по умолчанию последний по фрагменту линии")
+
+
+@router.post("/api/analysis/travel-time")
+async def analysis_travel_time(body: TravelTimeRequest):
+    """Время прохождения потока по выделенному направлению (gid6 OnTimePr)."""
+    async with acquire_conn() as conn:
+        graph = await _get_topology_graph(conn)
+        path = _build_route(graph, body.nodes)
+        result = await travel_time(conn, path, body.calculation_id)
+        result["waypoints"] = body.nodes
+        return result
 
 
 # --- Анализ режима по результатам расчёта (gid6 «Анализ») ---------------------------------

@@ -6,6 +6,7 @@ import pytest
 
 from database import network_queries as nq
 from database import regime_queries as R
+from database import travel_time as TT
 
 
 def test_graph_temperature_interpolates_and_switches_to_summer():
@@ -51,5 +52,54 @@ def test_regime_routes_registered():
     for p in ("/api/analysis/regime/negative-dp", "/api/analysis/regime/airlock",
               "/api/analysis/regime/low-temperature", "/api/analysis/regime/closed-sections",
               "/api/analysis/regime/hydrostatic-zones", "/api/analysis/admissibility/{query_id}",
-              "/api/network-queries/length-by-diameter-laying"):
+              "/api/network-queries/length-by-diameter-laying", "/api/network-queries/closed-consumers",
+              "/api/analysis/travel-time"):
         assert p in paths, p
+    assert "post" in paths["/api/analysis/travel-time"]
+
+
+def test_format_travel_time_like_desktop():
+    assert TT.format_travel_time(0) == "0 часов 0 минут 0 секунд"
+    assert TT.format_travel_time(90) == "1 часов 30 минут 0 секунд"
+    assert TT.format_travel_time(-150) == "2 часов 30 минут 0 секунд"  # fabs
+    assert TT.format_travel_time(7.5) == "0 часов 7 минут 30 секунд"
+    assert TT.format_travel_time(TT.NO_FLOW) == TT.NO_FLOW_TEXT
+
+
+def test_travel_time_supply_along_flow_accumulates():
+    segs = [{"q": 10, "time_min": 5, "napr": 1}, None, {"q": 8, "time_min": 3, "napr": 1}]
+    acc, trace = TT.accumulate_travel_time(segs, supply=True)
+    assert acc == 8 and trace == [5, 5, 8]
+
+
+def test_travel_time_supply_against_flow_is_no_flow():
+    # первый участок не проверяется (timeP = 0), второй — против накопленного направления
+    segs = [{"q": 10, "time_min": 5, "napr": 1}, {"q": -4, "time_min": 2, "napr": 1},
+            {"q": 10, "time_min": 1, "napr": 1}]
+    acc, trace = TT.accumulate_travel_time(segs, supply=True)
+    assert acc > 1e70 and trace[0] == 5 and trace[1] > 1e70
+    assert TT.format_travel_time(acc) == TT.NO_FLOW_TEXT
+
+
+def test_travel_time_return_expects_counter_flow():
+    # обратка: расход против направления маршрута — нормально (условие десктопа q·napr·t > 0)
+    ok = [{"q": -10, "time_min": 4, "napr": 1}, {"q": -3, "time_min": 6, "napr": 1}]
+    assert TT.accumulate_travel_time(ok, supply=False)[0] == 10
+    bad = [{"q": -10, "time_min": 4, "napr": 1}, {"q": 3, "time_min": 6, "napr": 1}]
+    assert TT.accumulate_travel_time(bad, supply=False)[0] > 1e70
+
+
+def test_travel_time_reverse_oriented_lines_accumulate_negative():
+    # маршрут против ориентации линий: napr = −1, накопление со знаком, итог — |t|.
+    # a11 ≥ 0, поэтому проверка десктопа фактически сверяет знак q с ориентацией линий
+    # (подача q ≥ 0), а не с направлением обхода: обход против потока даёт то же время.
+    segs = [{"q": 10, "time_min": 5, "napr": -1}, {"q": 10, "time_min": 2, "napr": -1}]
+    acc, _ = TT.accumulate_travel_time(segs, supply=True)
+    assert acc == -7 and TT.format_travel_time(acc) == "0 часов 7 минут 0 секунд"
+    rev = [{"q": -10, "time_min": 5, "napr": -1}, {"q": -10, "time_min": 2, "napr": -1}]
+    assert TT.accumulate_travel_time(rev, supply=True)[0] > 1e70
+
+
+def test_travel_time_missing_results_count_as_zero():
+    segs = [{"q": None, "time_min": None, "napr": 1}, {"q": 5, "time_min": 2, "napr": 1}]
+    assert TT.accumulate_travel_time(segs, supply=True)[0] == 2

@@ -1,4 +1,4 @@
-"""Desktop «Запросы» (zaprosy.cpp Zap1/2/3/7) — read-only aggregates for PG."""
+"""Desktop «Запросы» (zaprosy.cpp Zap1–7) — read-only aggregates for PG."""
 
 from __future__ import annotations
 
@@ -200,6 +200,40 @@ async def query_heat_consumption(
         "consumers": consumers,
         "totals": {k: float(v or 0) for k, v in totals.items()},
         "note": "Агрегат по PT_OUT последнего calculation на фрагмент(ы)",
+    }
+
+
+async def query_closed_consumers(
+    conn: asyncpg.Connection,
+    *,
+    fragment_ids: Optional[Sequence[int]] = None,
+) -> dict[str, Any]:
+    """Zap6: закрытые (физически отключённые) потребители — gid8 gidrSlot.cpp onZap6:
+    обобщённые и отдельные потребители с consumerstateid = 2, узел не удалён."""
+    extra, args = _frag_clause("n", fragment_ids)
+    rows = await conn.fetch(
+        f"""
+        SELECT DISTINCT n.id AS node_id, n.fileid AS fragment_id, ec.name AS code,
+               n.externalnodename AS name, pt.name AS consumer, pt.kind
+          FROM nodes n
+          JOIN externalcodes ec ON ec.id = n.externalcodeid
+          JOIN (
+            SELECT gc.nodeid, gc.name, 'generalized' AS kind FROM generalizedconsumers gc WHERE gc.consumerstateid = 2
+            UNION
+            SELECT rc.nodeid, rc.name, 'real' AS kind FROM realconsumers rc WHERE rc.consumerstateid = 2
+          ) pt ON pt.nodeid = n.id
+         WHERE COALESCE(n.removed, 0) = 0
+           {extra}
+         ORDER BY n.id
+        """,
+        *args,
+    )
+    return {
+        "query": "closed_consumers",
+        "title": "Закрытые потребители",
+        "fragment_ids": list(fragment_ids or []),
+        "count": len(rows),
+        "items": [dict(r) for r in rows],
     }
 
 
