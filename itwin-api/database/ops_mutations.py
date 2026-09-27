@@ -1,4 +1,9 @@
-"""Field allow-lists for ops journals (defect → shurf → osmotr → remont → opres)."""
+"""Field allow-lists for ops journals in the legacy generic CRUD (/update, /create).
+
+Источник правды — database/journal_specs.py (там же типы и проверки). Новый веб пишет
+через /api/v1/journals/{journal}; этот фильтр оставлен для старых клиентов и принимает
+как ключи журнала (detected_at), так и реальные имена колонок (data_osmotra).
+"""
 
 from __future__ import annotations
 
@@ -6,88 +11,26 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from database.journal_specs import JOURNALS
+
 OPS_MUTABLE_FIELDS: dict[str, frozenset[str]] = {
-    "defect": frozenset(
-        {
-            "data_osmotra",
-            "tip_povrezhdenia",
-            "harakter_povrezhdenia",
-            "povrezhdennyi_truboprovod",
-            "sost_naruzhnoy",
-            "rasstoyanie",
-            "vremya_nachala_rabot",
-            "vremya_okonchaniya_rabot",
-            "shirina_povrezhdenia",
-            "vysota_povrezhdenia",
-            "prichiny",
-            "tsentr_povrezhdenia",
-            "lineid",
-            "nodeid",
-            "sostoyanie",
-            "primechanie",
-            "adres",
-        }
-    ),
-    "shurfy": frozenset(
-        {
-            "data_shurfa",
-            "lineid",
-            "nodeid",
-            "sostoyanie",
-            "primechanie",
-            "glubina",
-            "shirina",
-            "dlina",
-            "rezultat",
-            "adres",
-        }
-    ),
-    "osmotr": frozenset(
-        {
-            "data_osmotra",
-            "lineid",
-            "nodeid",
-            "primechanie",
-            "adres",
-            "rezultat",
-            "ispolnitel",
-        }
-    ),
-    "remont2": frozenset(
-        {
-            "data_remonta",
-            "lineid",
-            "nodeid",
-            "sostoyanie",
-            "primechanie",
-            "vid_rabot",
-            "adres",
-            "ispolnitel",
-        }
-    ),
-    "opres": frozenset(
-        {
-            "data_opressovki",
-            "lineid",
-            "nodeid",
-            "davlenie",
-            "rezultat",
-            "sostoyanie",
-            "primechanie",
-            "adres",
-        }
-    ),
+    spec.table: frozenset(f.column for f in spec.fields.values()) for spec in JOURNALS.values()
+}
+_ALIASES: dict[str, dict[str, str]] = {
+    spec.table: {key: f.column for key, f in spec.fields.items()} for spec in JOURNALS.values()
 }
 
 
 def filter_ops_fields(table: str, fields: dict[str, Any]) -> dict[str, Any]:
-    allow = OPS_MUTABLE_FIELDS.get(table.lower())
+    key = table.lower()
+    allow = OPS_MUTABLE_FIELDS.get(key)
     if allow is None:
         return fields
+    aliases = _ALIASES[key]
     allow_lower = {f.lower(): f for f in allow}
     normalized: dict[str, Any] = {}
-    for key, value in fields.items():
-        canon = allow_lower.get(key.lower())
+    for name, value in fields.items():
+        canon = aliases.get(name) or allow_lower.get(str(name).lower())
         if canon:
             normalized[canon] = value
     if not normalized:
