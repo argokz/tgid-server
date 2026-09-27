@@ -325,7 +325,14 @@ async def get_shurf(conn: asyncpg.Connection, shurf_id: int) -> Optional[dict[st
         ground_fill.name AS ground_fill_name,
         approver_position.znachenie AS approver_position,
         approver_service.name AS approver_service,
-        reviewer_position.znachenie AS reviewer_position,""",
+        reviewer_position.znachenie AS reviewer_position,
+        s.ulicaid AS street_id,
+        s.nomer_doma AS house_number,
+        s.nodeid_bizhajshej_kamery AS nearest_chamber_node_id,
+        s.materialy_i_mekhanizmyid AS material_id,
+        s.predpolagaemye_prichiny_razrusheniya_izolyacii AS suspected_causes,
+        s.dolzhnost_1 AS commission_position_1_id,
+        s.dolzhnost_2 AS commission_position_2_id,""",
             1,
         )
         + """

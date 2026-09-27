@@ -78,7 +78,11 @@ def _spec(journal: str) -> JournalSpec:
 
 def _http(exc: Exception) -> HTTPException:
     if isinstance(exc, JournalWriteError):
-        return HTTPException(status_code=exc.status, detail=exc.detail)
+        detail = exc.detail
+        if isinstance(detail, str):
+            # код в detail — веб отличает «записи нет» от «маршрута нет» (устаревший API)
+            detail = {"code": "not_found" if exc.status == 404 else "conflict", "message": detail}
+        return HTTPException(status_code=exc.status, detail=detail)
     if isinstance(exc, UnknownIdentifierError):
         # схема БД не совпала с описанием журнала — ошибка конфигурации, не клиента
         logger.error("journal schema mismatch: %s", exc)
@@ -106,12 +110,16 @@ async def journals_schema():
 async def journal_schema(journal: str):
     spec = _spec(journal)
     result = describe(spec)
-    if spec.documents_table or spec.approval:
+    refs = {f.ref for f in spec.fields.values()}
+    if spec.approval:
+        refs |= {f.ref for f in spec.approval.signer_columns.values()}
+    needs_people = bool(refs & {"dolzhnosti", "subdivisions"})
+    if spec.documents_table or needs_people:
         async with acquire_conn() as conn:
             try:
                 if spec.documents_table:
                     result["document_types"] = await document_types(conn, spec)
-                if spec.approval:
+                if needs_people:
                     result["positions"] = [dict(r) for r in await conn.fetch(
                         "SELECT id, znachenie AS name FROM dolzhnosti ORDER BY znachenie, id")]
                     result["subdivisions"] = [dict(r) for r in await conn.fetch(

@@ -27,6 +27,8 @@ DEFECT_SUMMARY_SELECT = """
         d.priznak_truboprovoda AS pipeline_sign_id,
         pipeline_sign.name AS pipeline_sign_name,
         NULLIF(CONCAT_WS(' ', street.name, NULLIF(d.nomer_doma, '')), '') AS address,
+        d.ulicaid AS street_id,
+        d.nomer_doma AS house_number,
         COALESCE(NULLIF(line_node_1.nodename, ''), line_node_1.externalnodename) AS line_start_node,
         COALESCE(NULLIF(line_node_2.nodename, ''), line_node_2.externalnodename) AS line_end_node,
         CASE WHEN d.shape IS NULL THEN NULL ELSE ST_X(ST_Transform(d.shape, 4326)) END AS longitude,
