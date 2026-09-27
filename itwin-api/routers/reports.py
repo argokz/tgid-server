@@ -4,6 +4,9 @@ import io
 import os
 import sys
 
+from urllib.parse import quote
+
+import asyncpg
 import openpyxl
 import psycopg2
 from fastapi import APIRouter, HTTPException, Query
@@ -12,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from typing import Optional
 
 from app_logging import get_logger
+from database import excel_reports
 from database.connect import acquire_conn
 from database.export_shp import export_network_to_shp
 from database.passport_diagnostics import get_passport_site_diagnostics
@@ -353,4 +357,61 @@ async def get_report_excel_endpoint(
         io.BytesIO(excel_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=report_{doc_type}{suffix}.xlsx"}
+    )
+
+
+@router.get("/api/reports/catalog")
+async def get_reports_catalog():
+    """Каталог Excel-отчётов: отчёты десктопа gid6 (excel2/*.lst, шаблоны и SQL) и сводные
+    ведомости веба (/api/reports/excel/{doc_type}). Источник списка для диалога «Отчёты»."""
+    desktop = [{**item, "kind": "desktop"} for item in excel_reports.catalog()]
+    summary = [
+        {
+            "id": t["code"], "title": t["title"], "group": "Сводные ведомости", "kind": "summary",
+            "desktop": None, "note": None, "uses_calculation": False,
+            "params": {"fragment_id": None, "calculation_id": None,
+                       "year": "optional" if t["code"] in ("tu-balance", "tu_balance") else None},
+            "sheets": [{"title": t["title"], "sql": None}],
+        }
+        for t in excel_report_types()
+    ]
+    return {
+        "items": desktop + summary,
+        "not_ported": [{"sql": k, "reason": v} for k, v in excel_reports.NOT_PORTED.items()],
+    }
+
+
+@router.get("/api/reports/catalog/{report_id}/excel")
+async def get_catalog_report_excel(
+    report_id: str,
+    fragment_id: int = Query(..., ge=1, description="Фрагмент (nodes.fileid)"),
+    calculation_id: Optional[int] = Query(None, ge=1, description="Расчёт; по умолчанию последний расчёт фрагмента"),
+):
+    """Excel-отчёт десктопа: шаблон excel2 + строки SQL под шапкой (gid6 CCxema::Excel2List)."""
+    try:
+        report = excel_reports.get_report(report_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Нет отчёта {report_id}")
+    try:
+        async with acquire_conn() as conn:
+            calc, results = await excel_reports.fetch_report(conn, report, fragment_id, calculation_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except asyncpg.QueryCanceledError:
+        raise HTTPException(status_code=504, detail="Отчёт не уложился в таймаут запроса")
+    data = await run_in_threadpool(excel_reports.render_report, report, calc, results)
+    summary = excel_reports.report_summary(report, fragment_id, calc, results)
+    filename = f"{report.title} ф{fragment_id}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=report_{report.id}_f{fragment_id}.xlsx; "
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Report-Rows": ",".join(str(s["rows"]) for s in summary["sheets"]),
+            "X-Report-Calculation": str(summary["calculation_id"] or ""),
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Report-Rows, X-Report-Calculation",
+        },
     )
