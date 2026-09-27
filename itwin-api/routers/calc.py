@@ -5,14 +5,22 @@ import time
 import uuid
 from typing import Annotated, Literal, Optional
 
+from datetime import datetime
+
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app_logging import get_logger
 from audit import write_audit_log
-from auth import AuthUser, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles
+from database.calculation_admin import (
+    CalculationReferencedError,
+    delete_calculation,
+    get_calculation,
+    list_calculations,
+)
 from database.calculations import (
     get_calculation_results_excel,
     get_calculation_results_geojson,
@@ -24,6 +32,7 @@ from database.throttling_calc import (
     calculate_orifice_plate_full,
     generate_throttling_excel,
 )
+from sety_modes import SetyRunRequest, args_to_params, build_sety_args
 from worker import celery_app, run_sety_calculation, validate_sety_params
 
 logger = get_logger(__name__)
@@ -82,6 +91,133 @@ async def get_task_status(task_id: str):
         response["meta"] = task_result.info
 
     return response
+
+
+@router.post("/api/calculations/run")
+@router.post("/api/v1/calculations/run")
+async def run_sety_mode(
+    body: SetyRunRequest,
+    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+):
+    """Расчёт в режиме десктопа: плановый / аварийный (фактический), один фрагмент или по списку.
+
+    Аргументы sety собираются сервером из типизированных полей (sety_modes.build_sety_args)
+    и проходят белый список воркера; автор (-user_gid) — пользователь из токена.
+    """
+    async with acquire_conn() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM fragments WHERE id = ANY($1::int[]) AND COALESCE(removed, 0) = 0",
+            body.fragment_ids,
+        )
+    missing = sorted(set(body.fragment_ids) - {r["id"] for r in rows})
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Фрагменты не найдены: {', '.join(map(str, missing))}")
+
+    args = build_sety_args(body, user.username)
+    params = args_to_params(args)
+    try:
+        validate_sety_params(params)
+    except ValueError as e:  # защита на случай рассинхрона билдера и белого списка
+        raise HTTPException(status_code=400, detail=str(e))
+
+    request_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    if not body.is_list and body.dross:
+        # Сигнатура старой задачи: плановый расчёт одного фрагмента понимает и прежний воркер
+        task = run_sety_calculation.delay(f"{params} -fileID {body.fragment_ids[0]}", request_id)
+    elif not body.is_list:
+        task = run_sety_calculation.delay(f"{params} -fileID {body.fragment_ids[0]}", request_id, dross=False)
+    else:
+        task = run_sety_calculation.delay(params, request_id, dross=body.dross, file_ids=body.fragment_ids)
+
+    logger.info(f"Task dispatched to Celery: {task.id} mode={body.mode} fragments={body.fragment_ids} by {user.username}")
+    await write_audit_log(
+        changed_by=user.username,
+        operation="RUN_SETY",
+        table_name="calculation",
+        new_data={
+            "mode": body.mode,
+            "fragment_ids": body.fragment_ids,
+            "params": params,
+            "task_id": task.id,
+            "request_id": request_id,
+        },
+    )
+    return {
+        "message": "Расчет добавлен в очередь",
+        "task_id": task.id,
+        "request_id": request_id,
+        "mode": body.mode,
+        "fragment_ids": body.fragment_ids,
+        "params": params,
+    }
+
+
+@router.get("/api/calculations")
+@router.get("/api/v1/calculations")
+async def api_calculations_list(
+    file_id: Optional[int] = Query(None, ge=1, description="Фрагмент"),
+    mode: Optional[Literal["plan", "emergency"]] = Query(None, description="Режим по calc_params.g_is_avar"),
+    author: Optional[str] = Query(None, max_length=100, description="Автор (user_gid), подстрока"),
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Расчёты (таблица calculation): дата, режим, Tн, наименование, автор, параметры sety."""
+    async with acquire_conn() as conn:
+        return await list_calculations(
+            conn, file_id=file_id, mode=mode, author=author,
+            date_from=date_from, date_to=date_to, limit=limit, offset=offset,
+        )
+
+
+@router.delete("/api/calculations/{calculation_id}")
+@router.delete("/api/v1/calculations/{calculation_id}")
+async def api_calculation_delete(
+    calculation_id: int,
+    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+):
+    """Удаляет расчёт и его строки во всех *_out (одна транзакция).
+
+    Только при MUTATIONS_ENABLED; роль calculator удаляет свои расчёты, editor/admin — любые.
+    """
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        calc = await get_calculation(conn, calculation_id)
+        if calc is None:
+            raise HTTPException(status_code=404, detail="Расчёт не найден")
+        if not user.has_role("editor") and (calc.get("user_gid") or "") != user.username:
+            raise HTTPException(status_code=403, detail="Чужой расчёт может удалить только editor или admin")
+        try:
+            result = await delete_calculation(conn, calculation_id)
+        except CalculationReferencedError as e:
+            raise HTTPException(
+                status_code=409,
+                detail=f"На расчёт ссылаются данные вне результатов расчёта ({e}); удаление отменено",
+            )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Расчёт не найден")
+
+    calc_row = result["calculation"]
+    await write_audit_log(
+        changed_by=user.username,
+        operation="DELETE",
+        table_name="calculation",
+        record_id=calculation_id,
+        old_data={
+            "fileid": calc_row.get("fileid"),
+            "name": calc_row.get("name"),
+            "user_gid": calc_row.get("user_gid"),
+            "tn": calc_row.get("tn"),
+            "calculated_at": calc_row["calculated_at"].isoformat() if calc_row.get("calculated_at") else None,
+            "deleted_rows": result["deleted_rows"],
+        },
+    )
+    return {
+        "success": True,
+        "calculation_id": calculation_id,
+        "deleted_rows": result["deleted_rows"],
+    }
 
 
 @router.get("/api/calculations/latest")
