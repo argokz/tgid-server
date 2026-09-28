@@ -18,6 +18,7 @@ from routers.heat import router as heat_router
 from routers.journals import router as journals_router
 from routers.operations import router as operations_router
 from routers.piezometer import router as piezometer_router
+from routers.pts import router as pts_router
 from routers.registries import router as registries_router
 from routers.reports import router as reports_router
 from routers.topology import router as topology_router
@@ -34,6 +35,7 @@ all_routers = [
     operations_router,
     journals_router,
     group_setters_router,
+    pts_router,
     topology_router,
     reports_router,
     exports_p4_router,

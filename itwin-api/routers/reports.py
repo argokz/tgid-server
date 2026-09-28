@@ -151,8 +151,8 @@ def generate_passport_excel_query(table: str, obj_id: int):
                 status_code=404,
                 detail=(
                     f"Для участка {ms_rs}/{site_id} нет ни одного трубопровода. "
-                    "Проверьте привязку узлов к участку (nodes.belongMagistralSite / "
-                    "belongDistSite) — без неё паспорт сформировать нельзя."
+                    "Привяжите трубы к участку (инструмент «Участки ПТС», "
+                    "heatpipesections.magistralSite / distSite) — без неё паспорт сформировать нельзя."
                 ),
             )
 

@@ -60,7 +60,7 @@ class RefSpec:
 @dataclass(frozen=True)
 class Column:
     column: str
-    source: str = "value"  # value | ref:<колонка справочника> | expr:<ключ EXPRESSIONS>
+    source: str = "value"  # value | ref:<колонка справочника> | expr:<ключ EXPRESSIONS> | null
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,7 @@ def _pipe(*columns: str) -> tuple[Write, ...]:
 
 _VARCOEF = RefSpec("varcoefficients", "kodkv", fragment_scoped=True)
 _P, _U, _N, _S = "Потребители", "Участки теплопроводов", "Узлы", "Надписи"
+_PTS = "Участки ПТС"
 _OPEN = "Потребители: открытая ГВС"
 _SHOW_HIDE = ((0, "Показывать надписи"), (1, "Не показывать надписи"))
 
@@ -246,6 +247,24 @@ _SETTERS_LIST: tuple[SetterSpec, ...] = (
                "gid8 aSetLength / gid6 OnSetLength", affects_calc=True, field_label="Длина, м",
                note="Длина = ST_Length(linesobj.shape) в метрах (SRID 9998), как правка вершин; "
                     "участки без геометрии не меняются."),
+    # --- Участки ПТС (паспорта): heatpipesections.magistralsite / distsite ---
+    SetterSpec("pts_site_ms", "Назначить участок МС (ПТС)", _PTS, "pipes", "ref",
+               (Write(_HP, "lineid", (Column("magistralsite"), Column("distsite", "null"))),),
+               "gid8 GidWidget::onSaveMS",
+               RefSpec("uchastok_ms", "opisanie_uchastka_ms",
+                       label_sql="concat('МС ', id, ' — ', COALESCE(opisanie_uchastka_ms, ''))", order_sql="id"),
+               field_label="Участок МС",
+               note="Как десктоп: вместе с участком МС снимается привязка к участку РС (distsite)."),
+    SetterSpec("pts_site_rs", "Назначить участок РС (ПТС)", _PTS, "pipes", "ref",
+               (Write(_HP, "lineid", (Column("distsite"), Column("magistralsite", "null"))),),
+               "gid8 GidWidget::onSaveRS",
+               RefSpec("uchastok_rs", "naimenovanie_uchastka_rs",
+                       label_sql="concat('РС ', id, ' — ', COALESCE(naimenovanie_uchastka_rs, ''))", order_sql="id"),
+               field_label="Участок РС",
+               note="Как десктоп: вместе с участком РС снимается привязка к участку МС (magistralsite)."),
+    SetterSpec("pts_site_clear", "Снять привязку к участкам МС/РС", _PTS, "pipes", "computed",
+               (Write(_HP, "lineid", (Column("magistralsite", "null"), Column("distsite", "null"))),),
+               "gid8 свойства участка: очистка полей «Участок МС/РС»", field_label="Участок МС/РС"),
     # --- Линейные объекты и узлы ---
     SetterSpec("organization", "Установить организации", "Линейные объекты", "lines", "ref",
                (Write("linesobj", "id", (Column("organizationid"),)),), "gid8 aSetOrg / gid6 OnSetOrg",
@@ -669,6 +688,8 @@ async def _plans(conn, spec: SetterSpec, value: Any, ref_row: Optional[dict[str,
             elif col.source.startswith("expr:"):
                 new = EXPRESSIONS[col.source[5:]]
                 plan.guard_sql.append(f"{new} IS NOT NULL")
+            elif col.source == "null":
+                new = f"NULL::{cast}"
             else:  # pragma: no cover - ошибка описания
                 raise ValueError(col.source)
             plan.columns.append(column)
