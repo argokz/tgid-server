@@ -12,6 +12,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# celery.exe -A worker.celery_app импортирует модуль внутри cwd_in_path(): каталог приложения
+# стоит в sys.path только на время импорта и затем удаляется, и ленивые импорты задач
+# (database.*) падают ModuleNotFoundError. Добавляем его ещё раз — эта копия останется.
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(_APP_DIR)
+
 # Setup Redis URL using environment variables
 redis_addr = os.getenv('REDIS_ADDR', '127.0.0.1:6379')
 redis_password = os.getenv('REDIS_PASSWORD', '').strip()
@@ -128,7 +134,8 @@ def _sety_text_encoding() -> str:
 
 
 def _read_sety_text(path: str) -> str:
-    raw = open(path, "rb").read()
+    with open(path, "rb") as fh:
+        raw = fh.read()
     primary = _sety_text_encoding()
     for enc in dict.fromkeys((primary, "utf-8", "cp1251")):
         try:
@@ -337,3 +344,36 @@ def run_heat_losses_norm(self, season_id: int, heat_source_ids: list[int] | None
     except (HeatLossInputError, HeatLossStoreError, ZeroDivisionError) as e:
         return {"status": "error", "message": "Ошибка расчёта теплопотерь", "error": _redact(str(e))}
     return {"status": "success", "message": "Расчёт теплопотерь окончен", **summary}
+
+
+@celery_app.task(bind=True, name="build_file_job")
+def build_file_job(self, kind: str, params: dict, user: str = ""):
+    """Тяжёлая выгрузка (паспорт, Excel-отчёты, сверки) в фоне: файл — в Redis с TTL
+    (database/file_jobs.py), результат задачи — метаданные файла для GET /api/v1/file-jobs/{id}."""
+    import asyncio
+
+    from database import file_jobs
+
+    async def _go():
+        from database.connect import close_db_pool, init_db_pool
+
+        await init_db_pool()
+        try:
+            return await file_jobs.build(kind, params)
+        finally:
+            await close_db_pool()
+
+    self.update_state(state="PROGRESS", meta={"message": "Формирование файла", "kind": kind})
+    started = time.monotonic()
+    try:
+        result = asyncio.run(_go())
+    except file_jobs.FileJobError as e:
+        return {"status": "error", "kind": kind, "status_code": e.status_code, "message": _redact(e.message)}
+    except Exception as e:  # noqa: BLE001 — сообщение для UI, трассировка в лог воркера
+        logger.error("build_file_job %s failed: %s", kind, e, exc_info=True)
+        return {"status": "error", "kind": kind, "status_code": 500,
+                "message": _redact(f"Не удалось сформировать файл: {e}")}
+    meta = file_jobs.store_result(self.request.id, result, owner=user, kind=kind)
+    return {"status": "success", "kind": kind, "filename": meta["filename"], "size": meta["size"],
+            "media_type": meta["media_type"], "ttl": meta["ttl"],
+            "elapsed_s": round(time.monotonic() - started, 2)}

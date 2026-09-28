@@ -2,13 +2,10 @@
 
 import io
 import os
-import sys
 
 from urllib.parse import quote
 
 import asyncpg
-import openpyxl
-import psycopg2
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -19,6 +16,7 @@ from database import excel_reports
 from database.connect import acquire_conn
 from database.export_shp import export_network_to_shp
 from database.passport_diagnostics import get_passport_site_diagnostics
+from database.passport_excel import XLSX_MEDIA_TYPE, PassportError, build_passport_xlsx
 from database.word_db import get_defect_info
 from reports_generator import excel_report_types, generate_excel_report, generate_form_html
 from word_reports.word_generator import generate_defect_map_word
@@ -36,158 +34,20 @@ def generate_passport_excel_query(table: str, obj_id: int):
 
     Обычная (sync) функция: FastAPI выполняет её в thread pool, поэтому
     синхронные psycopg2/OpenPyXL не блокируют event loop остальных запросов.
+    Паспорт строится 10–15 с; фоновый вариант — POST /api/v1/file-jobs (kind=passport).
     """
     try:
-        # passport_module — перенесённый из gid8 код с плоскими импортами
-        # (import config, import connect …). Чтобы они разрешались, каталог
-        # модуля должен быть на sys.path.
-        module_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "passport_module")
-        if module_dir not in sys.path:
-            sys.path.insert(0, module_dir)
-        from passport_module.p import async_do_passport, read_ms_rs
-        import connect as passport_connect
-        import db2 as passport_db2
-        import ms1 as passport_ms1
-        import rs1 as passport_rs1
-        import sort_graph as passport_sort_graph
-        import sql_pass as passport_sql_pass
-
-        # Формы паспорта (f1…f15) сами открывают соединение через
-        # connect.connect(**c), поэтому им передаются ПАРАМЕТРЫ подключения,
-        # а не готовый объект соединения (иначе TypeError на **c).
-        passport_conn_params = {
-            "rdbms": "postgreSQL",
-            "server": os.getenv("DB_HOST"),
-            "user": os.getenv("DB_USER"),
-            "password": os.getenv("DB_PASSWORD"),
-            "db": os.getenv("DB_NAME"),
-            "port": os.getenv("DB_PORT"),
-        }
-
-        # Отдельное соединение для определения участка объекта
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            port=os.getenv("DB_PORT")
-        )
-        cur = conn.cursor()
-
-        ms_rs = None
-        site_id = None
-        line_id = None
-
-        # Находим к какому участку относится объект
-        if table == "linesobj":
-            cur.execute("SELECT nodeid1 FROM linesobj WHERE id = %s", (obj_id,))
-            res = cur.fetchone()
-            if not res:
-                raise Exception("Труба не найдена")
-            node_id = res[0]
-            line_id = obj_id
-        elif table == "nodes":
-            node_id = obj_id
-        elif table == "uchastok_ms":
-            ms_rs = "ms"
-            site_id = obj_id
-        elif table == "uchastok_rs":
-            ms_rs = "rs"
-            site_id = obj_id
-        else:
-            raise Exception("Неизвестная таблица")
-
-        if ms_rs is None:
-            from database.passport_site import resolve_site_from_node_row, resolve_site_via_heatpipesections
-
-            cur.execute(
-                "SELECT belongmagistralsite, belongdistsite FROM nodes WHERE id = %s",
-                (node_id,),
-            )
-            res = cur.fetchone()
-            if not res:
-                raise Exception("Узел не найден")
-            resolved = resolve_site_from_node_row(res[0], res[1])
-            if resolved is None:
-                resolved = resolve_site_via_heatpipesections(cur, node_id, line_id=line_id)
-            if resolved is None:
-                conn.close()
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        f"Узел {node_id} не привязан ни к магистральному, ни к распределительному "
-                        "участку — паспорт формируется только по участку. "
-                        "Запустите scripts/sql/backfill_belong_site.sql на копии БД "
-                        "или откройте паспорт по uchastok_ms / uchastok_rs."
-                    ),
-                )
-            ms_rs, site_id = resolved
-
-        conn.close()
-
-        # Полный сценарий desktop-паспорта (passport_module/p.py::passport):
-        # титульный лист участка → состав участка → граф участка (marked lines) →
-        # 15 форм. Без make_graph формам приходил mark_line=0 и SQL падал.
-        fragments = ""
-        passport_conn = passport_connect.connect(**passport_conn_params)
-        try:
-            wb = openpyxl.Workbook()
-            title_sheet = wb.active
-            title_sheet.title = "Паспорт"
-
-            head_rows = passport_db2.read_q(passport_conn, passport_sql_pass.passport(ms_rs, site_id))
-            if ms_rs == "ms":
-                passport_ms1.write_ms(title_sheet, head_rows)
-            else:
-                passport_rs1.write_rs(title_sheet, head_rows)
-
-            site_rows = read_ms_rs(passport_conn, ms_rs, site_id)
-            graph = passport_sort_graph.make_graph(passport_conn, fragments, ms_rs, site_id)
-        finally:
-            passport_conn.close()
-
-        if not graph or not graph[0]:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Для участка {ms_rs}/{site_id} нет ни одного трубопровода. "
-                    "Привяжите трубы к участку (инструмент «Участки ПТС», "
-                    "heatpipesections.magistralSite / distSite) — без неё паспорт сформировать нельзя."
-                ),
-            )
-
-        mark_line, mark_node, mark_pts = graph
-
-        # Формы f1…f15 открывают собственные соединения из параметров (ThreadPoolExecutor)
-        async_do_passport(
-            c=passport_conn_params,
-            wb=wb,
-            ms_rs=ms_rs,
-            id=site_id,
-            fragments=fragments,
-            mark_line=mark_line,
-            mark_pts=mark_pts,
-            mark_node=mark_node,
-            vals=site_rows,
-        )
-
-        # Сохраняем в память
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
-
-        filename = f"Passport_{ms_rs}_{site_id}.xlsx"
-
-        return StreamingResponse(
-            output,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    except HTTPException:
-        raise
+        content, filename = build_passport_xlsx(table, obj_id)
+    except PassportError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
         logger.error(f"Passport generation failed for {table}/{obj_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Не удалось сформировать паспорт: {e}")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get("/reports/word/defect/{defect_id}")
