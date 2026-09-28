@@ -247,6 +247,7 @@ def _journal_summary(operation: str, result: dict) -> dict:
     keep = (
         "id", "node_id", "line_id", "pair_line_id", "new_node_id", "new_line_id",
         "target_node_id", "source_node_id", "removed_lines", "relinked_lines", "fileid",
+        "created_nodes", "created_lines", "updated_nodes", "mode",
     )
     return {"operation": operation, **{k: result[k] for k in keep if k in result}}
 
