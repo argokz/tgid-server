@@ -7,7 +7,7 @@
 
 import io
 import math
-from typing import Any
+from typing import Any, Optional
 import openpyxl
 from openpyxl.chart import LineChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -17,7 +17,15 @@ def _r(value, digits: int):
     return round(float(value), digits) if value is not None else None
 
 
-def generate_piezometer_excel(path_data: list[dict[str, Any]], segment_details: list[dict[str, Any]]) -> bytes:
+def generate_piezometer_excel(
+    path_data: list[dict[str, Any]],
+    segment_details: list[dict[str, Any]],
+    static_head: Optional[float] = None,
+    second_calculation_id: Optional[int] = None,
+) -> bytes:
+    """static_head — линия статики (gid8 Pjezo.cpp m_stat: max(отметка + высота здания) + 5 м);
+    second_calculation_id — двойной пьезометр (onDouble): напоры второго расчёта на том же
+    маршруте в path_data как h_pod_2/h_obr_2."""
     wb = openpyxl.Workbook()
 
     # -------------------------------------------------------------
@@ -168,19 +176,29 @@ def generate_piezometer_excel(path_data: list[dict[str, Any]], segment_details: 
     # -------------------------------------------------------------
     ws_chart = wb.create_sheet(title="Пьезометрический профиль")
 
-    ws_chart.append(["Расстояние (м)", "Геодезическая отметка Z (м)", "Напор H_под (м)", "Напор H_обр (м)", "Узел"])
+    headers = ["Расстояние (м)", "Геодезическая отметка Z (м)", "Напор H_под (м)", "Напор H_обр (м)"]
+    if static_head is not None:
+        headers.append("Статический напор (м)")
+    if second_calculation_id is not None:
+        headers += [f"H_под, расчёт {second_calculation_id} (м)", f"H_обр, расчёт {second_calculation_id} (м)"]
+    headers.append("Узел")
+    ws_chart.append(headers)
     for cell in ws_chart[1]:
         cell.fill = fill_header
         cell.font = font_header
         cell.alignment = align_center
 
+    def num(v):
+        return float(v) if v is not None else None
+
     for p in path_data:
-        dist = float(p.get("distance") or 0.0)
-        z = float(p.get("z") or 0.0)
-        h_pod = float(p.get("h_pod")) if p.get("h_pod") is not None else None
-        h_obr = float(p.get("h_obr")) if p.get("h_obr") is not None else None
-        label = p.get("label") or str(p.get("node_id"))
-        ws_chart.append([dist, z, h_pod, h_obr, label])
+        row = [float(p.get("distance") or 0.0), float(p.get("z") or 0.0), num(p.get("h_pod")), num(p.get("h_obr"))]
+        if static_head is not None:
+            row.append(round(float(static_head), 2))
+        if second_calculation_id is not None:
+            row += [num(p.get("h_pod_2")), num(p.get("h_obr_2"))]
+        row.append(p.get("label") or str(p.get("node_id")))
+        ws_chart.append(row)
 
     # График профиля напоров
     if len(path_data) >= 2:
@@ -192,12 +210,13 @@ def generate_piezometer_excel(path_data: list[dict[str, Any]], segment_details: 
         chart.width = 24
         chart.height = 14
 
-        data_ref = Reference(ws_chart, min_col=2, min_row=1, max_col=4, max_row=len(path_data) + 1)
+        # все числовые колонки, кроме расстояния; «Узел» — последняя
+        data_ref = Reference(ws_chart, min_col=2, min_row=1, max_col=len(headers) - 1, max_row=len(path_data) + 1)
         cats_ref = Reference(ws_chart, min_col=1, min_row=2, max_row=len(path_data) + 1)
         chart.add_data(data_ref, titles_from_data=True)
         chart.set_categories(cats_ref)
 
-        ws_chart.add_chart(chart, "G3")
+        ws_chart.add_chart(chart, "J3")
 
     output = io.BytesIO()
     wb.save(output)
