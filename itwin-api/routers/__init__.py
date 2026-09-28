@@ -12,6 +12,7 @@ from routers.calc import router as calc_router
 from routers.core import router as core_router
 from routers.crud import router as crud_router
 from routers.equipment import router as equipment_router
+from routers.alseko_binding import router as alseko_binding_router
 from routers.equipment_edit import router as equipment_edit_router
 from routers.exports_p4 import router as exports_p4_router
 from routers.group_setters import router as group_setters_router
@@ -36,6 +37,7 @@ all_routers = [
     equipment_router,
     equipment_edit_router,
     registries_router,
+    alseko_binding_router,
     operations_router,
     journals_router,
     group_setters_router,
