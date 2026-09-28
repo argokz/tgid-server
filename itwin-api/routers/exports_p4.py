@@ -1,8 +1,9 @@
-"""P4: DXF export, очередь опрессовок (RO), Word stubs for ops journals."""
+"""P4: DXF и GeoJSON экспорт, очередь опрессовок (RO), Word stubs for ops journals."""
 
 from __future__ import annotations
 
 import io
+import json
 import os
 from typing import Optional
 
@@ -164,116 +165,124 @@ async def export_ops_word(journal: str, record_id: int):
     )
 
 
+def _fragment_ids(fragment_id: Optional[int], fragments: Optional[str]) -> Optional[list[int]]:
+    """fragment_id и/или fragments=1,2,3 -> список fileid (None — вся сеть)."""
+    ids: set[int] = set()
+    if fragments:
+        for part in fragments.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise HTTPException(status_code=400, detail="fragments must be comma-separated integers")
+            ids.add(int(part))
+    if fragment_id is not None:
+        ids.add(int(fragment_id))
+    return sorted(ids) or None
+
+
+_LINES_WITH_PASSPORT_SQL = """
+    SELECT
+        l.id,
+        l.registnum AS name,
+        l.nodeid1,
+        l.nodeid2,
+        l.fileid,
+        hps.pipesectlength AS length,
+        hps.diameterinternal AS diameter,
+        hps.tuberoughness AS roughness,
+        ST_AsGeoJSON(ST_Transform(l.shape, 4326)) AS geometry
+    FROM linesobj l
+    LEFT JOIN LATERAL (
+        SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
+        WHERE lineid = l.id ORDER BY id LIMIT 1
+    ) hps ON true
+    WHERE COALESCE(l.removed, 0) = 0
+      AND ($1::int[] IS NULL OR l.fileid = ANY($1::int[]))
+      AND l.shape IS NOT NULL
+    ORDER BY l.id
+    LIMIT $2
+"""
+
+_CRS84 = {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}}
+
+
+def _num(value) -> Optional[float]:
+    return None if value is None else float(value)
+
+
+async def _fetch_lines(fragment_ids: Optional[list[int]], limit: int):
+    async with acquire_conn() as conn:
+        return await conn.fetch(_LINES_WITH_PASSPORT_SQL, fragment_ids, limit)
+
+
 @router.get("/api/export/geojson")
 async def export_network_geojson(
     fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
     limit: int = Query(10000, ge=1, le=50000),
 ):
-    """Экспорт сети в стандартный GeoJSON для QGIS."""
-    import json
-    async with acquire_conn() as conn:
-        q = """
-            SELECT 
-                l.id,
-                l.registnum as name,
-                l.nodeid1,
-                l.nodeid2,
-                hps.pipesectlength as length,
-                hps.diameterinternal as diameter,
-                hps.tuberoughness as roughness,
-                ST_AsGeoJSON(ST_Transform(l.shape, 4326)) as geometry
-            FROM linesobj l
-            LEFT JOIN LATERAL (
-                SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
-                WHERE lineid = l.id ORDER BY id LIMIT 1
-            ) hps ON true
-            WHERE COALESCE(l.removed, 0) = 0
-              AND ($1::int IS NULL OR l.fileid = $1)
-              AND l.shape IS NOT NULL
-            LIMIT $2
-        """
-        rows = await conn.fetch(q, fragment_id, limit)
-        features = []
-        for r in rows:
-            if not r["geometry"]:
-                continue
-            features.append({
-                "type": "Feature",
-                "geometry": json.loads(r["geometry"]),
-                "properties": {
-                    "id": r["id"],
-                    "name": r["name"] or "",
-                    "nodeid1": r["nodeid1"],
-                    "nodeid2": r["nodeid2"],
-                    "length": float(r["length"] or 0),
-                    "diameter": float(r["diameter"] or 0),
-                    "roughness": float(r["roughness"] or 0.001),
-                }
-            })
-        return {
-            "type": "FeatureCollection",
-            "crs": {
-                "type": "name",
-                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+    """Экспорт участков сети в стандартный GeoJSON (WGS84) для QGIS: геометрия и паспорт трубы."""
+    rows = await _fetch_lines(_fragment_ids(fragment_id, fragments), limit)
+    features = []
+    for r in rows:
+        if not r["geometry"]:
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": {
+                "id": r["id"],
+                "name": r["name"] or "",
+                "fileid": r["fileid"],
+                "nodeid1": r["nodeid1"],
+                "nodeid2": r["nodeid2"],
+                "length": _num(r["length"]),
+                "diameter": _num(r["diameter"]),
+                "roughness": _num(r["roughness"]),
             },
-            "features": features
-        }
+        })
+    return {"type": "FeatureCollection", "crs": _CRS84, "features": features}
 
 
-@router.get("/api/export/zulugis")
-async def export_network_zulugis(
+@router.get("/api/export/geojson-attrs")
+@router.get(
+    "/api/export/zulugis",
+    deprecated=True,
+    summary="Устаревший адрес /api/export/geojson-attrs (это GeoJSON, не формат ZuluGIS)",
+)
+async def export_network_geojson_attrs(
     fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
     limit: int = Query(10000, ge=1, le=50000),
 ):
-    """Экспорт сети в ZuluGIS GeoJSON формат (с атрибутами Sys, Type, L, D, K_E)."""
-    import json
-    async with acquire_conn() as conn:
-        q = """
-            SELECT 
-                l.id,
-                l.registnum as name,
-                l.nodeid1,
-                l.nodeid2,
-                COALESCE(hps.pipesectlength, 10.0) as l_m,
-                COALESCE(hps.diameterinternal, 200.0) as d_mm,
-                COALESCE(hps.tuberoughness, 0.001) as k_e,
-                ST_AsGeoJSON(ST_Transform(l.shape, 4326)) as geometry
-            FROM linesobj l
-            LEFT JOIN LATERAL (
-                SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
-                WHERE lineid = l.id ORDER BY id LIMIT 1
-            ) hps ON true
-            WHERE COALESCE(l.removed, 0) = 0
-              AND ($1::int IS NULL OR l.fileid = $1)
-              AND l.shape IS NOT NULL
-            LIMIT $2
-        """
-        rows = await conn.fetch(q, fragment_id, limit)
-        features = []
-        for r in rows:
-            if not r["geometry"]:
-                continue
-            features.append({
-                "type": "Feature",
-                "geometry": json.loads(r["geometry"]),
-                "properties": {
-                    "Sys": r["id"],
-                    "Type": 1,
-                    "Name": r["name"] or f"Участок {r['id']}",
-                    "Node1": r["nodeid1"],
-                    "Node2": r["nodeid2"],
-                    "L": float(r["l_m"]),
-                    "D": float(r["d_mm"]) / 1000.0,
-                    "K_E": float(r["k_e"]),
-                    "Kst": 1.0,
-                }
-            })
-        return {
-            "type": "FeatureCollection",
-            "crs": {
-                "type": "name",
-                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
-            },
-            "features": features
-        }
+    """GeoJSON участков с расчётными атрибутами в коротких именах (Sys, Name, Node1, Node2, L, D, K_E).
 
+    Это обычный GeoJSON (WGS84), не собственный формат ZuluGIS: короткие имена полей удобно
+    сопоставлять при загрузке в ZuluGIS/QGIS. L — длина, м; D — внутренний диаметр, м;
+    K_E — эквивалентная шероховатость. Нет паспорта трубы — поле null (раньше подставлялись
+    выдуманные 10 м / 200 мм). Старый адрес /api/export/zulugis оставлен как алиас.
+    """
+    rows = await _fetch_lines(_fragment_ids(fragment_id, fragments), limit)
+    features = []
+    for r in rows:
+        if not r["geometry"]:
+            continue
+        diameter_mm = _num(r["diameter"])
+        features.append({
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": {
+                "Sys": r["id"],
+                "Type": 1,
+                "Name": r["name"] or f"Участок {r['id']}",
+                "Fragment": r["fileid"],
+                "Node1": r["nodeid1"],
+                "Node2": r["nodeid2"],
+                "L": _num(r["length"]),
+                "D": None if diameter_mm is None else diameter_mm / 1000.0,
+                "K_E": _num(r["roughness"]),
+                "Kst": 1.0,
+            },
+        })
+    return {"type": "FeatureCollection", "crs": _CRS84, "features": features}

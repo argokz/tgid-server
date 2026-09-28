@@ -18,8 +18,11 @@ def test_openapi_builds_with_key_paths():
         "/api/topology/merge-nodes",
         "/api/v1/topology/versions",
         "/api/export/geojson",
+        "/api/export/geojson-attrs",
     ):
         assert p in paths, p
+    # «Zulu»-экспорт — это GeoJSON с атрибутами: старый адрес — устаревший алиас
+    assert paths["/api/export/zulugis"]["get"].get("deprecated") is True
 
 
 def test_sety_params_accept_calculation_flags():
