@@ -21,11 +21,14 @@ sys.path.append(_APP_DIR)
 # Setup Redis URL using environment variables
 redis_addr = os.getenv('REDIS_ADDR', '127.0.0.1:6379')
 redis_password = os.getenv('REDIS_PASSWORD', '').strip()
+# Номер БД Redis: разные стенды на одном Redis (прод и копия) обязаны иметь разные REDIS_DB,
+# иначе воркер одного стенда заберёт задачи другого и выполнит их на своей БД.
+redis_db = os.getenv('REDIS_DB', '').strip() or '0'
 
 if redis_password:
-    redis_url = f"redis://:{redis_password}@{redis_addr}/0"
+    redis_url = f"redis://:{redis_password}@{redis_addr}/{redis_db}"
 else:
-    redis_url = f"redis://{redis_addr}/0"
+    redis_url = f"redis://{redis_addr}/{redis_db}"
 
 celery_app = Celery(
     "itwin_tasks",

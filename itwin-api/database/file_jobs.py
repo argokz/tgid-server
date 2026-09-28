@@ -199,7 +199,8 @@ def queue_name() -> Optional[str]:
 def redis_url() -> str:
     addr = os.getenv("REDIS_ADDR", "127.0.0.1:6379")
     password = os.getenv("REDIS_PASSWORD", "").strip()
-    return f"redis://:{password}@{addr}/0" if password else f"redis://{addr}/0"
+    db = os.getenv("REDIS_DB", "").strip() or "0"
+    return f"redis://:{password}@{addr}/{db}" if password else f"redis://{addr}/{db}"
 
 
 _client = None

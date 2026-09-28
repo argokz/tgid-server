@@ -94,6 +94,7 @@ async def health():
             host=host or "127.0.0.1",
             port=int(port_s or "6379"),
             password=password,
+            db=int(os.getenv("REDIS_DB", "").strip() or "0"),
             socket_connect_timeout=1.5,
             socket_timeout=1.5,
         )
