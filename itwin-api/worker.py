@@ -309,8 +309,8 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
 @celery_app.task(bind=True, name="run_heat_losses_norm")
 def run_heat_losses_norm(self, season_id: int, heat_source_ids: list[int] | None = None,
                          fragment_id: int | None = None, line_ids: list[int] | None = None,
-                         user: str = "", save: bool = True):
-    """Нормативные теплопотери (перенос gid8 poteriNewPg): расчёт и запись в calculation,
+                         user: str = "", save: bool = True, loses_type: str = "norm"):
+    """Нормативные / фактические теплопотери (перенос gid8 poteriNewPg): расчёт и запись в calculation,
     ut_teplo_out и heatlosses_report_out той же БД (DB_* окружения воркера)."""
     import asyncio
 
@@ -326,7 +326,8 @@ def run_heat_losses_norm(self, season_id: int, heat_source_ids: list[int] | None
         )
         try:
             return await run(conn, season_id=season_id, heat_source_ids=heat_source_ids,
-                             fragment_id=fragment_id, line_ids=line_ids, user=user, save=save)
+                             fragment_id=fragment_id, line_ids=line_ids, user=user, save=save,
+                             loses_type=loses_type)
         finally:
             await conn.close()
 

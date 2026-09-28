@@ -27,7 +27,10 @@ from database import heat_losses_norm as hl
 
 REPORT_TABLE = "heatlosses_report_out"
 SHEETS = ("material_characteristics", "month_temperatures", "winter_norms", "summer_norms",
-          "avg_month_loses", "avg_year_loses")
+          "avg_month_loses", "avg_year_loses", "loads", "capacities", "heat_tests", "repair_heat_tests",
+          "net_water_loses", "net_water_year_loses", "overalls", "tank_batteries", "tank_batteries_loses",
+          "fillings", "pressings", "flushings_hs", "flushings", "sarz_flows", "sarz_rets")
+LOSES_TYPE_LABELS = {"norm": "нормативные", "fact": "фактические"}
 UT_TEPLO_COLUMNS = ("calculationid", "lineid", "externalsignlineid", "truba", "diametr", "tol", "diametr_usl",
                     "dlina", "name_typ", "kti", "kolwork", "kod_owner", "year", "q",
                     *(f"q{m:02d}" for m in range(1, 13)), "kod_ist")
@@ -62,14 +65,15 @@ async def save_run(conn: asyncpg.Connection, inputs: hl.HeatLossInputs, result: 
             "Нет таблицы heatlosses_report_out: примените sql/migrations/20260928_heat_losses_report_out.sql")
     totals = hl.summary_totals(result)
     params = {
-        "module": hl.MODULE, "loses_type": "norm",
+        "module": hl.MODULE, "loses_type": inputs.loses_type,
         "season_id": inputs.season.get("id"), "season": season_label(inputs.season),
         "city": inputs.season.get("city"),
         "heat_source_ids": inputs.heat_source_ids, "ready_source_ids": result["ready_source_ids"],
         "fragment_id": inputs.fragment_id, "line_count": len(inputs.line_ids) if inputs.line_ids else None,
         "section_rows": len(result["sections"]), "totals": totals,
     }
-    name = f"Теплопотери нормативные, сезон {season_label(inputs.season)}"
+    name = f"Теплопотери {LOSES_TYPE_LABELS.get(inputs.loses_type, inputs.loses_type)}, " \
+           f"сезон {season_label(inputs.season)}"
     if inputs.fragment_id is not None:
         name += f", фрагмент {inputs.fragment_id}"
     async with conn.transaction():
@@ -106,9 +110,9 @@ async def save_run(conn: asyncpg.Connection, inputs: hl.HeatLossInputs, result: 
 
 async def run(conn: asyncpg.Connection, *, season_id: int, heat_source_ids: Optional[list[int]] = None,
               fragment_id: Optional[int] = None, line_ids: Optional[list[int]] = None, user: str,
-              save: bool = True) -> dict[str, Any]:
+              save: bool = True, loses_type: str = "norm") -> dict[str, Any]:
     inputs = await hl.load_inputs(conn, season_id=season_id, heat_source_ids=heat_source_ids,
-                                  fragment_id=fragment_id, line_ids=line_ids)
+                                  fragment_id=fragment_id, line_ids=line_ids, loses_type=loses_type)
     if not inputs.heat_source_ids:
         raise hl.HeatLossInputError("Нет участков с источником теплоснабжения для расчёта")
     result = hl.compute(inputs)
@@ -120,7 +124,7 @@ async def run(conn: asyncpg.Connection, *, season_id: int, heat_source_ids: Opti
     }
     if not result["ready_source_ids"]:
         raise hl.HeatLossInputError(
-            "Ни у одного источника не заданы «Условия работы» (heatLosesSourceMonths): "
+            f"Ни у одного источника не заданы «Условия работы» ({hl.LOSES_TABLES[loses_type]['months']}): "
             + ", ".join(str(s["id"]) for s in missing))
     if save:
         summary["calculation_id"] = await save_run(conn, inputs, result, user=user)
@@ -274,6 +278,65 @@ NORM_HEADERS = [("typnet1", "Тип сети"), ("a5000", "Класс / режи
 LOSS_HEADERS = [("monthname", "Месяц"), ("potnp", "Надземная, подающий"), ("potno", "Надземная, обратный"),
                 ("potpodz", "Подземная"), ("potall", "Сумма через изоляцию"), ("v1", "С утечкой"),
                 ("vall", "Суммарные")]
+_MONTH = ("monthname", "Месяц")
+WATER_SHEETS = [
+    # ключ листа, имя листа Excel (как у десктопа), заголовок, колонки, формат чисел, строка «ВСЕГО»
+    ("loads", "Нагрузка", "РАСЧЁТНЫЕ НАГРУЗКИ ПОТРЕБИТЕЛЕЙ, Гкал/ч",
+     [("heatsourcename", "Источник"), ("got_pr", "Отопление"), ("gvent_pr", "Вентиляция"), ("ggvs_pr", "ГВС ср.")],
+     "0.000", True),
+    ("capacities", "Емкость", "ОБЪЁМЫ ТЕПЛОВЫХ СЕТЕЙ И СИСТЕМ ТЕПЛОПОТРЕБЛЕНИЯ, м³",
+     [("name", "Источник"), ("v1", "Магистральные"), ("v1leto", "Магистр., лето"), ("v2", "Распределительные"),
+      ("v2leto", "Распред., лето"), ("vpodv", "В подвалах"), ("vpodvleto", "Подвалы, лето"), ("vob", "Обвязка"),
+      ("vobleto", "Обвязка, лето"), ("vot", "Системы отопления"), ("votleto", "Отопл., лето"),
+      ("vvent", "Системы вентиляции"), ("vventleto", "Вент., лето"), ("vgvs", "Системы ГВС"),
+      ("vgvsleto", "ГВС, лето"), ("vall", "Всего"), ("vallleto", "Всего, лето"),
+      ("podp", "Норм. утечка, м³/ч"), ("podpleto", "Норм. утечка, лето")], "0.00", True),
+    ("heat_tests", "К(исп)", "КОЭФФИЦИЕНТЫ ПО РЕЗУЛЬТАТАМ ИСПЫТАНИЙ",
+     [("name", "Источник"), *((c, c.replace("coeff", "").replace("norms", " N")) for c in hl.HEAT_TEST_COLUMNS)],
+     "0.00", False),
+    ("repair_heat_tests", "К(исп) Ремонт", "КОЭФФИЦИЕНТЫ ПО РЕЗУЛЬТАТАМ ИСПЫТАНИЙ (ПОСЛЕ РЕМОНТА)",
+     [("name", "Источник"), *((c, c.replace("coeff", "").replace("norms", " N")) for c in hl.HEAT_TEST_COLUMNS)],
+     "0.00", False),
+    ("net_water_loses", "ТехнПСВ", "ТЕХНОЛОГИЧЕСКИЕ ПОТЕРИ СЕТЕВОЙ ВОДЫ, м³",
+     [_MONTH, ("fillingg", "Заполнение"), ("avggpressingg", "Опрессовка"), ("avggflushingg", "Промывка"),
+      ("avggsarzg", "САРЗ"), ("normg", "Нормативная утечка"), ("gall", "Всего")], "0.00", True),
+    ("net_water_year_loses", "ТехнТП", "ТЕХНОЛОГИЧЕСКИЕ ПОТЕРИ ТЕПЛА С СЕТЕВОЙ ВОДОЙ, Гкал",
+     [_MONTH, ("fillingq", "Заполнение"), ("avggpressingq", "Опрессовка"), ("avggflushingq", "Промывка"),
+      ("avggsarzq", "САРЗ"), ("normq", "Нормативная утечка"), ("qall", "Всего")], "0.00", True),
+    ("overalls", "ИТОГО", "ИТОГО: ПОТЕРИ ТЕПЛА (Гкал) И СЕТЕВОЙ ВОДЫ (м³)",
+     [_MONTH, ("isolq", "Через изоляцию, Гкал"), ("qtb", "Баки-аккумуляторы, Гкал"),
+      ("normq", "С норм. утечкой, Гкал"), ("reglq", "Регламентные, Гкал"), ("normg", "Норм. утечка, м³"),
+      ("reglg", "Регламентные, м³"), ("gall", "Вода всего, м³"), ("allq", "Тепло всего, Гкал")], "0.00", True),
+    ("tank_batteries", "БакАк", "БАКИ-АККУМУЛЯТОРЫ",
+     [("mesto", "Место установки"), ("designcapacity", "Объём, м³"), ("quantity", "Количество"),
+      ("height", "Высота, мм"), ("diameter", "Диаметр, мм")], "0.00", False),
+    ("tank_batteries_loses", "БакАкТП", "ПОТЕРИ ТЕПЛА БАКАМИ-АККУМУЛЯТОРАМИ, Гкал/ч",
+     [_MONTH, ("tn", "tн, °С"), ("tgo", "t2, °С"), ("monthloses", "Потери, Гкал/ч"), ("workcount", "Суток"),
+      ("yearloses", "Потери за период, Гкал/ч")], "0.00", False),
+    ("fillings", "Заполнение", "ПОТЕРИ С ЗАПОЛНЕНИЕМ ТРУБОПРОВОДОВ И СИСТЕМ",
+     [_MONTH, ("magistralshare", "Доля магистр., %"), ("distsiteshare", "Доля распред., %"),
+      ("heatingsystemshare", "Доля систем, %"), ("gmag", "G магистр., м³"), ("grs", "G распред., м³"),
+      ("gtep", "G систем, м³"), ("nettemperature", "t сетевой воды"), ("tx", "t подпитки"),
+      ("qms", "Q магистр., Гкал"), ("qrs", "Q распред., Гкал"), ("qtep", "Q систем, Гкал")], "0.00", True),
+    ("pressings", "Опрессовка", "ПОТЕРИ ПРИ ОПРЕССОВКЕ",
+     [_MONTH, ("opr", "Опрессовка"), ("tset", "t сетевой воды"), ("tn", "tн"), ("percent1", "Объём, %"),
+      ("v1", "V магистр."), ("v2", "V распред."), ("vpodv", "V подвалы"), ("vobm", "V обвязка магистр."),
+      ("vobr", "V обвязка прочая"), ("vall", "V всего"), ("avgqpressing", "Q, Гкал")], "0.00", True),
+    ("flushings_hs", "ПромывкаСО", "ПОТЕРИ ПРИ ПРОМЫВКЕ СИСТЕМ ОТОПЛЕНИЯ",
+     [_MONTH, ("flushinghs_temp1", "t воды"), ("tn", "tн"), ("flushinghs", "Кратность"), ("vot1", "V жилых"),
+      ("vot2", "V общественных"), ("vall", "V всего"), ("q", "Q, Гкал")], "0.00", True),
+    ("flushings", "ПромывкаТС", "ПОТЕРИ ПРИ ПРОМЫВКЕ ТЕПЛОВЫХ СЕТЕЙ",
+     [_MONTH, ("kolv", "Трубопроводов"), ("flushing_temp1", "t воды"), ("tn", "tн"), ("flushing", "Кратность"),
+      ("v1", "V магистр."), ("v2", "V распред."), ("vpodv", "V подвалы"), ("vobm", "V обвязка магистр."),
+      ("vobr", "V обвязка прочая"), ("vall", "V всего"), ("q", "Q, Гкал")], "0.00", True),
+]
+for _key, _title, _sfx in (("sarz_flows", "САРЗ_Под", "ПОДАЮЩИЙ"), ("sarz_rets", "САРЗ_Обр", "ОБРАТНЫЙ")):
+    WATER_SHEETS.append((_key, _title, f"СЛИВЫ САРЗ, {_sfx} ТРУБОПРОВОД",
+                         [_MONTH, ("netwaterexp", "Расход слива, м³/ч"), ("workcount", "Суток"),
+                          ("regcount", "Регуляторов"), ("avggsarzg", "G регуляторов, м³"),
+                          ("regcountnode", "Регуляторов в узлах"), ("avggsarznodeg", "G в узлах, м³"),
+                          ("avggsarzgall", "G всего, м³"), ("tgp", "t1"), ("tn", "tн"), ("qsarz", "Q, Гкал")],
+                         "0.00", True))
 SECTION_HEADERS = [("kod_ist", "Источник"), ("lineid", "Участок (lineid)"), ("truba", "Труба 1-под./2-обр."),
                    ("name_typ", "Прокладка"), ("diametr", "Dвн, мм"), ("diametr_usl", "Ду, мм"),
                    ("dlina", "Длина, м"), ("year", "Класс (год прокладки)"), ("kolwork", "Раб. 5000 ч"),
@@ -325,7 +388,7 @@ def _write_table(ws, title: str, subtitle: str, headers, blocks: list[tuple[str,
 
 
 def build_excel(run: dict[str, Any], sections: list[dict[str, Any]]) -> bytes:
-    """Листы десктопа (МатХарМаг, МесТемп, НормыЗима, НормыЛето, МесПотери, ГодПотери) + участки и итоги."""
+    """Листы десктопа (МатХарМаг … САРЗ_Обр, кроме ПТ/УТ) + участки и итоги."""
     wb = Workbook()
     sub = f"{run['name']} · расчёт {run['id']}"
     names = {str(s["id"]): f"{s.get('name') or s.get('sourcename') or 'Источник'} (№{s['id']})"
@@ -369,6 +432,14 @@ def build_excel(run: dict[str, Any], sections: list[dict[str, Any]]) -> bytes:
         year_blocks.append((title, rows[:14]))
     _write_table(wb.create_sheet("ГодПотери"), "НОРМИРУЕМЫЕ ГОДОВЫЕ ПОТЕРИ ТЕПЛА, Гкал", sub, LOSS_HEADERS,
                  year_blocks, number_format="0.00")
+    for key, title, heading, headers, fmt, with_total in WATER_SHEETS:
+        rows = run["sheets"].get(key) or []
+        total = None
+        if with_total and rows:
+            vals = {k: sum(r[k] for r in rows if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool))
+                    for k, _ in headers[1:]}
+            total = [("ВСЕГО", vals)]
+        _write_table(wb.create_sheet(title), heading, sub, headers, blocks(key), totals=total, number_format=fmt)
     _write_table(wb.create_sheet("Участки"), "УДЕЛЬНЫЕ НОРМАТИВНЫЕ ПОТЕРИ ПО УЧАСТКАМ (ut_teplo_out)", sub,
                  SECTION_HEADERS, [("", sections)], number_format="0.000")
     buf = io.BytesIO()

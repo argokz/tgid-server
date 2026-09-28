@@ -1,7 +1,7 @@
 """Тепловой контур: диагностика, TG, теплопотери + запуск расчёта / edit TG."""
 
 import os
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import StreamingResponse
@@ -305,7 +305,9 @@ async def run_heat_losses(
 
 
 class HeatLossNormRunBody(BaseModel):
-    season_id: int = Field(..., ge=1, description="heatLosesMain.id — сезон")
+    season_id: int = Field(..., ge=1, description="heatLosesMain.id (fact — heatLosesMainFact.id) — сезон")
+    loses_type: Literal["norm", "fact"] = Field(
+        default="norm", description="norm — нормативные потери, fact — фактические (таблицы *Fact)")
     heat_source_ids: Optional[list[int]] = Field(
         default=None, max_length=500, description="Источники; пусто — все, к которым приписаны участки")
     fragment_id: Optional[int] = Field(default=None, ge=1, description="Режим «по фрагменту» десктопа")
@@ -318,7 +320,7 @@ async def run_heat_losses_norm(
     body: HeatLossNormRunBody,
     user: Annotated[AuthUser, Depends(require_roles("calculator"))],
 ):
-    """Нормативные теплопотери по источникам (десктоп «Теплопотери», poteriNewPg) через Celery.
+    """Нормативные или фактические теплопотери по источникам (десктоп «Теплопотери», poteriNewPg) через Celery.
 
     Результат — расчёт (calculation, fileid = NULL) с листами и удельными потерями участков
     (ut_teplo_out); удаление — DELETE /api/v1/calculations/{id}. Очередь задачи — HEAT_LOSSES_QUEUE
@@ -327,8 +329,9 @@ async def run_heat_losses_norm(
     require_mutations_enabled()
     from worker import run_heat_losses_norm as task_fn
 
+    main_table = heat_norm.LOSES_TABLES[body.loses_type]["main"]
     async with acquire_conn() as conn:
-        if not await conn.fetchval("SELECT count(*) FROM heatlosesmain WHERE id = $1", body.season_id):
+        if not await conn.fetchval(f"SELECT count(*) FROM {main_table} WHERE id = $1", body.season_id):
             raise HTTPException(status_code=404, detail="Сезон не найден")
         if not await heat_store.report_table_exists(conn):
             raise HTTPException(
@@ -350,31 +353,43 @@ async def run_heat_losses_norm(
     return {"success": True, "task_id": task.id}
 
 
+@router.get("/api/v1/heat-losses/norm/seasons")
+async def heat_losses_norm_seasons(loses_type: Literal["norm", "fact"] = Query("norm")):
+    """Сезоны расчёта: heatLosesMain (norm) или heatLosesMainFact (fact)."""
+    table = heat_norm.LOSES_TABLES[loses_type]["main"]
+    async with acquire_conn() as conn:
+        rows = await conn.fetch(f"SELECT id, name, city, d1, d2, a FROM {table} ORDER BY d1 DESC NULLS LAST, id DESC")
+    return heat_norm.json_safe({"loses_type": loses_type, "items": [dict(r) for r in rows]})
+
+
 @router.get("/api/v1/heat-losses/norm/scope")
 async def heat_losses_norm_scope(
     season_id: int = Query(..., ge=1),
     fragment_id: Optional[int] = Query(None, ge=1),
+    loses_type: Literal["norm", "fact"] = Query("norm"),
 ):
     """Что попадёт в расчёт: источники участков (фрагмента), число участков, заданы ли «Условия работы»."""
+    tbl = heat_norm.LOSES_TABLES[loses_type]
     async with acquire_conn() as conn:
-        season = await conn.fetchrow("SELECT id, name, city, d1, d2, a FROM heatlosesmain WHERE id = $1", season_id)
+        season = await conn.fetchrow(f"SELECT id, name, city, d1, d2, a FROM {tbl['main']} WHERE id = $1", season_id)
         if season is None:
             raise HTTPException(status_code=404, detail="Сезон не найден")
         line_filter = "AND l.fileid = $1" if fragment_id is not None else ""
         args = [fragment_id] if fragment_id is not None else []
-        sql = heat_norm.SECTIONS_SQL.replace("{line_filter}", line_filter).replace(
+        sql = heat_norm.SECTIONS_SQL.replace("{hls_table}", tbl["source"]).replace(
+            "{line_filter}", line_filter).replace(
             "{source_filter}", "hpsi.heatsourceid IS NOT NULL").replace("ORDER BY hpsi.section_id", "")
         rows = await conn.fetch(
             f"""SELECT s.heatsourceid AS id, count(*)::int AS sections, sum(s.lenp + s.leno) AS pipe_length,
                        hs.name, hs.sourcename,
-                       EXISTS(SELECT 1 FROM heatlosessourcemonths m WHERE m.heatsourceid = s.heatsourceid) AS has_months,
-                       EXISTS(SELECT 1 FROM heatlosessource p WHERE p.heatsourceid = s.heatsourceid) AS has_parameters,
+                       EXISTS(SELECT 1 FROM {tbl['months']} m WHERE m.heatsourceid = s.heatsourceid) AS has_months,
+                       EXISTS(SELECT 1 FROM {tbl['source']} p WHERE p.heatsourceid = s.heatsourceid) AS has_parameters,
                        EXISTS(SELECT 1 FROM deployedtempgraphs g WHERE g.hsourceid = s.heatsourceid) AS has_temp_graph
                   FROM ({sql}) s LEFT JOIN heatsources hs ON hs.id = s.heatsourceid
                  GROUP BY s.heatsourceid, hs.name, hs.sourcename ORDER BY s.heatsourceid""",
             *args,
         )
-    return heat_norm.json_safe({"season": dict(season), "fragment_id": fragment_id,
+    return heat_norm.json_safe({"season": dict(season), "fragment_id": fragment_id, "loses_type": loses_type,
                                 "sources": [dict(r) for r in rows]})
 
 

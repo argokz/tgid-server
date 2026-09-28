@@ -1,12 +1,12 @@
 """Эталон нормативных теплопотерь: веб (database/heat_losses_norm.py) против десктопа gid8 poteriNewPg.
 
 Десктоп считается в отдельном процессе исходниками gid8 (только чтение):
-- `Controllers/exportController.py` — запросы листов Excel (init_material_characteristics,
-  init_month_temperatures, init_winter_norms, init_summer_norms, init_avg_month_loses,
-  init_avg_year_loses) по представлениям и функциям `functions/new/*.sql`. Их нет в БД: процесс
-  создаёт их в своей транзакции на копии БД и откатывает её (DDL в PostgreSQL транзакционен),
-  так же заполняет TEMP_LINE/TEMP_NODE для режима «по фрагменту». Нормы — через dblink к `sprav`,
-  как у десктопа;
+- `Controllers/exportController.py` — запросы всех листов Excel (init_* из DESKTOP_SHEETS: МатХар …
+  ГодПотери, Нагрузка, Емкость, К(исп), ТехнПСВ/ТехнТП, ИТОГО, баки, заполнение, опрессовка, промывки,
+  САРЗ) по представлениям и функциям `functions/new/*.sql`. Их нет в БД: процесс создаёт их в своей
+  транзакции на копии БД и откатывает её (DDL в PostgreSQL транзакционен), так же заполняет
+  TEMP_LINE/TEMP_NODE для режима «по фрагменту» и синтетические данные (баки, обвязка, САРЗ,
+  заполнение, таблицы *Fact — на копии их нет). Нормы — через dblink к `sprav`, как у десктопа;
 - `Controllers/mainController.py::set_cond_env_temperatures` — строки heatLosesSourceMonths
   («Условия работы») с подменённым DAO, без БД.
 
@@ -122,7 +122,7 @@ _EXPORT = _PRELUDE + r'''
 from Controllers.exportController import ExportController
 req = json.load(sys.stdin)
 ec = ExportController()
-ec.loses_type = "norm"
+ec.loses_type = req.get("loses_type") or "norm"
 ec.season = req["season_id"]
 ec.heat_source_name = "golden"
 conn = ec.mdao._DAO__db._ConnectionPostgreSQL__connection
@@ -150,17 +150,22 @@ try:
                     "%(workcount)s)", m)
     for hs in req.get("hls_insert") or []:
         cur.execute("INSERT INTO heatlosessource (heatsourceid, t_percent) VALUES (%s, %s)", (hs, 0))
+    for stmt in req.get("setup_sql") or []:
+        cur.execute(stmt)
     frag = "yes" if req.get("fragment_id") else "no"
     for hs in req["heat_sources"]:
         s = str(hs)
-        out[s] = {
-            "material_characteristics": rows(ec.init_material_characteristics(s, frag)),
-            "month_temperatures": rows(ec.init_month_temperatures(s)),
-            "winter_norms": rows(ec.init_winter_norms(s, frag)),
-            "summer_norms": rows(ec.init_summer_norms(s, frag)),
-            "avg_month_loses": rows(ec.init_avg_month_loses(s, frag)),
-            "avg_year_loses": rows(ec.init_avg_year_loses(s, frag)),
-        }
+        sheets, errors = {}, {}
+        for key, method, with_frag in req["sheets"]:
+            cur.execute("SAVEPOINT golden_sheet")
+            try:
+                fn = getattr(ec, method)
+                sheets[key] = rows(fn(s, frag) if with_frag else fn(s))
+                cur.execute("RELEASE SAVEPOINT golden_sheet")
+            except Exception as e:  # SQL десктопа для fact частично нерабочий — фиксируем ошибку листа
+                cur.execute("ROLLBACK TO SAVEPOINT golden_sheet")
+                errors[key] = str(e).splitlines()[0][:300]
+        out[s] = {"sheets": sheets, "errors": errors}
 finally:
     conn.rollback()
 emit(out)
@@ -170,11 +175,32 @@ SQL_FILES_FULL = [
     "_functions/UT_KTP_OUT_view.sql", "_functions/get_qq_interp.sql", "_functions/get_qq_interp2.sql",
     "_functions/getmon.sql", "_functions/getTypnet.sql", "_functions/getCoeff.sql",
     "_view/real.sql", "_view/tempView.sql", "_view/heatPipeSectionIst.sql", "_view/normmon.sql",
-    "_view/losesVolumesView.sql", "_view/avgHeatLosesMonth.sql",
+    "_view/losesVolumesView.sql", "_view/avgHeatLosesMonth.sql", "_view/psvView.sql", "_view/tankbatteryView.sql",
 ]
 SQL_FILES_FRAGMENT = SQL_FILES_FULL + [
     "_view/heatPipeSectionIstFragment.sql", "_view/normmonFragment.sql",
     "_view/losesVolumesViewFragment.sql", "_view/avgHeatLosesMonthFragment.sql",
+    "_view/psvViewFragment.sql", "_view/tankbatteryViewFragment.sql",
+]
+SQL_FILES_FACT = SQL_FILES_FULL + [
+    "_view/tempViewFact.sql", "_view/heatPipeSectionIstFact.sql", "_view/normmonFact.sql",
+    "_view/losesVolumesViewFact.sql", "_view/avgHeatLosesMonthFact.sql", "_view/tankbatteryViewFact.sql",
+]
+
+# лист веба, метод exportController, передаётся ли признак «по фрагменту»
+DESKTOP_SHEETS = [
+    ("material_characteristics", "init_material_characteristics", True),
+    ("month_temperatures", "init_month_temperatures", False),
+    ("winter_norms", "init_winter_norms", True), ("summer_norms", "init_summer_norms", True),
+    ("avg_month_loses", "init_avg_month_loses", True), ("avg_year_loses", "init_avg_year_loses", True),
+    ("loads", "init_loads", True), ("capacities", "init_capacities", True),
+    ("heat_tests", "init_heat_tests", False), ("repair_heat_tests", "init_repair_heat_tests", False),
+    ("net_water_loses", "init_net_water_loses", True), ("net_water_year_loses", "init_net_water_year_loses", True),
+    ("overalls", "init_overalls", True), ("tank_batteries", "init_tank_batteries", True),
+    ("tank_batteries_loses", "init_tank_batteries_loses", True), ("fillings", "init_fillings", True),
+    ("pressings", "init_pressings", True), ("flushings_hs", "init_flushings_hs", True),
+    ("flushings", "init_flushings", True), ("sarz_flows", "init_sarz_flows", False),
+    ("sarz_rets", "init_sarz_rets", False),
 ]
 
 
@@ -260,7 +286,8 @@ async def _connect(database: str | None = None):
                                  port=int(env.get("DB_PORT") or 5432), database=database or env.get("DB_NAME"))
 
 
-async def _web(season_id, sources, fragment_id=None, extra_months=None, extra_hls=None):
+async def _web(season_id, sources, fragment_id=None, extra_months=None, extra_hls=None, setup_sql=None,
+               loses_type="norm"):
     conn = await _connect()
     try:
         if not await conn.fetchval("SELECT to_regclass('_this_is_copy') IS NOT NULL"):
@@ -270,8 +297,15 @@ async def _web(season_id, sources, fragment_id=None, extra_months=None, extra_hl
             norms = await hl.load_norms(sprav)
         finally:
             await sprav.close()
-        inputs = await hl.load_inputs(conn, season_id=season_id, heat_source_ids=sources,
-                                      fragment_id=fragment_id, norms=norms)
+        tr = conn.transaction()
+        await tr.start()
+        try:  # синтетика — только внутри откатываемой транзакции копии
+            for stmt in setup_sql or []:
+                await conn.execute(stmt)
+            inputs = await hl.load_inputs(conn, season_id=season_id, heat_source_ids=sources,
+                                          fragment_id=fragment_id, norms=norms, loses_type=loses_type)
+        finally:
+            await tr.rollback()
         if extra_months:
             inputs.months = inputs.months + extra_months
         if extra_hls:
@@ -316,9 +350,102 @@ NORM_NUM = ("lennp", "lenno", "qnp", "qno", "potnp", "potno", "lenkp", "lenko", 
 LOSS_NUM = ("potnp", "potno", "potpodz", "potall", "v1", "vall")
 
 
+TIGHT = "tight"  # числа без округления в SQL; остальные — ROUND(…, 2): допуск 0.0101
+
+
+def _spec(*fields):
+    """Поле: "name" (строка) или ("web", "desktop") / ("web", "desktop", TIGHT) / ("key", TIGHT)."""
+    out = []
+    for f in fields:
+        if isinstance(f, str):
+            out.append((f, f, "s"))
+        elif len(f) == 2 and f[1] == TIGHT:
+            out.append((f[0], f[0], TIGHT))
+        else:
+            out.append((f[0], f[1], f[2] if len(f) > 2 else "n"))
+    return out
+
+
+def _nums(*keys, tight=False):
+    return [(k, TIGHT) if tight else (k, k) for k in keys]
+
+
+def _sarz(sfx):
+    return _spec("monthname", *[(k, f"{k}{sfx}", TIGHT) for k in ("netwaterexp", "workcount", "regcount",
+                                                                  "regcountnode")],
+                 ("avggsarzg", f"avggsarzg{sfx}"), ("avggsarznodeg", f"avggsarznodeg{sfx}"),
+                 ("avggsarzgall", f"avggsarzg{sfx}all"), ("tgp", "tgp"), ("tn", "tn"), ("qsarz", "qsarz"))
+
+
+WATER_SPECS = {
+    "loads": _spec("heatsourcename", *_nums("got_pr", "gvent_pr", "ggvs_pr", tight=True)),
+    "capacities": _spec("name", *_nums("v1", "v2", "vpodv", tight=True),
+                        *_nums("v1leto", "v2leto", "vpodvleto", "vob", "vobleto", "vot", "votleto", "vvent",
+                               "vventleto", "vgvs", "vgvsleto", "vall", "vallleto", "podp", "podpleto")),
+    "heat_tests": _spec("name", *_nums(*hl.HEAT_TEST_COLUMNS, tight=True)),
+    "repair_heat_tests": _spec("name", *[(c, c + "_r", TIGHT) for c in hl.HEAT_TEST_COLUMNS]),
+    "net_water_loses": _spec("monthname", *_nums(*hl.PSV_G_KEYS, tight=True), ("gall", "gall")),
+    # ПСВ2.sql: колонка Gall — сумма G, а не Q (десктоп читает «Qall» и оставляет итог пустым); веб — сумма Q
+    "net_water_year_loses": _spec("monthname", *_nums(*hl.PSV_Q_KEYS, tight=True)),
+    "overalls": _spec("monthname", ("season", TIGHT), *_nums("normq", "normg", tight=True),
+                      *_nums("isolq", "qtb", "reglq", "reglg", "gall", "allq")),
+    "tank_batteries": _spec("name", "mesto", *_nums("designcapacity", "quantity", "height", "diameter", tight=True)),
+    "tank_batteries_loses": _spec("monthname", ("workcount", TIGHT),
+                                  *_nums("tn", "tgo", "monthloses", "yearloses")),
+    "fillings": _spec("monthname", *_nums("magistralshare", "distsiteshare", "heatingsystemshare", "nettemperature",
+                                          "tx", tight=True),
+                      *_nums("gmag", "grs", "gtep", "qms", "qrs", "qtep")),
+    "pressings": _spec("monthname", "opr", *_nums("tset", "percent1", tight=True),
+                       *_nums("tn", "v1", "v2", "vpodv", "vobm", "vobr", "vall", "avgqpressing")),
+    "flushings_hs": _spec("monthname", ("flushinghs_temp1", TIGHT),
+                          *_nums("tn", "flushinghs", "vot1", "vot2", "vall", "q")),
+    "flushings": _spec("monthname", ("kolv", TIGHT),
+                       *_nums("flushing_temp1", "tn", "flushing", "v1", "v2", "vpodv", "vobm", "vobr", "vall", "q")),
+    "sarz_flows": _sarz("flow"),
+    "sarz_rets": _sarz("ret"),
+}
+
+
+def _cmp_multiset(web_rows, ref_rows, spec, what):
+    """Сравнение строк без учёта порядка (у части запросов десктопа нет ORDER BY)."""
+    assert len(web_rows) == len(ref_rows), f"{what}: строк {len(web_rows)} ≠ {len(ref_rows)}"
+
+    def key(r, side):
+        out = []
+        for w, d, kind in spec:
+            v = r.get(w if side == 0 else d)
+            out.append((0, str(v)) if kind == "s" else (1, "" if v is None else f"{float(v):.1f}"))
+        return out
+
+    for w, d in zip(sorted(web_rows, key=lambda r: key(r, 0)), sorted(ref_rows, key=lambda r: key(r, 1))):
+        for wk, dk, kind in spec:
+            a, b = w.get(wk), d.get(dk)
+            if kind == "s":
+                assert str(a) == str(b), (what, wk, w, d)
+            elif kind == TIGHT:
+                assert _close(a, b, rel=1e-8, abs_=1e-9), (what, wk, a, b, d)
+            else:
+                assert _close(a, b, rel=0, abs_=0.0101), (what, wk, a, b, d)
+
+
+def _compare_water(web: dict, ref_sheets: dict, hs: int, keys=None, relaxed=False):
+    """relaxed: *_fact.sql десктопа местами округляют (ROUND(…, 2)) то, что в norm не округлено."""
+    for sheet, spec in WATER_SPECS.items():
+        if (keys is not None and sheet not in keys) or sheet not in ref_sheets:
+            continue
+        if relaxed:
+            spec = [(w, d, "n" if kind == TIGHT else kind) for w, d, kind in spec]
+            # tempViewFact даёт месячным строкам m = 13/14 (номер периода): у десктопа в названии месяца —
+            # период, САРЗ не находит температур по r, листы с отбором по месяцу (опрессовка, промывки) пусты
+            spec = [f for f in spec if f[0] not in ("monthname", "tgp", "tn", "qsarz")]
+        _cmp_multiset([r for r in web[sheet] if r["heatsourceid"] == hs], ref_sheets[sheet], spec, f"{sheet} {hs}")
+
+
 def _compare_sheets(web: dict, ref: dict, sources: list[int]):
     for hs in sources:
-        d = ref[str(hs)]
+        assert not ref[str(hs)]["errors"], ref[str(hs)]["errors"]
+        d = ref[str(hs)]["sheets"]
+        _compare_water(web, d, hs)
         pick = lambda key: [r for r in web[key] if r["heatsourceid"] == hs]
         _cmp_rows(pick("material_characteristics"), d["material_characteristics"],
                   ("typnet1", "diameterexternal", "diameterinternal"), MAT_NUM, what=f"МатХар {hs}")
@@ -354,7 +481,8 @@ def test_sheets_match_desktop_whole_network(db_env):
     if not inputs.months:
         pytest.skip("на копии нет heatLosesSourceMonths")
     web = hl.compute(inputs)
-    ref = _run_desktop(_EXPORT, {"season_id": 2, "heat_sources": sources, "sql_files": SQL_FILES_FULL}, with_db=True)
+    ref = _run_desktop(_EXPORT, {"season_id": 2, "heat_sources": sources, "sql_files": SQL_FILES_FULL,
+                                 "sheets": DESKTOP_SHEETS}, with_db=True)
     _compare_sheets(web, ref, sources)
     # сверка итогов: сумма потерь участков = потерям источника (Гкал/ч, отопительный период)
     for hs in sources:
@@ -394,5 +522,102 @@ def test_sheets_match_desktop_fragment_74(db_env):
     web = hl.compute(inputs)
     assert web["sections"], "по фрагменту 74 нет строк ut_teplo_out"
     ref = _run_desktop(_EXPORT, {"season_id": 2, "heat_sources": sources, "sql_files": SQL_FILES_FRAGMENT,
-                                 "fragment_id": 74, "months": months, "hls_insert": no_hls}, with_db=True)
+                                 "fragment_id": 74, "months": months, "hls_insert": no_hls,
+                                 "sheets": DESKTOP_SHEETS}, with_db=True)
     _compare_sheets(web, ref, sources)
+
+
+# ---------------------------------------------------------------- синтетика: листы по воде и фактические потери
+
+SYNTH_SOURCE, SYNTH_SEASON = 48, 2
+
+
+def _synthetic_sql(hs: int, season: int) -> list[str]:
+    """Баки, обвязка, САРЗ, заполнение, промывка источника hs (на копии этих данных нет).
+
+    Остальные сезоны и «Условия работы» других источников удаляются (в транзакции): десктоп соединяет
+    баки со всеми сезонами (ON 1=1) и берёт среднегодовую температуру любого источника (tankbattery2.sql).
+    """
+    return [
+        f"DELETE FROM heatlosesmain WHERE id <> {season}",
+        f"DELETE FROM heatlosessourcemonths WHERE heatsourceid <> {hs}",
+        "UPDATE heatlosessourcemonths SET netwaterexpflow = 0.4 + r * 0.01, regcountflow = 3, workcountflow = 10 + r, "
+        "regcountnodeflow = 2, netwaterexpret = 0.3, regcountret = 1, workcountret = 5 + r, regcountnoderet = 4 "
+        f"WHERE heatsourceid = {hs}",
+        "UPDATE losesbyfilling SET magistralshare = 10 + monthid, distsiteshare = 5, heatingsystemshare = 2.5, "
+        f"nettemperature = 60 WHERE heatsourceid = {hs}",
+        "UPDATE heatlosessource SET t_percent = 60, flushing_flow = 1, flushing_ret = 0, spring_pressing = 60, "
+        f"autumn_pressing = 40 WHERE heatsourceid = {hs}",
+        "INSERT INTO heatpipesectionsharness (heatsourceid, diameterexternal, diameterinternal, belongms, pipesectlength) "
+        f"VALUES ({hs}, 219, 207, 1, 120.5), ({hs}, 159, 150, 2, 80), ({hs}, 108, 100, NULL, 40)",
+        "INSERT INTO tankbatteries (designcapacity, quantity, height, diameter, nodeid, shape) "
+        "SELECT 1000 * k, 2, 12000, 10430 - k * 100, n.id, ST_SetSRID(ST_MakePoint(0, 0), 9998) "
+        "FROM (SELECT n.id FROM nodes n JOIN externalcodes ec ON ec.id = n.externalcodeid "
+        f"WHERE ec.heatsourceid = {hs} AND ec.objectid <> 2 AND n.removed = 0 ORDER BY n.id LIMIT 2) n, "
+        "generate_series(1, 2) k",
+    ]
+
+
+def _fact_copy_sql(hs: int, season: int) -> list[str]:
+    """Таблицы *Fact = копия нормативных данных источника (после синтетики)."""
+    out = []
+    for fact, norm, where in (("heatlosesmainfact", "heatlosesmain", f"id = {season}"),
+                              ("heatlosessourcefact", "heatlosessource", f"heatsourceid = {hs}"),
+                              ("heatlosessourcemonthsfact", "heatlosessourcemonths", f"heatsourceid = {hs}"),
+                              ("losesbyfillingfact", "losesbyfilling", f"heatsourceid = {hs}"),
+                              ("heatpipesectionsharnessfact", "heatpipesectionsharness", f"heatsourceid = {hs}")):
+        out += [f"DELETE FROM {fact}", f"INSERT INTO {fact} SELECT * FROM {norm} WHERE {where}"]
+    return out
+
+
+def _assert_same(a, b, path):
+    """Равенство результатов с допуском на порядок суммирования SUM в PostgreSQL."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        assert a.keys() == b.keys(), path
+        for k in a:
+            _assert_same(a[k], b[k], f"{path}.{k}")
+    elif isinstance(a, list) and isinstance(b, list):
+        assert len(a) == len(b), path
+        for i, (x, y) in enumerate(zip(a, b)):
+            _assert_same(x, y, f"{path}[{i}]")
+    elif isinstance(a, float) or isinstance(b, float):
+        assert _close(a, b, rel=1e-9, abs_=1e-9), (path, a, b)
+    else:
+        assert a == b, (path, a, b)
+
+
+def test_water_sheets_match_desktop_synthetic(db_env):
+    """Листы по воде на синтетике источника 48 (баки, обвязка, САРЗ, заполнение) против десктопа."""
+    setup = _synthetic_sql(SYNTH_SOURCE, SYNTH_SEASON)
+    inputs, _ = asyncio.run(_web(SYNTH_SEASON, [SYNTH_SOURCE], setup_sql=setup))
+    if not inputs.months or not inputs.tanks:
+        pytest.skip("нет «Условий работы» или узлов для баков у источника 48")
+    web = hl.compute(inputs)
+    assert web["tank_batteries"] and web["sarz_flows"] and any(r["qtb"] for r in web["overalls"])
+    ref = _run_desktop(_EXPORT, {"season_id": SYNTH_SEASON, "heat_sources": [SYNTH_SOURCE],
+                                 "sql_files": SQL_FILES_FULL, "setup_sql": setup, "sheets": DESKTOP_SHEETS},
+                       with_db=True)
+    _compare_sheets(web, ref, [SYNTH_SOURCE])
+
+
+def test_fact_losses_synthetic(db_env):
+    """Фактические потери: на копии таблицы *Fact пусты — заполняются копией синтетики в откатываемой
+    транзакции. Веб (fact) = веб (norm) по всем листам; с десктопом (fact) сверяются листы, SQL которых
+    у десктопа выполняется (остальные ссылаются на отсутствующие psvViewFact и колонки)."""
+    setup = _synthetic_sql(SYNTH_SOURCE, SYNTH_SEASON)
+    norm_inputs, _ = asyncio.run(_web(SYNTH_SEASON, [SYNTH_SOURCE], setup_sql=setup))
+    fact_setup = setup + _fact_copy_sql(SYNTH_SOURCE, SYNTH_SEASON)
+    fact_inputs, _ = asyncio.run(_web(SYNTH_SEASON, [SYNTH_SOURCE], setup_sql=fact_setup, loses_type="fact"))
+    if not fact_inputs.months:
+        pytest.skip("нет «Условий работы» источника 48")
+    assert fact_inputs.loses_type == "fact" and fact_inputs.tanks
+    norm, fact = hl.json_safe(hl.compute(norm_inputs)), hl.json_safe(hl.compute(fact_inputs))
+    _assert_same(fact, norm, "fact")
+    ref = _run_desktop(_EXPORT, {"season_id": SYNTH_SEASON, "heat_sources": [SYNTH_SOURCE], "loses_type": "fact",
+                                 "sql_files": SQL_FILES_FACT, "setup_sql": fact_setup, "sheets": DESKTOP_SHEETS},
+                       with_db=True)[str(SYNTH_SOURCE)]
+    web = hl.compute(fact_inputs)
+    ok = set(ref["sheets"]) - {"pressings", "flushings_hs", "flushings"}
+    assert {"material_characteristics", "month_temperatures", "heat_tests", "loads", "sarz_flows",
+            "tank_batteries_loses"} <= ok, ref["errors"]
+    _compare_water(web, ref["sheets"], SYNTH_SOURCE, keys=ok, relaxed=True)

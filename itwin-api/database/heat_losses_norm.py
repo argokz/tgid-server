@@ -23,8 +23,17 @@
 
 Режим «по фрагменту» десктопа: TEMP_LINE/TEMP_NODE — выделенные в графе участки/узлы.
 Веб: участки и узлы фрагмента (fileid) либо явный список участков.
-Фактические потери (`fact`, таблицы *Fact) и листы потерь с водой (ПСВ, заполнение,
-опрессовка, промывка, САРЗ, баки-аккумуляторы, ИТОГО) не перенесены.
+Листы по воде и прочие (exportController.init_*): Нагрузка (nagruz.sql), Емкость
+(Объемы2/losesVolumesView.sql), К(исп)/К(исп) Ремонт (coeff*.sql), ТехнПСВ/ТехнТП (psvView), ИТОГО,
+БакАк/БакАкТП (tankbatteryView), Заполнение, Опрессовка, ПромывкаСО/ПромывкаТС, САРЗ_Под/САРЗ_Обр →
+`loses_volumes`, `psv_view`, `tank_battery_loses`, `sheet_*`.
+
+Фактические потери (loses_type="fact") — те же формулы по таблицам heatLosesMainFact,
+heatLosesSourceFact, heatLosesSourceMonthsFact, losesByFillingFact, heatPipeSectionsHarnessFact.
+SQL десктопа для fact частично нерабочий (psvViewFact нет, losesVolumesViewFact и psvViewFragmentFact
+ссылаются на несуществующие колонки, в Емкость_fact остаётся «WITH»), поэтому перенесена логика norm.
+Явные ошибки SQL десктопа (соединения ON 1=1 и по чужому источнику в листах баков и ИТОГО) не
+повторяются — см. докстринги `sheet_overalls`, `sheet_tank_batteries*`.
 """
 
 from __future__ import annotations
@@ -616,6 +625,432 @@ def year_totals(year_rows: list[dict[str, Any]]) -> dict[int, dict[str, dict[str
     return result
 
 
+# ---------------------------------------------------------------- объёмы и потери с водой (листы по воде)
+
+CONSUMER_VOLUME_KEYS = tuple(f"{k}{n}" for n in ("", "1", "2", "3") for k in ("vot", "vvent", "vgvs"))
+
+
+def _coalesce(value: Optional[float], default: float = 0) -> float:
+    return default if value is None else value
+
+
+def _harness_volumes(harness: list[dict[str, Any]], hs: int, *, external: bool = False) -> tuple[float, float]:
+    """OBV: объём трубопроводов обвязки (heatPipeSectionsHarness), магистральных (belongMS = 1) и прочих.
+    losesVolumesView считает по внутреннему диаметру, лист «Емкость» — по наружному."""
+    groups: dict[Any, list] = {}
+    for h in harness:
+        if not _eq(h.get("heatsourceid"), hs):
+            continue
+        d = h.get("diameterexternal" if external else "diameterinternal")
+        v = None if d is None else _mul((d / 1000) ** 2 * math.pi / 4, h.get("pipesectlength"))
+        groups.setdefault(h.get("belongms"), []).append(v)
+    sums = {b: sql_sum(vs) for b, vs in groups.items()}
+    vobm = sql_sum(v if _eq(b, 1) else 0 for b, v in sums.items())
+    vobr = sql_sum(v if (b is not None and b != 1) else 0 for b, v in sums.items())
+    return _coalesce(vobm), _coalesce(vobr)
+
+
+def loses_volumes(sections, consumers, harness, *, capacity: bool = False) -> dict[int, dict[str, Any]]:
+    """losesVolumesView: объёмы сети (TR — участки источника), систем потребителей (PR) и обвязки (OBV), м³.
+
+    capacity=True — вариант листа «Емкость» (Объемы2/losesVolumesView.sql): объёмы систем по
+    hlm.useTableData, обвязка по наружному диаметру.
+    """
+    tr: dict[int, dict[str, list]] = {}
+    for s in sections:
+        hs = s.get("heatsourceid")
+        if hs is None:
+            continue
+        di = s.get("diameterinternal")
+        vv = _div(_div(_div(_mul(_add(s.get("lenp"), s.get("leno")), di, di, math.pi), 4), 1000), 1000)
+        obj, typnet = s.get("objectid"), s.get("typnet")
+        not_basement = typnet is not None and typnet != 20
+        acc = tr.setdefault(hs, {"v1": [], "v2": [], "vpodv": [], "v6": []})
+        acc["v1"].append(vv if (_eq(obj, 1) and not_basement) else 0)
+        acc["v2"].append(vv if (obj is not None and obj != 1 and not_basement) else 0)
+        acc["vpodv"].append(vv if _eq(typnet, 20) else 0)
+        acc["v6"].append(vv if not_basement else 0)
+    cons = {c.get("heatsourceid"): c for c in consumers}
+    out: dict[int, dict[str, Any]] = {}
+    for hs, acc in tr.items():
+        row: dict[str, Any] = {"heatsourceid": hs, **{k: sql_sum(v) for k, v in acc.items()}}
+        row["vsts"] = _add(row["v1"], row["v2"], row["v6"])
+        c = cons.get(hs) or {}
+        for k in CONSUMER_VOLUME_KEYS:
+            row[k] = c.get(k)
+        if capacity:
+            row["vot"], row["vvent"] = c.get("cap_vot"), c.get("cap_vvent")
+        row["vpotr"] = _add(row["vot"], row["vvent"], row["vgvs"])
+        row["vobm"], row["vobr"] = _harness_volumes(harness, hs, external=capacity)
+        out[hs] = row
+    return out
+
+
+def _hls_for(hls_rows, hs) -> list[dict[str, Any]]:
+    return [h for h in hls_rows if _eq(h.get("heatsourceid"), hs)]
+
+
+def _net_volume(lv: dict[str, Any]) -> Optional[float]:
+    """V1 + VobM + V2 + Vpodv + Vobr — объём тепловой сети с обвязкой."""
+    return _add(lv.get("v1"), lv.get("vobm"), lv.get("v2"), lv.get("vpodv"), lv.get("vobr"))
+
+
+def psv_view(months, hls_rows, volumes, filling, season, tview) -> list[dict[str, Any]]:
+    """psvView: подпитка сетевой водой по месяцам — заполнение, опрессовка, промывка, САРЗ, нормативная
+    утечка (G, м³) и тепло с ней (Q, Гкал). Строка на каждую строку heatLosesSourceMonths."""
+    a = season.get("a")
+    out = []
+    for lsm in months:
+        hs, r, m, sezon = lsm.get("heatsourceid"), lsm.get("r"), lsm.get("m"), lsm.get("sezon")
+        lv = volumes.get(hs) or {}
+        v1, vobm, v2, vpodv, vobr = (lv.get(k) for k in ("v1", "vobm", "v2", "vpodv", "vobr"))
+        vot, vvent, vgvs = lv.get("vot"), lv.get("vvent"), lv.get("vgvs")
+        vsum = _net_volume(lv)
+        bfs = [b for b in filling if _eq(b.get("heatsourceid"), hs) and _eq(b.get("monthid"), m) and _eq(sezon, 2)]
+        tvs = [tv for tv in tview.get(hs) or [] if _eq(tv["r"], r) and _eq(tv["m"], m)]
+        wcf, nwef = lsm.get("workcountflow"), lsm.get("netwaterexpflow")
+        wcr, nwer = lsm.get("workcountret"), lsm.get("netwaterexpret")
+        sarz_g = _add(_mul(wcf, nwef, _add(lsm.get("regcountflow"), lsm.get("regcountnodeflow")), 24),
+                      _mul(wcr, nwer, _add(lsm.get("regcountret"), lsm.get("regcountnoderet")), 24))
+        for h in _hls_for(hls_rows, hs) or [{}]:
+            for bf in bfs or [{}]:
+                for tv in tvs or [{}]:
+                    fill = _add(
+                        _div(_mul(_add(v1, vobm), 1.5, bf.get("magistralshare")), 100),
+                        _div(_mul(_add(v2, vpodv, vobr), 1.2, bf.get("distsiteshare")), 100),
+                        _div(_mul(_add(vot, vvent, vgvs), 1.2, bf.get("heatingsystemshare")), 100))
+                    fill_q = _div(_mul(fill, _sub(_coalesce(bf.get("nettemperature")), lsm.get("tx"))), 1000)
+                    press_g = press_q = flush_g = flush_q = 0.0
+                    if _eq(sezon, 2) and _eq(m, h.get("pressingmonth1")):
+                        press_g = _div(_mul(vsum, h.get("spring_pressing")), 100)
+                        press_q = _div(_mul(press_g, _sub(h.get("nettemppressing1"), h.get("coldtemppressing1"))), 1000)
+                    elif _eq(sezon, 2) and _eq(m, h.get("pressingmonth2")):
+                        press_g = _div(_mul(vsum, h.get("autumn_pressing")), 100)
+                        press_q = _div(_mul(press_g, _sub(h.get("nettemppressing2"), h.get("coldtemppressing2"))), 1000)
+                    if _eq(sezon, 2) and _eq(m, h.get("pressingmonth1")):
+                        # десктоп: промывка — в месяц весенней опрессовки; разность температур с flushinghs_temp2
+                        # и без деления на 1000 (перенесено как есть)
+                        flush_g = _div(_mul(vsum, h.get("flushing"), _add(h.get("flushing_flow"), h.get("flushing_ret"))), 2)
+                        flush_q = _mul(flush_g, _sub(h.get("flushing_temp1"), h.get("flushinghs_temp2")))
+                    k_summer = 1 if _eq(sezon, 1) else _add(0.5, _div(h.get("t_percent"), 200))
+                    norm_g = _mul(_div(_mul(_add(_mul(vsum, k_summer), _mul(_add(vot, vvent), 1 if _eq(sezon, 1) else 0),
+                                                 vgvs), a), 100), lsm.get("workcount"), 24)
+                    out.append({
+                        "heatsourceid": hs, "r": r, "m": m, "sezon": sezon,
+                        "fillingg": _coalesce(fill), "fillingq": _coalesce(fill_q),
+                        "avggpressingg": press_g, "avggpressingq": press_q,
+                        "avggflushingg": flush_g, "avggflushingq": flush_q,
+                        "avggsarzg": sarz_g, "avggsarzq": _div(_mul(sarz_g, _sub(tv.get("tgp"), tv.get("tx"))), 1000),
+                        "normg": norm_g, "normq": _div(_mul(norm_g, tv.get("dt")), 1000),
+                    })
+    return out
+
+
+def _name(sources, hs) -> Optional[str]:
+    return (sources.get(hs) or {}).get("name")
+
+
+PSV_G_KEYS = ("fillingg", "avggpressingg", "avggflushingg", "avggsarzg", "normg")
+PSV_Q_KEYS = ("fillingq", "avggpressingq", "avggflushingq", "avggsarzq", "normq")
+
+
+def sheet_net_water_loses(psv, sources, month_names, *, heat: bool = False) -> list[dict[str, Any]]:
+    """ПСВ.sql (ТехнПСВ, м³) / ПСВ2.sql (ТехнТП, Гкал): технологические потери с сетевой водой по месяцам."""
+    keys = PSV_Q_KEYS if heat else PSV_G_KEYS
+    out = []
+    for p in sorted(psv, key=lambda x: (_nulls_last(x["heatsourceid"]), _nulls_last(x["r"]))):
+        vals = {k: _coalesce(p[k]) for k in keys}
+        total = pg_round(vals[keys[0]] + vals[keys[1]] + vals[keys[2]] + vals[keys[3]] + vals[keys[4]], 2)
+        out.append({"heatsourceid": p["heatsourceid"], "r": p["r"], "m": p["m"], "name": _name(sources, p["heatsourceid"]),
+                    "monthname": month_names.get(p["m"]), **vals, ("qall" if heat else "gall"): total})
+    return out
+
+
+def tank_battery_loses(tanks, tview, season, months) -> list[dict[str, Any]]:
+    """Потери тепла баками-аккумуляторами по строкам tempView источника (до группировки).
+
+    q = F·q_норм·10⁻⁶·(t2 − tх)/(t2 − tх)ср.год, F = π·D·(H + D/2)·2 — как в tankbatteryView.
+    """
+    tq = season.get("tankbattery_q")
+    lsm_count: dict[tuple, int] = {}
+    for m in months:
+        key = (m.get("heatsourceid"), m.get("r"), m.get("m"))
+        lsm_count[key] = lsm_count.get(key, 0) + 1
+    out = []
+    for b in tanks:
+        hs = b.get("heatsourceid")
+        rows = tview.get(hs) or []
+        year = [tv for tv in rows if _eq(tv["m"], 15)] or [{}]
+        d, h = b.get("diameter"), b.get("height")
+        area = _mul(_div(_mul(_div(_mul(math.pi, d), 1000), _add(h, _div(d, 2))), 1000), 2)
+        for tv in rows or [{}]:
+            for g in year:
+                dt_year = _sub(g.get("tgo"), g.get("tx"))
+                dt = _sub(tv.get("tgo"), tv.get("tx"))
+                q = _div(_mul(_div(_mul(area, tq), 1e6), dt), dt_year)
+                out.append({"battery": b, "heatsourceid": hs, "tv": tv, "q": q, "tt": _div(dt, dt_year),
+                            "lsm": lsm_count.get((hs, tv.get("r"), tv.get("m")), 1)})
+    return out
+
+
+def tankbattery_view(tb_items) -> list[dict[str, Any]]:
+    """tankbatteryView: qTB — потери всех баков источника, Гкал/ч, по строкам tempView."""
+    groups: dict[tuple, list] = {}
+    for it in tb_items:
+        tv = it["tv"]
+        key = (it["heatsourceid"], it["tt"], tv.get("workcount"), tv.get("r"), tv.get("m"), tv.get("sezon"),
+               tv.get("tn"), tv.get("tgo"))
+        groups.setdefault(key, []).extend([it["q"]] * it["lsm"])
+    return [{"heatsourceid": hs, "r": r, "m": m, "tn": tn, "tgo": tgo, "qtb": sql_sum(qs),
+             "workcount": None if wc is None else int(wc)}
+            for (hs, _tt, wc, r, m, _sezon, tn, tgo), qs in groups.items()]
+
+
+def sheet_overalls(ahlm, months, tb_rows, psv, sources, month_names) -> list[dict[str, Any]]:
+    """Итого.sql (ИТОГО): потери за месяц через изоляцию, баками, с нормативной утечкой и регламентные.
+
+    Десктоп присоединяет tankbatteryView по `tb.heatSourceID <> 0 AND tb.r = ahlm.r` — к источнику
+    прибавляются баки всех источников; здесь — баки своего источника.
+    """
+    def by_hs_r(rows):
+        d: dict[tuple, list] = {}
+        for x in rows:
+            d.setdefault((x.get("heatsourceid"), x.get("r")), []).append(x)
+        return d
+
+    lsm_by, tb_by, psv_by = by_hs_r(months), by_hs_r(tb_rows), by_hs_r(psv)
+    out = []
+    for row in sorted(ahlm, key=lambda x: (_nulls_last(x["heatsourceid"]), _nulls_last(x["r"]))):
+        key = (row["heatsourceid"], row["r"])
+        for lsm in lsm_by.get(key) or [{}]:
+            wc = lsm.get("workcount")
+            for tb in tb_by.get(key) or [{}]:
+                for p in psv_by.get(key) or [{}]:
+                    regl_q = sum(_coalesce(p.get(k)) for k in PSV_Q_KEYS[:4])
+                    regl_g = sum(_coalesce(p.get(k)) for k in PSV_G_KEYS[:4])
+                    isol = _mul(row["potall"], wc, 24)
+                    all_q = _add(isol, _coalesce(_mul(tb.get("qtb"), wc)) * 24, p.get("normq"), regl_q)
+                    out.append({
+                        "heatsourceid": row["heatsourceid"], "r": row["r"], "m": row["m"], "season": row["sezon"],
+                        "name": _name(sources, row["heatsourceid"]), "monthname": month_names.get(row["m"]),
+                        "isolq": _coalesce(pg_round(isol, 2)),
+                        "qtb": _coalesce(pg_round(_mul(tb.get("qtb"), wc, 24), 2)),
+                        "normq": p.get("normq"), "reglq": pg_round(regl_q, 2),
+                        "normg": p.get("normg"), "reglg": pg_round(regl_g, 2),
+                        "gall": pg_round(_add(p.get("normg"), regl_g), 2), "allq": pg_round(all_q, 2),
+                    })
+    return out
+
+
+def sheet_tank_batteries(tanks, sources) -> list[dict[str, Any]]:
+    """tankbattery1.sql (БакАк): баки-аккумуляторы источника.
+
+    Десктоп соединяет баки со всеми строками heatLosesMain (ON 1=1) — каждый бак повторяется по числу
+    сезонов; здесь — один раз.
+    """
+    return [{"heatsourceid": b.get("heatsourceid"), "name": _name(sources, b.get("heatsourceid")),
+             **{k: b.get(k) for k in ("mesto", "designcapacity", "quantity", "height", "diameter")}}
+            for b in tanks]
+
+
+def sheet_tank_batteries_loses(tb_items, months, sources, month_names) -> list[dict[str, Any]]:
+    """tankbattery2.sql (БакАкТП): потери баками по месяцам, Гкал/ч.
+
+    Десктоп берёт среднегодовую строку tempView любого источника (`tvg ON tv.hID = …`) и умножает на
+    число сезонов (ON 1=1); здесь — своего источника и один раз (как tankbatteryView).
+    """
+    lsm_by: dict[tuple, list] = {}
+    for m in months:
+        lsm_by.setdefault((m.get("heatsourceid"), m.get("r")), []).append(m)
+    groups: dict[tuple, list] = {}
+    for it in tb_items:
+        tv = it["tv"]
+        for lsm in lsm_by.get((it["heatsourceid"], tv.get("r"))) or [{}]:
+            key = (it["heatsourceid"], lsm.get("id"), it["tt"], tv.get("workcount"), tv.get("r"), tv.get("m"),
+                   tv.get("sezon"), tv.get("tn"), tv.get("tgo"))
+            groups.setdefault(key, []).append(it["q"])
+    out = []
+    for (hs, _lsm_id, _tt, wc, r, m, _sezon, tn, tgo), qs in groups.items():
+        total = pg_round(sql_sum(qs), 2)
+        out.append({"heatsourceid": hs, "r": r, "m": m, "name": _name(sources, hs), "monthname": month_names.get(m),
+                    "tn": pg_round(tn, 2), "tgo": pg_round(tgo, 2), "monthloses": total, "workcount": wc,
+                    "yearloses": total})
+    out.sort(key=lambda x: (_nulls_last(x["heatsourceid"]), _nulls_last(x["m"])))
+    return out
+
+
+def sheet_fillings(filling, volumes, season, months, sources, month_names) -> list[dict[str, Any]]:
+    """Заполнение.sql: потери с заполнением магистральных, распределительных сетей и систем потребителей."""
+    out = []
+    for lbf in filling:
+        hs = lbf.get("heatsourceid")
+        lv = volumes.get(hs)
+        if lv is None:  # JOIN losesVolumesView
+            continue
+        lsms = [x for x in months if _eq(x.get("heatsourceid"), hs) and _eq(x.get("m"), lbf.get("monthid"))
+                and _eq(x.get("sezon"), 2)]
+        ms, ds, hsh = lbf.get("magistralshare"), lbf.get("distsiteshare"), lbf.get("heatingsystemshare")
+        g_mag = _mul(_div(ms, 100), season.get("netwaterfillingnormms"), _add(lv.get("v1"), lv.get("vobm")))
+        g_rs = _mul(_div(ds, 100), season.get("netwaterfillingnormrs"),
+                    _add(lv.get("v2"), lv.get("vobr"), lv.get("vpodv")))
+        g_tep = _mul(_div(hsh, 100), season.get("netwaterfillingnormhs"),
+                     _add(lv.get("vot"), lv.get("vvent"), lv.get("vgvs")))
+        for lsm in lsms or [{}]:
+            dt = _sub(lbf.get("nettemperature"), lsm.get("tx"))
+            out.append({
+                "heatsourceid": hs, "m": lbf.get("monthid"), "name": _name(sources, hs),
+                "monthname": month_names.get(lbf.get("monthid")),
+                "magistralshare": _coalesce(ms), "distsiteshare": _coalesce(ds), "heatingsystemshare": _coalesce(hsh),
+                "gmag": _coalesce(pg_round(g_mag, 2)), "grs": _coalesce(pg_round(g_rs, 2)),
+                "gtep": _coalesce(pg_round(g_tep, 2)),
+                "nettemperature": lbf.get("nettemperature"), "tx": lsm.get("tx"),
+                "qms": _coalesce(pg_round(_mul(g_mag, dt, 1e-3), 2)), "qrs": _coalesce(pg_round(_mul(g_rs, dt, 1e-3), 2)),
+                "qtep": _coalesce(pg_round(_mul(g_tep, dt, 1e-3), 2)),
+            })
+    return out
+
+
+def _summer_months(tview, hs, month: Any) -> list[dict[str, Any]]:
+    return [tv for tv in tview.get(hs) or [] if _eq(tv.get("sezon"), 2) and _eq(tv.get("m"), month)]
+
+
+def sheet_pressings(hls_rows, tview, volumes, sources, month_names) -> list[dict[str, Any]]:
+    """Опрессовка.sql: весенняя и осенняя опрессовка (месяцы pressingMonth1/2 летнего периода)."""
+    out = []
+    for h in hls_rows:
+        hs = h.get("heatsourceid")
+        lv = volumes.get(hs) or {}
+        tvs = [tv for tv in tview.get(hs) or [] if _eq(tv.get("sezon"), 2) and tv.get("m") in month_names
+               and (_eq(tv.get("m"), h.get("pressingmonth1")) or _eq(tv.get("m"), h.get("pressingmonth2")))]
+        for tv in tvs:
+            spring = _eq(tv["m"], h.get("pressingmonth1"))
+            vsum = _add(lv.get("v1"), lv.get("v2"), lv.get("vpodv"), lv.get("vobm"), lv.get("vobr"))
+            percent = h.get("spring_pressing") if spring else h.get("autumn_pressing")
+            q = _div(_mul(_div(_mul(vsum, _sub(h.get("nettemppressing1"), h.get("coldtemppressing1"))), 1000),
+                          percent), 100)
+            out.append({
+                "heatsourceid": hs, "r": tv["r"], "m": tv["m"], "name": _name(sources, hs),
+                "monthname": month_names.get(tv["m"]), "opr": "весенняя" if spring else "осенняя",
+                "tset": h.get("nettemppressing1") if spring else h.get("nettemppressing2"),
+                "tn": pg_round(tv.get("tn"), 2), "percent1": percent,
+                **{k: _coalesce(pg_round(lv.get(k), 2)) for k in ("v1", "v2", "vpodv", "vobm", "vobr")},
+                "vall": _coalesce(pg_round(vsum, 2)),
+                # десктоп: разность температур всегда весенней опрессовки (перенесено как есть)
+                "avgqpressing": _coalesce(pg_round(q, 2)),
+            })
+    out.sort(key=lambda x: (_nulls_last(x["heatsourceid"]), _nulls_last(x["r"])))
+    return out
+
+
+def sheet_flushings_hs(hls_rows, tview, volumes, sources, month_names) -> list[dict[str, Any]]:
+    """ПромывкаТС.sql (лист ПромывкаСО): промывка систем отопления потребителей (Vot1 + Vot2)."""
+    out = []
+    for h in hls_rows:
+        hs = h.get("heatsourceid")
+        lv = volumes.get(hs) or {}
+        for tv in _summer_months(tview, hs, h.get("month_flushinghs")):
+            vall = _add(lv.get("vot1"), lv.get("vot2"))
+            out.append({
+                "heatsourceid": hs, "m": tv["m"], "name": _name(sources, hs), "monthname": month_names.get(tv["m"]),
+                "flushinghs_temp1": h.get("flushinghs_temp1"), "tn": pg_round(tv.get("tn"), 2),
+                "flushinghs": pg_round(h.get("flushinghs"), 2), "vot1": pg_round(lv.get("vot1"), 2),
+                "vot2": pg_round(lv.get("vot2"), 2), "vall": pg_round(vall, 2),
+                "q": pg_round(_div(_mul(vall, h.get("flushinghs"),
+                                        _sub(h.get("flushinghs_temp1"), h.get("flushinghs_temp2"))), 1000), 2),
+            })
+    return out
+
+
+def sheet_flushings(hls_rows, tview, volumes, sources, month_names) -> list[dict[str, Any]]:
+    """Промывка.sql (лист ПромывкаТС): промывка тепловых сетей (подающий и/или обратный)."""
+    out = []
+    for h in hls_rows:
+        hs = h.get("heatsourceid")
+        lv = volumes.get(hs) or {}
+        ff, fr = h.get("flushing_flow"), h.get("flushing_ret")
+        kolv = 2 if (_nn(ff, fr) and ff != 0 and fr != 0) else (0 if (_eq(ff, 0) and _eq(fr, 0)) else 1)
+        for tv in _summer_months(tview, hs, h.get("month_flushing")):
+            vsum = _add(lv.get("v1"), lv.get("v2"), lv.get("vpodv"), lv.get("vobm"), lv.get("vobr"))
+            q = _div(_mul(_div(_mul(vsum, h.get("flushing"), kolv), 2),
+                          _sub(h.get("flushing_temp1"), h.get("flushing_temp2"))), 1000)
+            out.append({
+                "heatsourceid": hs, "m": tv["m"], "name": _name(sources, hs), "monthname": month_names.get(tv["m"]),
+                "kolv": kolv, "flushing_temp1": pg_round(h.get("flushing_temp1"), 2), "tn": pg_round(tv.get("tn"), 2),
+                "flushing": pg_round(h.get("flushing"), 2),
+                **{k: pg_round(lv.get(k), 2) for k in ("v1", "v2", "vpodv", "vobm", "vobr")},
+                "vall": pg_round(vsum, 2), "q": pg_round(q, 2),
+            })
+    return out
+
+
+def sheet_sarz(months, tview, sources, month_names, *, ret: bool = False) -> list[dict[str, Any]]:
+    """СарзП.sql / СарзО.sql (САРЗ_Под / САРЗ_Обр): сливы САРЗ по подающему / обратному трубопроводу.
+    Тепло в обоих листах — по (t1 − tн), как у десктопа."""
+    sfx = "ret" if ret else "flow"
+    out = []
+    for lsm in months:
+        hs = lsm.get("heatsourceid")
+        wc, exp = lsm.get(f"workcount{sfx}"), lsm.get(f"netwaterexp{sfx}")
+        reg, reg_node = lsm.get(f"regcount{sfx}"), lsm.get(f"regcountnode{sfx}")
+        g, g_node = _mul(wc, exp, reg), _mul(wc, exp, reg_node)
+        for tv in [tv for tv in tview.get(hs) or [] if _eq(tv["r"], lsm.get("r"))] or [{}]:
+            out.append({
+                "heatsourceid": hs, "r": lsm.get("r"), "m": tv.get("m"), "name": _name(sources, hs),
+                "monthname": month_names.get(tv.get("m")),
+                "netwaterexp": _coalesce(exp), "workcount": _coalesce(wc), "regcount": _coalesce(reg),
+                "avggsarzg": _coalesce(pg_round(g, 2)), "regcountnode": _coalesce(reg_node),
+                "avggsarznodeg": _coalesce(pg_round(g_node, 2)), "avggsarzgall": _coalesce(pg_round(_add(g, g_node), 2)),
+                "tgp": _coalesce(pg_round(tv.get("tgp"), 2)), "tn": _coalesce(pg_round(tv.get("tn"), 2)),
+                "qsarz": _coalesce(pg_round(_div(_mul(_add(g, g_node), _sub(tv.get("tgp"), tv.get("tn"))), 1000), 2)),
+            })
+    return out
+
+
+HEAT_TEST_COLUMNS = tuple(f"coeff{base}{kind}Norms{n}".lower() for n in (1, 3) for base in COEFF_BASES
+                          for kind in COEFF_KINDS)
+
+
+def sheet_heat_tests(hls_rows, sources, *, repair: bool = False) -> list[dict[str, Any]]:
+    """coeff.sql / coeff_r.sql (К(исп) / К(исп) Ремонт): коэффициенты по испытаниям (после ремонта — *_r).
+    Ключи строк — без суффикса _r, чтобы оба листа имели одни колонки."""
+    return [{"heatsourceid": h.get("heatsourceid"), "name": _name(sources, h.get("heatsourceid")),
+             **{c: h.get(c + "_r" if repair else c) for c in HEAT_TEST_COLUMNS}} for h in hls_rows]
+
+
+def sheet_loads(consumers, heat_source_ids, sources) -> list[dict[str, Any]]:
+    """nagruz.sql (Нагрузка): расчётные нагрузки потребителей источника, Гкал/ч."""
+    wanted = set(heat_source_ids)
+    return [{"heatsourceid": c["heatsourceid"], "heatsourcename": _name(sources, c["heatsourceid"]),
+             "got_pr": c.get("load_ot"), "gvent_pr": c.get("load_vent"), "ggvs_pr": c.get("load_gvs")}
+            for c in sorted(consumers, key=lambda x: _nulls_last(x.get("heatsourceid")))
+            if c.get("heatsourceid") in wanted]
+
+
+def sheet_capacities(cap_volumes, hls_rows, season, sources) -> list[dict[str, Any]]:
+    """Объемы2/losesVolumesView.sql (Емкость): объёмы сети и систем, в т.ч. в летний период, и подпитка."""
+    a = season.get("a")
+    out = []
+    for hs in sorted(cap_volumes):
+        lv = cap_volumes[hs]
+        v1, v2, vpodv, vot, vvent, vgvs = (lv.get(k) for k in ("v1", "v2", "vpodv", "vot", "vvent", "vgvs"))
+        vob = lv["vobm"] + lv["vobr"]
+        vall = _add(v1, v2, vpodv, lv["vobm"], lv["vobr"], vot, vvent, vgvs)
+        for h in _hls_for(hls_rows, hs) or [{}]:
+            k = _add(0.5, _div(h.get("t_percent"), 200))
+            vall_summer = _add(_mul(_add(v1, v2, vpodv, lv["vobm"], lv["vobr"]), k), vgvs)
+            out.append({
+                "heatsourceid": hs, "name": _name(sources, hs),
+                "v1": v1, "v1leto": pg_round(_mul(v1, k), 2), "v2": v2, "v2leto": pg_round(_mul(v2, k), 2),
+                "vpodv": vpodv, "vpodvleto": pg_round(_mul(vpodv, k), 2),
+                "vob": pg_round(vob, 2), "vobleto": pg_round(_mul(vob, k), 2),
+                "vot": pg_round(vot, 2), "votleto": 0, "vvent": pg_round(vvent, 2), "vventleto": 0,
+                "vgvs": pg_round(vgvs, 2), "vgvsleto": pg_round(vgvs, 2),
+                "vall": pg_round(vall, 2), "vallleto": pg_round(vall_summer, 2),
+                "podp": pg_round(_div(_mul(vall, a), 100), 2), "podpleto": pg_round(_div(_mul(vall_summer, a), 100), 2),
+            })
+    return out
+
+
 # ---------------------------------------------------------------- удельные потери по участкам
 
 
@@ -810,7 +1245,7 @@ SELECT * FROM (
       LEFT JOIN nodes n2 ON n2.id = l.nodeid2
       LEFT JOIN externalcodes ec2 ON ec2.id = n2.externalcodeid
       LEFT JOIN externalcodes ecm ON ec2.belongmagistral = ecm.id AND ec2.objectid = 2
-      LEFT JOIN heatlosessource hls ON hls.heatsourceid =
+      LEFT JOIN {hls_table} hls ON hls.heatsourceid =
                 CASE WHEN ec2.objectid <> 2 OR ecm.heatsourceid IS NULL THEN ec2.heatsourceid
                      ELSE ecm.heatsourceid END
      WHERE n2.internalnodeid IS NULL AND l.removed = 0 {line_filter}
@@ -819,7 +1254,9 @@ SELECT * FROM (
  ORDER BY hpsi.section_id
 """.replace("{coeffs}", ", ".join(f"hls.{c}" for c in COEFF_COLUMNS))
 
-# losesVolumesView, часть PR: объёмы воды систем потребителей (realConsumers2 = реальные + обобщённые)
+# losesVolumesView, часть PR: объёмы воды систем потребителей (realConsumers2 = реальные + обобщённые),
+# с разбивкой по типу здания (1..3); cap_* — вариант листа «Емкость» (объём по hlm.useTableData);
+# load_* — лист «Нагрузка» (nagruz.sql)
 CONSUMER_VOLUMES_SQL = """
 WITH rc2 AS (
     SELECT nodeid, calchldep, calchlindep, calchlventil, avghlgvsopenflow, avghlgvsopenret,
@@ -835,27 +1272,64 @@ WITH rc2 AS (
       JOIN nodes n ON n.id = gc.nodeid
       JOIN externalcodes ec ON ec.id = n.externalcodeid
      WHERE ec.objectid <> 1 AND ec.objectid <> 9
+), g AS (
+    SELECT rc.*, rc.calchldep + rc.calchlindep AS got, rc.calchlventil AS gvent,
+           rc.avghlgvsopenflow + rc.avghlgvsopenret + rc.avghlgvscloseparall + rc.avghlgvsclosemix
+               + rc.avghlgvscloseconseq + rc.avghlgvsclosepreon AS ggvs
+      FROM rc2 rc
 )
-SELECT t.heatsourceid, SUM(t.got_pr * t.volwaterhs) AS vot, SUM(t.gvent_pr * t.volwatervs) AS vvent,
-       SUM(t.ggvs_pr * t.volwateropengvs) AS vgvs
+SELECT t.heatsourceid,
+       SUM(t.got_pr * t.volwaterhs) AS vot, SUM(t.gvent_pr * t.volwatervs) AS vvent,
+       SUM(t.ggvs_pr * t.volwateropengvs) AS vgvs,
+       {split_sums},
+       SUM(t.got_pr * t.cap_volwaterhs) AS cap_vot, SUM(t.gvent_pr * t.cap_volwatervs) AS cap_vvent,
+       SUM(t.got_pr) AS load_ot, SUM(t.gvent_pr) AS load_vent, SUM(t.ggvs_pr) AS load_gvs
   FROM (
     SELECT ec.heatsourceid,
-           SUM(rc.calchldep + rc.calchlindep) AS got_pr,
-           SUM(rc.calchlventil) AS gvent_pr,
-           SUM(rc.avghlgvsopenflow + rc.avghlgvsopenret + rc.avghlgvscloseparall + rc.avghlgvsclosemix
-               + rc.avghlgvscloseconseq + rc.avghlgvsclosepreon) AS ggvs_pr,
+           SUM(rc.got) AS got_pr, SUM(rc.gvent) AS gvent_pr, SUM(rc.ggvs) AS ggvs_pr,
+           {split_parts},
            COALESCE(rc.volwaterhs, 0) AS volwaterhs, COALESCE(rc.volwatervs, 0) AS volwatervs,
+           CASE WHEN hlm.usetabledata = 0 THEN rc.volwaterhs ELSE hlm.volwaterhs END AS cap_volwaterhs,
+           CASE WHEN hlm.usetabledata = 0 THEN rc.volwatervs ELSE hlm.volwatervs END AS cap_volwatervs,
            hlm.volwateropengvs
-      FROM rc2 rc
+      FROM g rc
       JOIN nodes n ON n.id = rc.nodeid
       LEFT JOIN externalcodes ec ON ec.id = n.externalcodeid
-      JOIN heatlosesmain hlm ON hlm.id = $1
+      JOIN {hlm_table} hlm ON hlm.id = $1
      WHERE n.removed = 0 {node_filter}
-     GROUP BY hlm.volwaterhs, hlm.volwatervs, hlm.volwateropengvs, rc.volwaterhs, rc.volwatervs,
-              ec.heatsourceid
+     GROUP BY hlm.volwaterhs, hlm.volwatervs, hlm.volwateropengvs, hlm.usetabledata, rc.volwaterhs,
+              rc.volwatervs, ec.heatsourceid
   ) t
  GROUP BY t.heatsourceid
+""".replace("{split_parts}", ", ".join(
+    f"SUM(CASE WHEN rc.buildingtypeid = {n} THEN rc.{k} ELSE 0 END) AS {k}_pr{n}"
+    for n in (1, 2, 3) for k in ("got", "gvent", "ggvs"))).replace("{split_sums}", ", ".join(
+    f"SUM(t.{k}_pr{n} * t.{vol}) AS {name}{n}"
+    for n in (1, 2, 3) for k, vol, name in (("got", "volwaterhs", "vot"), ("gvent", "volwatervs", "vvent"),
+                                            ("ggvs", "volwateropengvs", "vgvs"))))
+
+# Баки-аккумуляторы: источник узла, как в tankbatteryView (магистраль — источник магистрали)
+TANKS_SQL = """
+SELECT b.id, b.designcapacity, b.quantity, b.height, b.diameter, b.nodeid,
+       CASE WHEN ec.objectid <> 2 OR ecm.heatsourceid IS NULL THEN ec.heatsourceid
+            ELSE ecm.heatsourceid END AS heatsourceid,
+       CONCAT(ec.name, ' ', n.externalnodename) AS mesto
+  FROM tankbatteries b
+  JOIN nodes n ON b.nodeid = n.id
+  JOIN externalcodes ec ON n.externalcodeid = ec.id
+  LEFT JOIN externalcodes ecm ON ec.belongmagistral = ecm.id AND ec.objectid = 2
+ WHERE (CASE WHEN ec.objectid <> 2 OR ecm.heatsourceid IS NULL THEN ec.heatsourceid
+             ELSE ecm.heatsourceid END) = ANY($1::int[]) {node_filter}
+ ORDER BY b.id
 """
+
+# Таблицы «нормативных» (norm) и «фактических» (fact) потерь десктопа: *Fact — те же колонки
+LOSES_TABLES = {
+    "norm": {"main": "heatlosesmain", "source": "heatlosessource", "months": "heatlosessourcemonths",
+             "filling": "losesbyfilling", "harness": "heatpipesectionsharness"},
+    "fact": {"main": "heatlosesmainfact", "source": "heatlosessourcefact", "months": "heatlosessourcemonthsfact",
+             "filling": "losesbyfillingfact", "harness": "heatpipesectionsharnessfact"},
+}
 
 
 @dataclass
@@ -872,6 +1346,10 @@ class HeatLossInputs:
     month_names: dict[int, str] = field(default_factory=dict)
     fragment_id: Optional[int] = None
     line_ids: Optional[list[int]] = None
+    loses_type: str = "norm"
+    harness: list[dict[str, Any]] = field(default_factory=list)
+    filling: list[dict[str, Any]] = field(default_factory=list)
+    tanks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def sprav_db_config() -> dict[str, Any]:
@@ -913,10 +1391,16 @@ def _floatify(row: dict[str, Any]) -> dict[str, Any]:
 
 async def load_inputs(conn: asyncpg.Connection, *, season_id: int, heat_source_ids: Optional[list[int]] = None,
                       fragment_id: Optional[int] = None, line_ids: Optional[list[int]] = None,
-                      norms: Optional[tuple[list[dict], dict[int, dict]]] = None) -> HeatLossInputs:
-    season = await conn.fetchrow("SELECT * FROM heatlosesmain WHERE id = $1", season_id)
+                      norms: Optional[tuple[list[dict], dict[int, dict]]] = None,
+                      loses_type: str = "norm") -> HeatLossInputs:
+    """loses_type: "norm" — нормативные (heatLosesMain, heatLosesSource…), "fact" — фактические
+    (те же расчёты по таблицам *Fact; season_id — heatLosesMainFact.id)."""
+    if loses_type not in LOSES_TABLES:
+        raise HeatLossInputError(f"Неизвестный вид потерь: {loses_type}")
+    tbl = LOSES_TABLES[loses_type]
+    season = await conn.fetchrow(f"SELECT * FROM {tbl['main']} WHERE id = $1", season_id)
     if season is None:
-        raise HeatLossInputError(f"Сезон {season_id} не найден (heatlosesmain)")
+        raise HeatLossInputError(f"Сезон {season_id} не найден ({tbl['main']})")
     args: list[Any] = []
     line_filter = ""
     node_filter = ""
@@ -930,26 +1414,36 @@ async def load_inputs(conn: asyncpg.Connection, *, season_id: int, heat_source_i
         node_filter = "AND n.fileid = $2"
     if not heat_source_ids:
         # все источники, к которым приписаны участки (в пределах фрагмента/списка)
-        q = SECTIONS_SQL.replace("{line_filter}", line_filter.replace("$2", "$1")).replace(
+        q = SECTIONS_SQL.replace("{hls_table}", tbl["source"]).replace(
+            "{line_filter}", line_filter.replace("$2", "$1")).replace(
             "{source_filter}", "hpsi.heatsourceid IS NOT NULL")
         q = "SELECT DISTINCT heatsourceid FROM (" + q.replace("ORDER BY hpsi.section_id", "") + ") s"
         heat_source_ids = sorted(r["heatsourceid"] for r in await conn.fetch(q, *args))
     sections = [_floatify(dict(r)) for r in await conn.fetch(
-        SECTIONS_SQL.replace("{line_filter}", line_filter).replace(
+        SECTIONS_SQL.replace("{hls_table}", tbl["source"]).replace("{line_filter}", line_filter).replace(
             "{source_filter}", "hpsi.heatsourceid = ANY($1::int[])"), list(heat_source_ids), *args)]
     section_coefficients(sections)
     months = [_floatify(dict(r)) for r in await conn.fetch(
-        "SELECT heatsourceid, r, m, sezon, tn, tpod, tgr, tgp, tgo, tx, workcount "
-        "FROM heatlosessourcemonths WHERE heatsourceid = ANY($1::int[]) ORDER BY heatsourceid, r, id",
+        f"SELECT * FROM {tbl['months']} WHERE heatsourceid = ANY($1::int[]) ORDER BY heatsourceid, r, id",
         list(heat_source_ids))]
     hls_rows = [_floatify(dict(r)) for r in await conn.fetch(
-        "SELECT heatsourceid, t_percent FROM heatlosessource WHERE heatsourceid = ANY($1::int[]) ORDER BY id",
-        list(heat_source_ids))]
+        f"SELECT * FROM {tbl['source']} WHERE heatsourceid = ANY($1::int[]) ORDER BY id", list(heat_source_ids))]
+    harness = [_floatify(dict(r)) for r in await conn.fetch(
+        f"SELECT heatsourceid, diameterexternal, diameterinternal, belongms, pipesectlength FROM {tbl['harness']} "
+        "WHERE heatsourceid = ANY($1::int[]) ORDER BY id", list(heat_source_ids))]
+    filling = [_floatify(dict(r)) for r in await conn.fetch(
+        f"SELECT * FROM {tbl['filling']} WHERE heatsourceid = ANY($1::int[]) ORDER BY id", list(heat_source_ids))]
+    tank_args: list[Any] = [list(heat_source_ids)]
+    if fragment_id is not None:
+        tank_args.append(fragment_id)
+    tanks = [_floatify(dict(r)) for r in await conn.fetch(
+        TANKS_SQL.replace("{node_filter}", "AND n.fileid = $2" if fragment_id is not None else ""), *tank_args)]
     cons_args: list[Any] = [season_id]
     if fragment_id is not None:
         cons_args.append(fragment_id)
     consumers = [_floatify(dict(r)) for r in await conn.fetch(
-        CONSUMER_VOLUMES_SQL.replace("{node_filter}", node_filter), *cons_args)]
+        CONSUMER_VOLUMES_SQL.replace("{hlm_table}", tbl["main"]).replace("{node_filter}", node_filter),
+        *cons_args)]
     sources = {r["id"]: dict(r) for r in await conn.fetch(
         "SELECT id, name, sourcename FROM heatsources WHERE id = ANY($1::int[])", list(heat_source_ids))}
     month_names = {r["id"]: r["name"] for r in await conn.fetch("SELECT id, name FROM months")}
@@ -958,6 +1452,7 @@ async def load_inputs(conn: asyncpg.Connection, *, season_id: int, heat_source_i
         season=_floatify(dict(season)), heat_source_ids=list(heat_source_ids), sources=sources,
         sections=sections, months=months, hls_rows=hls_rows, consumers=consumers, s39=s39, s10=s10,
         month_names=month_names, fragment_id=fragment_id, line_ids=list(line_ids) if line_ids else None,
+        loses_type=loses_type, harness=harness, filling=filling, tanks=tanks,
     )
 
 
@@ -969,6 +1464,10 @@ def compute(inputs: HeatLossInputs) -> dict[str, Any]:
     year = sheet_avg_year_loses(ahlm, inputs.months, inputs.sources, inputs.month_names)
     sections = section_results(inputs.sections, inputs.s39, tview, inputs.s10)
     ready = sorted(tview)
+    names = inputs.month_names
+    volumes = loses_volumes(inputs.sections, inputs.consumers, inputs.harness)
+    psv = psv_view(inputs.months, inputs.hls_rows, volumes, inputs.filling, inputs.season, tview)
+    tb_items = tank_battery_loses(inputs.tanks, tview, inputs.season, inputs.months)
     return {
         "heat_source_ids": inputs.heat_source_ids,
         "sources": [{"id": hs, "name": (inputs.sources.get(hs) or {}).get("name"),
@@ -984,6 +1483,22 @@ def compute(inputs: HeatLossInputs) -> dict[str, Any]:
         "avg_month_loses": sheet_avg_month_loses(ahlm, inputs.months, inputs.sources, inputs.month_names),
         "avg_year_loses": year,
         "year_totals": {str(k): v for k, v in year_totals(year).items()},
+        "loads": sheet_loads(inputs.consumers, inputs.heat_source_ids, inputs.sources),
+        "capacities": sheet_capacities(loses_volumes(inputs.sections, inputs.consumers, inputs.harness,
+                                                     capacity=True), inputs.hls_rows, inputs.season, inputs.sources),
+        "heat_tests": sheet_heat_tests(inputs.hls_rows, inputs.sources),
+        "repair_heat_tests": sheet_heat_tests(inputs.hls_rows, inputs.sources, repair=True),
+        "net_water_loses": sheet_net_water_loses(psv, inputs.sources, names),
+        "net_water_year_loses": sheet_net_water_loses(psv, inputs.sources, names, heat=True),
+        "overalls": sheet_overalls(ahlm, inputs.months, tankbattery_view(tb_items), psv, inputs.sources, names),
+        "tank_batteries": sheet_tank_batteries(inputs.tanks, inputs.sources),
+        "tank_batteries_loses": sheet_tank_batteries_loses(tb_items, inputs.months, inputs.sources, names),
+        "fillings": sheet_fillings(inputs.filling, volumes, inputs.season, inputs.months, inputs.sources, names),
+        "pressings": sheet_pressings(inputs.hls_rows, tview, volumes, inputs.sources, names),
+        "flushings_hs": sheet_flushings_hs(inputs.hls_rows, tview, volumes, inputs.sources, names),
+        "flushings": sheet_flushings(inputs.hls_rows, tview, volumes, inputs.sources, names),
+        "sarz_flows": sheet_sarz(inputs.months, tview, inputs.sources, names),
+        "sarz_rets": sheet_sarz(inputs.months, tview, inputs.sources, names, ret=True),
         "sections": sections,
     }
 
