@@ -7,6 +7,7 @@ from typing import Any
 import asyncpg
 
 from database.tg_otop import calculate_otop_curve
+from database.tg_pov_skk import calculate_graph
 
 
 async def apply_stationary_graph(
@@ -116,10 +117,33 @@ async def source_design_temps(conn: asyncpg.Connection, source_id: int) -> dict[
     row = await conn.fetchrow(
         """
         SELECT id, tn_5, tn_1, tvn_r, t1_r, t2_r, t3_r, q_r, q_gv,
-               t1_2r, t1_4r, t2_2r, tvb_tr, uf, v
+               t1_2r, t1_4r, t2_2r, tvb_tr, uf, v,
+               graphtypeid, tg_r, tx_r, t_gv1, g1, g2, pr, t2_gv, hsourcepower
           FROM heatsources
          WHERE id=$1
         """,
         source_id,
     )
     return dict(row) if row else None
+
+
+async def seed_pov_skk_graph(conn: asyncpg.Connection, source_id: int, params: dict[str, Any], mode: str) -> int:
+    """ПОВ/СКК (gid8 CTempGraph::defaultLoadTempGraph): deployedTempGraphs источника заменяется.
+
+    ПОВ пишет (tn, t1, t2, tv, t_bn, tg), СКК — (tn, t1, t2, t3, tv), как десктоп.
+    """
+    result = calculate_graph(params, mode)
+    points = result["points"]
+    async with conn.transaction():
+        await clear_temperature_graph(conn, source_id)
+        if mode == "pov":
+            await conn.executemany(
+                "INSERT INTO deployedtempgraphs (hsourceid, tn, t1, t2, tv, t_bn, tg) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                [(source_id, p["tn"], p["t1"], p["t2"], p["tv"], p["t_bn"], p["tg"]) for p in points],
+            )
+        else:
+            await conn.executemany(
+                "INSERT INTO deployedtempgraphs (hsourceid, tn, t1, t2, t3, tv) VALUES ($1, $2, $3, $4, $5, $6)",
+                [(source_id, p["tn"], p["t1"], p["t2"], p["t3"], p["tv"]) for p in points],
+            )
+    return len(points)

@@ -304,3 +304,35 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
     if errors:
         response["error"] = "\n".join(errors)
     return response
+
+
+@celery_app.task(bind=True, name="run_heat_losses_norm")
+def run_heat_losses_norm(self, season_id: int, heat_source_ids: list[int] | None = None,
+                         fragment_id: int | None = None, line_ids: list[int] | None = None,
+                         user: str = "", save: bool = True):
+    """Нормативные теплопотери (перенос gid8 poteriNewPg): расчёт и запись в calculation,
+    ut_teplo_out и heatlosses_report_out той же БД (DB_* окружения воркера)."""
+    import asyncio
+
+    import asyncpg
+
+    from database.heat_losses_norm import HeatLossInputError
+    from database.heat_losses_store import HeatLossStoreError, run
+
+    async def _go():
+        conn = await asyncpg.connect(
+            host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT") or 5432), user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"), database=os.getenv("DB_NAME"), timeout=60,
+        )
+        try:
+            return await run(conn, season_id=season_id, heat_source_ids=heat_source_ids,
+                             fragment_id=fragment_id, line_ids=line_ids, user=user, save=save)
+        finally:
+            await conn.close()
+
+    self.update_state(state="PROGRESS", meta={"message": "Расчёт нормативных теплопотерь"})
+    try:
+        summary = asyncio.run(_go())
+    except (HeatLossInputError, HeatLossStoreError, ZeroDivisionError) as e:
+        return {"status": "error", "message": "Ошибка расчёта теплопотерь", "error": _redact(str(e))}
+    return {"status": "success", "message": "Расчёт теплопотерь окончен", **summary}
