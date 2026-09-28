@@ -184,6 +184,10 @@ def downstream_without_supply(
     return lost_nodes, lost_lines
 
 
+# Нагрузки в Гкал/ч (схема ТГИД full_tgid.sql). Состав — как во view потребителей десктопа
+# (sql/reports/_consumerview.sql): отопление обобщённого = зав. + незав. + отопл. части схем ГВС
+# (parall/mix/conseq/preON); ГВС = открытый водоразбор (подача + обратка) + закрытые схемы;
+# closeSys/openSysFlow/openSysRet — технология, а не ГВС.
 _Q_CONSUMERS = """
     SELECT 'generalized' as ctype, c.id, c.nodeid,
            coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
@@ -191,10 +195,11 @@ _Q_CONSUMERS = """
             + coalesce(c.calchlparall, 0) + coalesce(c.calchlmix, 0)
             + coalesce(c.calchlconseq, 0) + coalesce(c.calchlpreon, 0))::double precision AS heating_load,
            coalesce(c.calchlventil, 0)::double precision AS ventilation_load,
+           (coalesce(c.avghlgvsopensysflow, 0) + coalesce(c.avghlgvsopensysret, 0)
+            + coalesce(c.calchlgvsparall, 0) + coalesce(c.calchlgvsmix, 0)
+            + coalesce(c.calchlgvsconseq, 0) + coalesce(c.calchlgvspreon, 0))::double precision AS hot_water_load,
            (coalesce(c.calchlclosesys, 0) + coalesce(c.calchlopensysflow, 0)
-            + coalesce(c.calchlopensysret, 0) + coalesce(c.calchlgvsparall, 0)
-            + coalesce(c.calchlgvsmix, 0) + coalesce(c.calchlgvsconseq, 0)
-            + coalesce(c.calchlgvspreon, 0))::double precision AS hot_water_load
+            + coalesce(c.calchlopensysret, 0))::double precision AS technology_load
     FROM generalizedconsumers c
     WHERE c.nodeid = ANY($1::int[]) AND coalesce(c.consumerstateid, 1) = 1
     UNION ALL
@@ -202,6 +207,9 @@ _Q_CONSUMERS = """
            coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
            (coalesce(c.calchldep, 0) + coalesce(c.calchlindep, 0))::double precision,
            coalesce(c.calchlventil, 0)::double precision,
+           (coalesce(c.avghlgvsopenflow, 0) + coalesce(c.avghlgvsopenret, 0)
+            + coalesce(c.avghlgvscloseparall, 0) + coalesce(c.avghlgvsclosemix, 0)
+            + coalesce(c.avghlgvscloseconseq, 0) + coalesce(c.avghlgvsclosepreon, 0))::double precision,
            (coalesce(c.avghlclosesys, 0) + coalesce(c.avghlopensysflow, 0)
             + coalesce(c.avghlopensysret, 0))::double precision
     FROM realconsumers c
@@ -227,6 +235,7 @@ async def _consumers(conn: asyncpg.Connection, node_ids: set[int]) -> list[dict[
         q_ot = float(row["heating_load"] or 0)
         q_v = float(row["ventilation_load"] or 0)
         q_g = float(row["hot_water_load"] or 0)
+        q_t = float(row["technology_load"] or 0)
         coords = node_coords.get(row["nodeid"], (None, None))
         out.append({
             "id": row["id"],
@@ -236,7 +245,8 @@ async def _consumers(conn: asyncpg.Connection, node_ids: set[int]) -> list[dict[
             "heating_load": round(q_ot, 4),
             "ventilation_load": round(q_v, 4),
             "hot_water_load": round(q_g, 4),
-            "total_load": round(q_ot + q_v + q_g, 4),
+            "technology_load": round(q_t, 4),
+            "total_load": round(q_ot + q_v + q_g + q_t, 4),
             "longitude": coords[0],
             "latitude": coords[1],
         })
@@ -397,6 +407,7 @@ async def simulate_outage_isolation(
     total_q_ot = sum(c["heating_load"] for c in affected_consumers)
     total_q_vent = sum(c["ventilation_load"] for c in affected_consumers)
     total_q_gvs = sum(c["hot_water_load"] for c in affected_consumers)
+    total_q_tech = sum(c["technology_load"] for c in affected_consumers)
 
     # 4a. Полная модель: узлы ниже закрытых задвижек, потерявшие связь с источниками
     closed_valve_lines = {v["lineid"] for v in valves_to_close if v.get("owner_node_id") is None}
@@ -444,7 +455,8 @@ async def simulate_outage_isolation(
         "total_heating_load_gcal_h": round(total_q_ot, 4),
         "total_gvs_load_gcal_h": round(total_q_gvs, 4),
         "total_vent_load_gcal_h": round(total_q_vent, 4),
-        "total_load_gcal_h": round(total_q_ot + total_q_gvs + total_q_vent, 4),
+        "total_tech_load_gcal_h": round(total_q_tech, 4),
+        "total_load_gcal_h": round(total_q_ot + total_q_gvs + total_q_vent + total_q_tech, 4),
         "total_pipe_length_m": round(total_length_m, 2),
         "total_pipe_volume_m3": round(total_volume_m3, 2),
         "downstream_nodes_count": len(lost_nodes),

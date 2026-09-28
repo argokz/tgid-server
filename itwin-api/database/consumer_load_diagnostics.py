@@ -21,10 +21,13 @@ CONSUMER_DIAGNOSTICS_CTE = """
                 + coalesce(consumer.calchlconseq, 0) + coalesce(consumer.calchlpreon, 0))::double precision AS heating_load,
                coalesce(consumer.calchlventil, 0)::double precision AS ventilation_load,
                coalesce(consumer.calchlcond, 0)::double precision AS conditioning_load,
-               (coalesce(consumer.calchlclosesys, 0) + coalesce(consumer.calchlopensysflow, 0)
-                + coalesce(consumer.calchlopensysret, 0) + coalesce(consumer.calchlgvsparall, 0)
+               -- ГВС: открытый водоразбор + закрытые схемы; closeSys/openSys — технология (Гкал/ч)
+               (coalesce(consumer.avghlgvsopensysflow, 0) + coalesce(consumer.avghlgvsopensysret, 0)
+                + coalesce(consumer.calchlgvsparall, 0)
                 + coalesce(consumer.calchlgvsmix, 0) + coalesce(consumer.calchlgvsconseq, 0)
-                + coalesce(consumer.calchlgvspreon, 0))::double precision AS hot_water_load
+                + coalesce(consumer.calchlgvspreon, 0))::double precision AS hot_water_load,
+               (coalesce(consumer.calchlclosesys, 0) + coalesce(consumer.calchlopensysflow, 0)
+                + coalesce(consumer.calchlopensysret, 0))::double precision AS technology_load
           FROM generalizedconsumers consumer
         UNION ALL
         SELECT 'real', consumer.id, consumer.nodeid, consumer.name::text,
@@ -32,6 +35,9 @@ CONSUMER_DIAGNOSTICS_CTE = """
                (coalesce(consumer.calchldep, 0) + coalesce(consumer.calchlindep, 0))::double precision,
                coalesce(consumer.calchlventil, 0)::double precision,
                coalesce(consumer.avghlcond, 0)::double precision,
+               (coalesce(consumer.avghlgvsopenflow, 0) + coalesce(consumer.avghlgvsopenret, 0)
+                + coalesce(consumer.avghlgvscloseparall, 0) + coalesce(consumer.avghlgvsclosemix, 0)
+                + coalesce(consumer.avghlgvscloseconseq, 0) + coalesce(consumer.avghlgvsclosepreon, 0))::double precision,
                (coalesce(consumer.avghlclosesys, 0) + coalesce(consumer.avghlopensysflow, 0)
                 + coalesce(consumer.avghlopensysret, 0))::double precision
           FROM realconsumers consumer
@@ -49,7 +55,8 @@ CONSUMER_DIAGNOSTICS_CTE = """
                (consumer.heating_load=0) AS zero_heating_load,
                (consumer.state_id=2) AS closed,
                (consumer.heating_load + consumer.ventilation_load
-                + consumer.conditioning_load + consumer.hot_water_load)::double precision AS total_load,
+                + consumer.conditioning_load + consumer.hot_water_load
+                + consumer.technology_load)::double precision AS total_load,
                CASE WHEN node.shape IS NULL THEN NULL
                     ELSE ST_X(ST_Transform(ST_PointOnSurface(node.shape), 4326)) END AS longitude,
                CASE WHEN node.shape IS NULL THEN NULL

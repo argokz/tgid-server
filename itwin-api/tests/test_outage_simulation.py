@@ -117,6 +117,7 @@ def test_outage_simulation_mock_bfs():
             "heating_load": 0.85,
             "ventilation_load": 0.1,
             "hot_water_load": 0.35,
+            "technology_load": 0.2,
         },
         {
             "ctype": "generalized",
@@ -126,6 +127,7 @@ def test_outage_simulation_mock_bfs():
             "heating_load": 1.2,
             "ventilation_load": 0.3,
             "hot_water_load": 0.5,
+            "technology_load": 0.0,
         },
     ]
 
@@ -172,7 +174,8 @@ def test_outage_simulation_mock_bfs():
     assert summary["consumers_count"] == 2
     assert summary["total_heating_load_gcal_h"] == pytest.approx(2.05, 0.01)
     assert summary["total_gvs_load_gcal_h"] == pytest.approx(0.85, 0.01)
-    assert summary["total_load_gcal_h"] == pytest.approx(3.30, 0.01)
+    assert summary["total_tech_load_gcal_h"] == pytest.approx(0.2, 0.01)
+    assert summary["total_load_gcal_h"] == pytest.approx(3.50, 0.01)
 
     # GeoJSON коллекции
     assert len(result["geojson"]["isolated_pipes"]["features"]) == 2
@@ -219,9 +222,9 @@ def test_outage_stops_at_chamber_with_internal_valves():
     dampers = [_damper(201, 900, owner=2), _damper(202, 901, owner=2, state=2)]
     consumers = [
         {"ctype": "real", "id": 1, "nodeid": 3, "name": "за камерой", "heating_load": 1.0,
-         "ventilation_load": 0.0, "hot_water_load": 0.0},
+         "ventilation_load": 0.0, "hot_water_load": 0.0, "technology_load": 0.0},
         {"ctype": "real", "id": 2, "nodeid": 6, "name": "в зоне", "heating_load": 0.5,
-         "ventilation_load": 0.0, "hot_water_load": 0.0},
+         "ventilation_load": 0.0, "hot_water_load": 0.0, "technology_load": 0.0},
     ]
     conn.fetch = _net_fetch(lines, dampers, consumers)
 
@@ -252,9 +255,9 @@ def _downstream_case(extra_lines=()):
     dampers = [_damper(301, 1), _damper(303, 3)]
     consumers = [
         {"ctype": "real", "id": 7, "nodeid": 3, "name": "в зоне", "heating_load": 0.4,
-         "ventilation_load": 0.0, "hot_water_load": 0.1},
+         "ventilation_load": 0.0, "hot_water_load": 0.1, "technology_load": 0.0},
         {"ctype": "real", "id": 8, "nodeid": 5, "name": "ниже задвижки", "heating_load": 1.0,
-         "ventilation_load": 0.0, "hot_water_load": 0.5},
+         "ventilation_load": 0.0, "hot_water_load": 0.5, "technology_load": 0.0},
     ]
     conn.fetch = _net_fetch(lines, dampers, consumers, sources=[1])
     return asyncio.run(simulate_outage_isolation(conn, line_id=2))
@@ -284,3 +287,17 @@ def test_reachable_from_sources_respects_blocked_lines_and_removed_nodes():
     assert reachable_from_sources(adj, {1}) == {1, 2, 3}
     assert reachable_from_sources(adj, {1}, blocked_lines={20}) == {1, 2}
     assert reachable_from_sources(adj, {1}, removed_nodes={2}) == {1}
+
+
+def test_consumer_loads_sql_separates_hot_water_from_technology():
+    """ГВС — поля ГВС (открытый водоразбор + закрытые схемы), технология (closeSys/openSys) — отдельно
+    (схема ТГИД full_tgid.sql, view потребителей sql/reports/_consumerview.sql); всё в Гкал/ч."""
+    from database.outage_simulation import _Q_CONSUMERS
+
+    generalized, real = _Q_CONSUMERS.split("UNION ALL")
+    gc_hot = generalized.split("AS ventilation_load")[1].split("AS hot_water_load")[0]
+    assert "avghlgvsopensysflow" in gc_hot and "calchlgvspreon" in gc_hot and "closesys" not in gc_hot
+    assert "calchlclosesys" in generalized.split("AS hot_water_load")[1]
+    rc_parts = real.split("::double precision,")
+    assert "avghlgvsopenflow" in rc_parts[2] and "avghlgvsclosepreon" in rc_parts[2] and "closesys" not in rc_parts[2]
+    assert "avghlclosesys" in rc_parts[3]
