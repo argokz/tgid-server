@@ -5,7 +5,7 @@ from alembic import context
 import os
 from dotenv import load_dotenv
 from database.models import Base
-from database.connect import users_engine, USERS_DB_CONFIG
+from database.connect import users_engine, USERS_DB_CONFIG, safe_db_config
 import asyncio
 import asyncpg
 import asyncpg.exceptions
@@ -57,7 +57,7 @@ async def ensure_database_exists():
     """Проверка и создание базы данных UsersDB, если она не существует."""
     temp_config = USERS_DB_CONFIG.copy()
     temp_config["database"] = "postgres"  # Подключаемся к системной базе
-    logger.info(f"Проверка существования базы {USERS_DB_CONFIG['database']} через системную базу: {temp_config}")
+    logger.info(f"Проверка существования базы {USERS_DB_CONFIG['database']} через системную базу: {safe_db_config(temp_config)}")
     
     try:
         pool = await asyncpg.create_pool(**temp_config, min_size=1, max_size=5)
