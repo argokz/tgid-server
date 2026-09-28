@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from database.outage_simulation import (
     invalidate_outage_cache,
+    reachable_from_sources,
     simulate_outage_isolation,
 )
 
@@ -137,6 +138,8 @@ def test_outage_simulation_mock_bfs():
 
     async def mock_fetch(query, *args):
         q = query.lower()
+        if "heatsources" in q:
+            return []
         if "linesobj" in q and "heatpipesections" in q:
             return mock_lines
         if "st_asgeojson" in q and "from linesobj" in q:
@@ -177,9 +180,11 @@ def test_outage_simulation_mock_bfs():
     assert len(result["geojson"]["affected_consumers"]["features"]) == 2
 
 
-def _net_fetch(lines, dampers, consumers=()):
+def _net_fetch(lines, dampers, consumers=(), sources=()):
     async def fetch(query, *args):
         q = query.lower()
+        if "heatsources" in q:
+            return [{"nodeid": n} for n in sources]
         if "linesobj" in q and "heatpipesections" in q:
             return lines
         if "dampers" in q and "damperarmaturestates" in q:
@@ -237,3 +242,45 @@ def test_outage_rejects_line_of_internal_scheme():
     conn.fetchrow = AsyncMock(return_value={"id": 77, "internalnodeid": 2, "nodeid1": 5, "nodeid2": 6, "removed": 0})
     with pytest.raises(ValueError, match="внутреннюю схему узла 2"):
         asyncio.run(simulate_outage_isolation(conn, line_id=77))
+
+
+def _downstream_case(extra_lines=()):
+    invalidate_outage_cache()
+    conn = AsyncMock()
+    # источник 1 --L1(задв.)-- 2 --L2 (авария)-- 3 --L3(задв.)-- 4 --L4-- 5
+    lines = [_line(1, 1, 2), _line(2, 2, 3), _line(3, 3, 4), _line(4, 4, 5), *extra_lines]
+    dampers = [_damper(301, 1), _damper(303, 3)]
+    consumers = [
+        {"ctype": "real", "id": 7, "nodeid": 3, "name": "в зоне", "heating_load": 0.4,
+         "ventilation_load": 0.0, "hot_water_load": 0.1},
+        {"ctype": "real", "id": 8, "nodeid": 5, "name": "ниже задвижки", "heating_load": 1.0,
+         "ventilation_load": 0.0, "hot_water_load": 0.5},
+    ]
+    conn.fetch = _net_fetch(lines, dampers, consumers, sources=[1])
+    return asyncio.run(simulate_outage_isolation(conn, line_id=2))
+
+
+def test_outage_counts_consumers_below_closed_valves_as_estimate():
+    result = _downstream_case()
+    assert {v["id"] for v in result["valves_to_close"]} == {301, 303}
+    assert [c["id"] for c in result["affected_consumers"]] == [7]
+    assert [c["id"] for c in result["downstream_consumers"]] == [8]
+    summary = result["summary"]
+    assert summary["downstream_nodes_count"] == 2 and summary["downstream_consumers_count"] == 1
+    assert summary["downstream_load_gcal_h"] == pytest.approx(1.5)
+    assert summary["total_with_downstream_load_gcal_h"] == pytest.approx(2.0)
+    assert result["estimate"] is True and result["model"] == "topology_estimate"
+
+
+def test_outage_ring_keeps_supply_through_bypass():
+    # кольцо: источник 1 --L5-- 5 питает 4 и 5 в обход зоны
+    result = _downstream_case(extra_lines=[_line(5, 1, 5)])
+    assert result["downstream_consumers"] == []
+    assert result["summary"]["downstream_nodes_count"] == 0
+
+
+def test_reachable_from_sources_respects_blocked_lines_and_removed_nodes():
+    adj = {1: [(10, 2)], 2: [(10, 1), (20, 3)], 3: [(20, 2)]}
+    assert reachable_from_sources(adj, {1}) == {1, 2, 3}
+    assert reachable_from_sources(adj, {1}, blocked_lines={20}) == {1, 2}
+    assert reachable_from_sources(adj, {1}, removed_nodes={2}) == {1}

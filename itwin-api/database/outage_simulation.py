@@ -8,7 +8,13 @@
   которого (linesobj.internalnodeid = узел) стоят задвижки — камеры, ТРП, насосные.
   Открытые задвижки попадают в «закрыть», уже закрытые — в отдельный список.
 - Отключённые потребители (consumerstateid <> 1) не учитываются.
-- Потребители ниже по течению за закрытыми задвижками пока не считаются.
+- Потребители ниже закрытых задвижек (полная модель, оценка по топологии): обход графа от
+  источников (heatsources.nodeid) в нормальном режиме и после отключения — зона аварии
+  выведена, участки с закрываемыми и уже закрытыми задвижками не проводят воду, отключённые
+  трубы не проводят. Узлы, которые были достижимы от источника и перестали, — «без питания
+  ниже зоны»; их потребители идут отдельным списком. Кольцевание учитывается (есть обходной
+  путь — питание сохраняется), гидравлика (достаточность напора/расхода по обходу) — нет,
+  поэтому результат помечен как оценка (``model = topology_estimate``).
 """
 
 from __future__ import annotations
@@ -117,7 +123,17 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
         adj.setdefault(n1, []).append((lid, n2))
         adj.setdefault(n2, []).append((lid, n1))
 
+    source_rows = await conn.fetch(
+        "SELECT DISTINCT h.nodeid FROM heatsources h JOIN nodes n ON n.id = h.nodeid "
+        "WHERE COALESCE(n.removed, 0) = 0")
+    sources = {r["nodeid"] for r in source_rows if r["nodeid"] in adj}
+    normally_closed = {lid for lid, valves in dampers_by_line.items()
+                       if any(v["state_id"] == DAMPER_CLOSED for v in valves)}
+
     _outage_cached_data = {
+        "sources": sources,
+        "normally_closed_lines": normally_closed,
+        "baseline_reachable": reachable_from_sources(adj, sources, blocked_lines=normally_closed),
         "line_info": line_info,
         "dampers_by_line": dampers_by_line,
         "dampers_by_node": dampers_by_node,
@@ -125,6 +141,115 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
     }
     _outage_cached_time = now
     return _outage_cached_data
+
+
+def reachable_from_sources(
+    adj: dict[int, list[tuple[int, int]]],
+    sources: set[int],
+    *,
+    blocked_lines: set[int] = frozenset(),
+    removed_nodes: set[int] = frozenset(),
+) -> set[int]:
+    """Узлы, связанные с источниками по проводящим участкам (обход графа)."""
+    seen = {n for n in sources if n not in removed_nodes}
+    queue = list(seen)
+    while queue:
+        node = queue.pop()
+        for lid, other in adj.get(node, ()):
+            if lid in blocked_lines or other in seen or other in removed_nodes:
+                continue
+            seen.add(other)
+            queue.append(other)
+    return seen
+
+
+def downstream_without_supply(
+    net: dict[str, Any],
+    *,
+    isolated_lines: set[int],
+    isolated_nodes: set[int],
+    closed_valve_lines: set[int],
+) -> tuple[set[int], set[int]]:
+    """Узлы и участки, потерявшие связь с источниками после отключения зоны (вне самой зоны)."""
+    adj = net["adj"]
+    blocked = set(net["normally_closed_lines"]) | set(closed_valve_lines) | set(isolated_lines)
+    after = reachable_from_sources(adj, net["sources"], blocked_lines=blocked, removed_nodes=isolated_nodes)
+    before = net["baseline_reachable"]
+    lost_nodes = {n for n in before if n not in after and n not in isolated_nodes}
+    lost_lines: set[int] = set()
+    for n in lost_nodes:
+        for lid, _other in adj.get(n, ()):
+            if lid not in isolated_lines and lid not in net["normally_closed_lines"]:
+                lost_lines.add(lid)
+    return lost_nodes, lost_lines
+
+
+_Q_CONSUMERS = """
+    SELECT 'generalized' as ctype, c.id, c.nodeid,
+           coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
+           (coalesce(c.calchldep, 0) + coalesce(c.calchlindep, 0)
+            + coalesce(c.calchlparall, 0) + coalesce(c.calchlmix, 0)
+            + coalesce(c.calchlconseq, 0) + coalesce(c.calchlpreon, 0))::double precision AS heating_load,
+           coalesce(c.calchlventil, 0)::double precision AS ventilation_load,
+           (coalesce(c.calchlclosesys, 0) + coalesce(c.calchlopensysflow, 0)
+            + coalesce(c.calchlopensysret, 0) + coalesce(c.calchlgvsparall, 0)
+            + coalesce(c.calchlgvsmix, 0) + coalesce(c.calchlgvsconseq, 0)
+            + coalesce(c.calchlgvspreon, 0))::double precision AS hot_water_load
+    FROM generalizedconsumers c
+    WHERE c.nodeid = ANY($1::int[]) AND coalesce(c.consumerstateid, 1) = 1
+    UNION ALL
+    SELECT 'real' as ctype, c.id, c.nodeid,
+           coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
+           (coalesce(c.calchldep, 0) + coalesce(c.calchlindep, 0))::double precision,
+           coalesce(c.calchlventil, 0)::double precision,
+           (coalesce(c.avghlclosesys, 0) + coalesce(c.avghlopensysflow, 0)
+            + coalesce(c.avghlopensysret, 0))::double precision
+    FROM realconsumers c
+    WHERE c.nodeid = ANY($1::int[]) AND coalesce(c.consumerstateid, 1) = 1
+"""
+
+
+async def _consumers(conn: asyncpg.Connection, node_ids: set[int]) -> list[dict[str, Any]]:
+    """Включённые потребители узлов с нагрузками и координатами узла."""
+    if not node_ids:
+        return []
+    ids = list(node_ids)
+    node_rows = await conn.fetch(
+        """SELECT n.id,
+                  CASE WHEN n.shape IS NULL THEN NULL ELSE ST_X(ST_Transform(n.shape, 4326)) END AS lng,
+                  CASE WHEN n.shape IS NULL THEN NULL ELSE ST_Y(ST_Transform(n.shape, 4326)) END AS lat
+             FROM nodes n WHERE n.id = ANY($1::int[])""",
+        ids,
+    )
+    node_coords = {r["id"]: (r["lng"], r["lat"]) for r in node_rows}
+    out = []
+    for row in await conn.fetch(_Q_CONSUMERS, ids):
+        q_ot = float(row["heating_load"] or 0)
+        q_v = float(row["ventilation_load"] or 0)
+        q_g = float(row["hot_water_load"] or 0)
+        coords = node_coords.get(row["nodeid"], (None, None))
+        out.append({
+            "id": row["id"],
+            "consumer_type": row["ctype"],
+            "node_id": row["nodeid"],
+            "name": row["name"],
+            "heating_load": round(q_ot, 4),
+            "ventilation_load": round(q_v, 4),
+            "hot_water_load": round(q_g, 4),
+            "total_load": round(q_ot + q_v + q_g, 4),
+            "longitude": coords[0],
+            "latitude": coords[1],
+        })
+    return out
+
+
+def _consumer_features(consumers: list[dict[str, Any]], **extra: Any) -> list[dict[str, Any]]:
+    return [{
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [c["longitude"], c["latitude"]]},
+        "properties": {"id": c["id"], "name": c["name"], "total_load": c["total_load"],
+                       "heating_load": c["heating_load"], "hot_water_load": c["hot_water_load"], **extra},
+    } for c in consumers if c["longitude"] is not None and c["latitude"] is not None]
 
 
 async def simulate_outage_isolation(
@@ -267,78 +392,25 @@ async def simulate_outage_isolation(
                 },
             })
 
-    # 4. Сбор информации об узлах и потребителях
-    affected_consumers = []
-    total_q_ot = 0.0
-    total_q_gvs = 0.0
-    total_q_vent = 0.0
+    # 4. Потребители зоны
+    affected_consumers = await _consumers(conn, isolated_nodes)
+    total_q_ot = sum(c["heating_load"] for c in affected_consumers)
+    total_q_vent = sum(c["ventilation_load"] for c in affected_consumers)
+    total_q_gvs = sum(c["hot_water_load"] for c in affected_consumers)
 
-    if isolated_nodes:
-        # Узлы с координатами
-        q_nodes = """
-            SELECT n.id,
-                   coalesce(nullif(btrim(n.nodename), ''), nullif(btrim(n.externalnodename), ''), 'Узел ' || n.id) as name,
-                   CASE WHEN n.shape IS NULL THEN NULL
-                        ELSE ST_X(ST_Transform(n.shape, 4326)) END as lng,
-                   CASE WHEN n.shape IS NULL THEN NULL
-                        ELSE ST_Y(ST_Transform(n.shape, 4326)) END as lat
-            FROM nodes n
-            WHERE n.id = ANY($1::int[])
-        """
-        node_rows = await conn.fetch(q_nodes, list(isolated_nodes))
-        node_coords = {r["id"]: (r["lng"], r["lat"], r["name"]) for r in node_rows}
-
-        # Потребители (generalized и real)
-        q_consumers = """
-            SELECT 'generalized' as ctype, c.id, c.nodeid,
-                   coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
-                   (coalesce(c.calchldep, 0) + coalesce(c.calchlindep, 0)
-                    + coalesce(c.calchlparall, 0) + coalesce(c.calchlmix, 0)
-                    + coalesce(c.calchlconseq, 0) + coalesce(c.calchlpreon, 0))::double precision AS heating_load,
-                   coalesce(c.calchlventil, 0)::double precision AS ventilation_load,
-                   (coalesce(c.calchlclosesys, 0) + coalesce(c.calchlopensysflow, 0)
-                    + coalesce(c.calchlopensysret, 0) + coalesce(c.calchlgvsparall, 0)
-                    + coalesce(c.calchlgvsmix, 0) + coalesce(c.calchlgvsconseq, 0)
-                    + coalesce(c.calchlgvspreon, 0))::double precision AS hot_water_load
-            FROM generalizedconsumers c
-            WHERE c.nodeid = ANY($1::int[]) AND coalesce(c.consumerstateid, 1) = 1
-            UNION ALL
-            SELECT 'real' as ctype, c.id, c.nodeid,
-                   coalesce(nullif(btrim(c.name), ''), 'Потребитель №' || c.id) as name,
-                   (coalesce(c.calchldep, 0) + coalesce(c.calchlindep, 0))::double precision,
-                   coalesce(c.calchlventil, 0)::double precision,
-                   (coalesce(c.avghlclosesys, 0) + coalesce(c.avghlopensysflow, 0)
-                    + coalesce(c.avghlopensysret, 0))::double precision
-            FROM realconsumers c
-            WHERE c.nodeid = ANY($1::int[]) AND coalesce(c.consumerstateid, 1) = 1
-        """
-        consumers_rows = await conn.fetch(q_consumers, list(isolated_nodes))
-
-        for row in consumers_rows:
-            q_ot = float(row["heating_load"] or 0)
-            q_v = float(row["ventilation_load"] or 0)
-            q_g = float(row["hot_water_load"] or 0)
-            q_total = q_ot + q_v + q_g
-
-            total_q_ot += q_ot
-            total_q_vent += q_v
-            total_q_gvs += q_g
-
-            nid = row["nodeid"]
-            coords = node_coords.get(nid, (None, None, ""))
-
-            affected_consumers.append({
-                "id": row["id"],
-                "consumer_type": row["ctype"],
-                "node_id": nid,
-                "name": row["name"],
-                "heating_load": round(q_ot, 4),
-                "ventilation_load": round(q_v, 4),
-                "hot_water_load": round(q_g, 4),
-                "total_load": round(q_total, 4),
-                "longitude": coords[0],
-                "latitude": coords[1],
-            })
+    # 4a. Полная модель: узлы ниже закрытых задвижек, потерявшие связь с источниками
+    closed_valve_lines = {v["lineid"] for v in valves_to_close if v.get("owner_node_id") is None}
+    lost_nodes, lost_lines = downstream_without_supply(
+        net, isolated_lines=isolated_lines, isolated_nodes=isolated_nodes, closed_valve_lines=closed_valve_lines)
+    downstream_consumers = await _consumers(conn, lost_nodes)
+    downstream_load = sum(c["total_load"] for c in downstream_consumers)
+    downstream_features = []
+    if lost_lines:
+        rows = await conn.fetch(
+            "SELECT id, ST_AsGeoJSON(ST_Transform(shape, 4326)) AS g FROM linesobj "
+            "WHERE id = ANY($1::int[]) AND shape IS NOT NULL", list(lost_lines))
+        downstream_features = [{"type": "Feature", "geometry": json.loads(r["g"]),
+                                "properties": {"id": r["id"], "downstream": True}} for r in rows if r["g"]]
 
     # 5. GeoJSON для задвижек
     valve_features = []
@@ -360,23 +432,7 @@ async def simulate_outage_isolation(
             })
 
     # 6. GeoJSON для отключенных потребителей
-    consumer_features = []
-    for c in affected_consumers:
-        if c["longitude"] is not None and c["latitude"] is not None:
-            consumer_features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [c["longitude"], c["latitude"]],
-                },
-                "properties": {
-                    "id": c["id"],
-                    "name": c["name"],
-                    "total_load": c["total_load"],
-                    "heating_load": c["heating_load"],
-                    "hot_water_load": c["hot_water_load"],
-                },
-            })
+    consumer_features = _consumer_features(affected_consumers)
 
     summary = {
         "isolated_lines_count": len(isolated_lines),
@@ -391,6 +447,12 @@ async def simulate_outage_isolation(
         "total_load_gcal_h": round(total_q_ot + total_q_gvs + total_q_vent, 4),
         "total_pipe_length_m": round(total_length_m, 2),
         "total_pipe_volume_m3": round(total_volume_m3, 2),
+        "downstream_nodes_count": len(lost_nodes),
+        "downstream_lines_count": len(lost_lines),
+        "downstream_consumers_count": len(downstream_consumers),
+        "downstream_load_gcal_h": round(downstream_load, 4),
+        "total_with_downstream_load_gcal_h": round(total_q_ot + total_q_gvs + total_q_vent + downstream_load, 4),
+        "sources_count": len(net["sources"]),
     }
 
     return {
@@ -401,6 +463,11 @@ async def simulate_outage_isolation(
         "valves_already_closed": valves_already_closed,
         "boundary_nodes": sorted(boundary_nodes),
         "affected_consumers": affected_consumers,
+        "downstream_consumers": downstream_consumers,
+        "model": "topology_estimate",
+        "estimate": True,
+        "estimate_note": ("Оценка по топологии: потребители ниже закрытых задвижек — узлы, потерявшие связь "
+                          "с источниками (кольца учитываются, достаточность напора и расхода — нет)."),
         "geojson": {
             "isolated_pipes": {
                 "type": "FeatureCollection",
@@ -413,6 +480,14 @@ async def simulate_outage_isolation(
             "affected_consumers": {
                 "type": "FeatureCollection",
                 "features": consumer_features,
+            },
+            "downstream_pipes": {
+                "type": "FeatureCollection",
+                "features": downstream_features,
+            },
+            "downstream_consumers": {
+                "type": "FeatureCollection",
+                "features": _consumer_features(downstream_consumers, downstream=True),
             },
         },
     }
