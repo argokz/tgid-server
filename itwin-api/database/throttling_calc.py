@@ -351,3 +351,179 @@ def generate_throttling_excel(data: dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------- диафрагмы движка sety (drvary1)
+#
+# Бланк dross.py считает диафрагмы по формулам ячеек (выше). Движок sety (sety/dross/drvary1.py,
+# режимы 1 и 6) считает те же устройства по напорам в узле: шайба drsh3 не меньше минимального
+# диаметра, а если меньше — ставится диафрагма минимального диаметра, гасящая 10000·G²/d⁴, и их
+# число n = int(Нгас / Н1), но не больше 3 (остаток напора не погашен).
+
+
+def drsh3(flow: float, min_diameter: float, head: float) -> tuple[bool, float, float]:
+    """sety drsh3: (ferr, гасимый напор, диаметр). ferr — диаметр меньше минимального."""
+    d = 10.0 * math.sqrt(abs(flow) / math.sqrt(abs(head)))
+    if d < min_diameter:
+        d = min_diameter
+        head = 10000.0 * flow * flow / math.pow(d, 4)
+        return True, head, d
+    return False, head, d
+
+
+def _diaphragm_series(flow: float, head: float, min_diameter: float,
+                      total_head: Optional[float] = None) -> dict[str, Any]:
+    """Одна шайба или цепочка шайб минимального диаметра на гасимый напор head (drvary1).
+
+    head_one_m — напор на одной шайбе (у десктопа это и пишется в dr_out: b22, b25, b31);
+    total_head — напор, по которому считается число шайб (по умолчанию head).
+    """
+    h_total = head if total_head is None else total_head
+    ferr, h_one, d = drsh3(flow, min_diameter, head)
+    count = 1
+    if ferr:
+        count = min(int(h_total / h_one), 3)
+    return {
+        "diameter_mm": round(d, 2),
+        "count": count,
+        "head_one_m": h_one,
+        "head_dissipated_m": h_one * count,
+        "head_residual_m": (h_total - count * h_one) if ferr else 0.0,
+        "min_diameter_limited": ferr,
+        "flow_t_h": flow,
+    }
+
+
+def calculate_gvs_circulation_diaphragm(
+    *,
+    circulation_flow: float,
+    required_head: float,
+    circulation_loss: float,
+    return_head: float,
+    draw_from: str = "supply",
+    min_diameter: float = MIN_ORIFICE_MM,
+) -> dict[str, Any]:
+    """Ограничительная диафрагма в циркуляционной линии открытой ГВС (drvary1: dr_out b39/b40/b41).
+
+    Гасимый напор Нгас = a12 − a11 − Hобр: a12 — расчётный напор на входе водоразборных приборов,
+    a11 — потери в циркуляционном трубопроводе, Hобр — пьезометрический напор в обратном
+    трубопроводе узла (м). draw_from: «supply» — водоразбор из подающего (ветка fss[6]),
+    «return» — из обратного (fss[7]; десктоп в этой ветке пишет гасимый напор одной шайбы без
+    умножения на их число, а в b41 — расход на отопление; здесь расход — циркуляционный).
+    """
+    if circulation_flow <= 0:
+        raise ValueError("Укажите расход в циркуляционной линии (рециркуляция) больше нуля.")
+    if draw_from not in ("supply", "return"):
+        raise ValueError("draw_from: supply или return")
+    head = required_head - circulation_loss - return_head
+    result: dict[str, Any] = {"available_head_m": head, "draw_from": draw_from, "diameter_mm": None,
+                              "count": 0, "head_dissipated_m": None, "flow_t_h": circulation_flow, "warnings": []}
+    if head <= 0:
+        result["warnings"].append(
+            "Не обеспечено заданное значение напора в циркуляционной сети ГВС: расчёт ограничительной "
+            "диафрагмы не выполняется.")
+        return result
+    series = _diaphragm_series(circulation_flow, head, min_diameter)
+    if draw_from == "return":
+        series["head_dissipated_m"] = series["head_one_m"]
+    result.update(series)
+    if series["min_diameter_limited"]:
+        result["warnings"].append(
+            f"Необходимо установить {series['count']} диафрагмы диаметром {min_diameter:g} мм; остаток "
+            f"непогашенного напора {series['head_residual_m']:.1f} м.")
+        if series["count"] > 1:
+            result["warnings"].append(
+                "Из практики эксплуатации устанавливается не более одного дросселя диаметром 3 мм.")
+    return result
+
+
+def calculate_elevator_engine(
+    *,
+    available_head: float,
+    heating_flow: float,
+    mixing_ratio: float,
+    system_loss: float,
+    min_nozzle_diameter: float = MIN_ORIFICE_MM,
+    min_diameter: float = MIN_ORIFICE_MM,
+    regime: int = 1,
+    circulation_head: float = 0.0,
+    gvs_heater_loss: float = 0.0,
+    gvs_sequential_flow: float = 0.0,
+    graph_otop: bool = False,
+    street_share: float = 1.0,
+) -> dict[str, Any]:
+    """Элеватор с диафрагмой перед соплом по движку sety (drvary1, элеваторный ввод fss[0] = 1).
+
+    available_head — располагаемый напор узла Нп − Но, м; heating_flow — расход на отопление, т/ч;
+    mixing_ratio — коэффициент смешения u (a6); system_loss — потери в системе отопления hс (a7);
+    min_nozzle_diameter — a14; min_diameter — минимальная шайба a15; regime — режим расчёта (a13):
+    в режиме 6 при напоре > 40 м половину гасит диафрагма перед соплом; circulation_head — напор,
+    погашенный подпорно-циркуляционной диафрагмой (b37); gvs_heater_loss — потери в подогревателе
+    ГВС 2-й ступени (a23) при последовательной схеме, gvs_sequential_flow — расход ГВС
+    последовательной схемы (gvps + gvpw); graph_otop — отопительный график «О» (расход ГВС
+    последовательной схемы добавляется к отоплению); street_share — доля уличного фасада.
+
+    Если напор на сопле больше, чем даёт минимальное сопло, избыток гасит диафрагма перед соплом
+    (b21, для двух фасадов — b21 и b24; при последовательной ГВС — диафрагма подогревателя b30).
+    """
+    if heating_flow <= 0:
+        raise ValueError("Укажите расход на отопление больше нуля.")
+    if system_loss <= 0 or mixing_ratio <= 0:
+        raise ValueError("Нужны потери напора в системе отопления и коэффициент смешения элеватора.")
+    ho = 1.4 * system_loss * (1.0 + mixing_ratio) ** 2
+    hrc = available_head
+    if gvs_sequential_flow > 0:
+        hrc -= gvs_heater_loss
+    hrc -= circulation_head
+    otopl = heating_flow + (gvs_sequential_flow if graph_otop else 0.0)
+    result: dict[str, Any] = {"required_head_m": ho, "flow_t_h": otopl, "warnings": [], "nozzle_diameter_mm": None,
+                              "elevator_number": None, "nozzle_head_m": None, "pre_nozzle": None,
+                              "yard_facade": None, "gvs_heater": None}
+    if hrc <= 0:
+        result["warnings"].append(
+            "Не обеспечено заданное значение напора на входе системы отопления: расчёт сопла и "
+            "ограничительной диафрагмы не выполняется.")
+        return result
+    split = False
+    if hrc > 40 and regime == 6:
+        hrc /= 2
+        split = True
+    if hrc > 2 * ho:
+        result["warnings"].append("Элеватор работает при повышенном напоре. Возможны вибрация и шум.")
+    hoost = hrc
+    if split:
+        lim, h1, d1 = drsh3(otopl, min_diameter, hrc)
+        result["pre_nozzle"] = {"diameter_mm": round(d1, 2), "count": 1, "head_one_m": h1, "head_dissipated_m": h1,
+                                "head_residual_m": 0.0, "min_diameter_limited": lim, "flow_t_h": otopl,
+                                "reason": "режим 6: половина напора > 40 м"}
+        hrc = hrc * 2 - h1
+    # drsh2: сопло не меньше минимального; горловина и номер элеватора — по потерям системы
+    dc = 9.6 * math.sqrt(abs(otopl) / math.sqrt(hrc))
+    nozzle_limited = False
+    if dc < min_nozzle_diameter:
+        dc = min_nozzle_diameter
+        hrc = 8493.47 * otopl * otopl / math.pow(dc, 4)
+        nozzle_limited = True
+    dg = 8.5 * math.sqrt(abs(otopl) * (1.0 + mixing_ratio) / math.sqrt(system_loss))
+    result.update({"nozzle_diameter_mm": round(dc, 2), "nozzle_head_m": hrc,
+                   "mixing_chamber_diameter_mm": round(dg, 1),
+                   "elevator_number": min(7, max(1, select_elevator_number(dg))) if dg > 10 else 0})
+    if dg > ELEVATOR_NECKS[-1][1]:
+        result["warnings"].append("Диаметр горловины больше, чем у элеватора №7: элеваторное смешение "
+                                  "должно быть заменено на насосное.")
+    if nozzle_limited:
+        excess = hoost - hrc
+        if gvs_sequential_flow == 0:
+            street = otopl * street_share
+            if street != 0:
+                s = _diaphragm_series(street, excess, min_diameter)
+                s["reason"] = "избыток напора при минимальном сопле"
+                result["pre_nozzle"] = s
+                excess = s["head_one_m"]  # drvary1: дальше считается от напора одной шайбы (hoost)
+            yard = otopl * (1.0 - street_share)
+            if yard != 0:
+                result["yard_facade"] = _diaphragm_series(yard, excess, min_diameter, total_head=hoost - hrc)
+        else:
+            s = _diaphragm_series(otopl, excess, min_diameter)
+            result["gvs_heater"] = s
+    return result

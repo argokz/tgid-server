@@ -10,7 +10,7 @@ from datetime import datetime
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from audit import write_audit_log
@@ -28,7 +28,9 @@ from database.calculations import (
 )
 from database.connect import acquire_conn
 from database.throttling_calc import (
+    calculate_elevator_engine,
     calculate_elevator_parameters,
+    calculate_gvs_circulation_diaphragm,
     calculate_orifice_plate_full,
     generate_throttling_excel,
 )
@@ -337,6 +339,48 @@ async def api_calc_elevator_nozzle(req: ElevatorNozzleRequest):
             t3=req.t3,
             delta_h_system=req.delta_h_system,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+class GvsCirculationRequest(BaseModel):
+    circulation_flow: float = Field(..., gt=0, description="Расход в циркуляционной линии ГВС, т/ч")
+    required_head: float = Field(..., description="Расчётный напор на входе водоразборных приборов a12, м")
+    circulation_loss: float = Field(0.0, ge=0, description="Потери напора в циркуляционном трубопроводе a11, м")
+    return_head: float = Field(..., description="Пьезометрический напор в обратном трубопроводе узла, м")
+    draw_from: Literal["supply", "return"] = "supply"
+    min_diameter: float = Field(3.0, gt=0, description="Минимальный диаметр диафрагмы a15, мм")
+
+
+class ElevatorEngineRequest(BaseModel):
+    available_head: float = Field(..., description="Располагаемый напор узла Нп - Но, м")
+    heating_flow: float = Field(..., gt=0, description="Расход на отопление, т/ч")
+    mixing_ratio: float = Field(..., gt=0, description="Коэффициент смешения элеватора u (a6)")
+    system_loss: float = Field(..., gt=0, description="Потери напора в системе отопления hс (a7), м")
+    min_nozzle_diameter: float = Field(3.0, gt=0, description="Минимальный диаметр сопла a14, мм")
+    min_diameter: float = Field(3.0, gt=0, description="Минимальный диаметр диафрагмы a15, мм")
+    regime: int = Field(1, ge=1, le=6, description="Режим расчёта дросселирования (a13): 1 или 6")
+    circulation_head: float = Field(0.0, ge=0, description="Напор на подпорно-циркуляционной диафрагме b37, м")
+    gvs_heater_loss: float = Field(0.0, ge=0, description="Потери в подогревателе ГВС 2-й ступени a23, м")
+    gvs_sequential_flow: float = Field(0.0, ge=0, description="Расход ГВС последовательной схемы, т/ч")
+    graph_otop: bool = False
+    street_share: float = Field(1.0, ge=0, le=1, description="Доля уличного фасада")
+
+
+@router.post("/api/calc/gvs-circulation-diaphragm")
+async def api_calc_gvs_circulation(req: GvsCirculationRequest):
+    """Ограничительная диафрагма циркуляционной линии открытой ГВС (движок sety, drvary1 b39–b41)."""
+    try:
+        return calculate_gvs_circulation_diaphragm(**req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/api/calc/elevator-engine")
+async def api_calc_elevator_engine(req: ElevatorEngineRequest):
+    """Сопло элеватора и диафрагма перед соплом по напорам узла (движок sety, drvary1 b7–b9, b21–b26)."""
+    try:
+        return calculate_elevator_engine(**req.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
