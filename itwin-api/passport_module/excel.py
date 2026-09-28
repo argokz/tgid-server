@@ -17,6 +17,17 @@ import hyp
 #-------------------------------------------------------------------------------------
 
 # Функция для расчета высоты строки
+from copy import copy  # noqa: E402
+
+
+def _font_with(font, **changes):
+    """Копия шрифта с изменёнными атрибутами (StyleProxy.copy(**kw) устарел в openpyxl)."""
+    new = copy(font)
+    for key, value in changes.items():
+        setattr(new, key, value)
+    return new
+
+
 def calculate_row_height(text, font_size, column_width):
     lines = text.split("\n")
     num_lines = sum(len(line) // column_width + 1 for line in lines)
@@ -96,10 +107,10 @@ def write_text(sheet, row, col, value, border=no_border, alignment=None, bold=Fa
     if alignment:
         cell.alignment = alignment
 
-    cell.font = cell.font.copy(name="Times New Roman")
+    cell.font = _font_with(cell.font, name="Times New Roman")
 
     if bold:
-        cell.font = cell.font.copy(bold=True)
+        cell.font = _font_with(cell.font, bold=True)
 
 
     return cell
@@ -157,7 +168,7 @@ def write_text2(sheet, cell_range, value, border=no_border, alignment=None, dx=0
                     c.alignment = alignment
 
                 if bold:
-                    c.font = c.font.copy(bold=True)
+                    c.font = _font_with(c.font, bold=True)
 
 
         return cell
@@ -396,7 +407,7 @@ def set_default_font(ws):
 
     for row in ws.iter_rows():
         for cell in row:
-            cell.font = cell.font.copy(name="Times New Roman")
+            cell.font = _font_with(cell.font, name="Times New Roman")
 #            cell.font = default_font
 
 
