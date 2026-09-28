@@ -95,6 +95,8 @@ class LookupStorage:
             async with aiofiles.open(path, mode="r", encoding="cp1251") as f:
                 async for line in f:
                     line = line.rstrip()
+                    if not line:
+                        continue
                     if line.startswith("-!"):
                         filtr.append("!1 " + line[2:])
                     elif line.startswith("-"):

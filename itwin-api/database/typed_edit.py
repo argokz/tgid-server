@@ -13,13 +13,15 @@ Allow-list полей таблицы = поля карточки десктоп�
 
 from __future__ import annotations
 
+import os
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Optional
 
 from database.sql_ident import quote_ident, resolve_table
-from utils.ini import storage
+from utils.ini import ARG_PATH, TAB_SUBDIRS, storage
 
 # Колонки, которые не правятся через карточку: ключи, связи с топологией, геометрия, служебные.
 SYSTEM_COLUMNS = frozenset({
@@ -73,18 +75,37 @@ async def _columns(conn, table: str) -> dict[str, tuple[str, str, Optional[int]]
             for r in rows}
 
 
-async def editable_fields(conn, table: str, *, exclude: frozenset[str] = frozenset()) -> list[FieldSpec]:
-    """Поля карточки tab/<table>.txt, которые есть в таблице и правятся (порядок — как в карточке)."""
+def tab_stem(table: str) -> Optional[str]:
+    """Имя файла карточки без расширения с регистром как на диске (regulArmatures.txt ← regularmatures)."""
+    key = table.lower()
+    for d in TAB_SUBDIRS:
+        full = os.path.join(ARG_PATH, d)
+        if not os.path.isdir(full):
+            continue
+        for fn in os.listdir(full):
+            stem, ext = os.path.splitext(fn)
+            if ext.lower() == ".txt" and stem.lower() == key:
+                return stem
+    return None
+
+
+async def editable_fields(conn, table: str, *, exclude: frozenset[str] = frozenset(),
+                          extra: tuple[str, ...] = ()) -> list[FieldSpec]:
+    """Поля карточки tab/<table>.txt, которые есть в таблице и правятся (порядок — как в карточке).
+
+    ``extra`` — колонки сверх карточки десктопа (константы кода: поля, которые правят реестры веба).
+    """
     actual = await resolve_table(conn, table)
-    tab = await storage.read_tab2(table)
-    if tab is None:
+    stem = tab_stem(table)
+    tab = await storage.read_tab2(stem) if stem else None
+    if tab is None and not extra:
         raise TypedEditError(404, {"code": "no_card", "message": f"Нет описания карточки для таблицы {table}"})
     columns = await _columns(conn, actual)
     skip = SYSTEM_COLUMNS | {c.lower() for c in exclude}
     fields: list[FieldSpec] = []
     seen: set[str] = set()
     group = ""
-    for entry in tab:
+    for entry in [*(tab or []), "!2 ", *extra]:
         if entry.startswith("!"):
             group = entry[3:].strip() if len(entry) > 3 else ""
             continue
@@ -230,6 +251,9 @@ async def update_record(conn, table: str, key_column: str, key: int, fields: lis
               "dry_run": dry_run, "version": row["_version"]}
     if dry_run or not changed:
         return result
+    group_id = str(uuid.uuid4())
+    # legacy-триггер log_changes (если есть) пишет полную строку с той же группой
+    await conn.execute("SELECT set_config('tgid.current_group_id', $1, true)", group_id)
     sets = ", ".join(f"{quote_ident(c)} = ${i + 2}" for i, c in enumerate(changed))
     new_version = await conn.fetchval(
         f"UPDATE {quote_ident(actual)} SET {sets} WHERE {quote_ident(key_column)} = $1 RETURNING xmin::text",
@@ -237,8 +261,9 @@ async def update_record(conn, table: str, key_column: str, key: int, fields: lis
     if audit_row is not None:
         await audit_row(conn, operation="UPDATE", table=actual, record_id=row["_row_id"],
                         old={c: jsonable(old[c]) for c in changed},
-                        new={c: jsonable(v) for c, v in changed.items()})
+                        new={c: jsonable(v) for c, v in changed.items()}, group=group_id)
     result["version"] = new_version
+    result["change_group_id"] = group_id
     return result
 
 

@@ -149,6 +149,10 @@ class RowConn:
             return "101"
         return True
 
+    async def execute(self, sql, *args):
+        self.sql.append((sql, args))
+        return "OK"
+
 
 def test_update_record_checks_version_and_audits_only_changed():
     fields = [te.FieldSpec("name", "Название", "str"), te.FieldSpec("dn", "Ду", "int")]
@@ -168,7 +172,7 @@ def test_update_record_checks_version_and_audits_only_changed():
     update_sql, args = next((s, a) for s, a in conn.sql if s.startswith("UPDATE"))
     assert '"name" = $2' in update_sql and '"dn"' not in update_sql and args == (5, "new")
     assert audits == [{"operation": "UPDATE", "table": "valves", "record_id": 5,
-                       "old": {"name": "old"}, "new": {"name": "new"}}]
+                       "old": {"name": "old"}, "new": {"name": "new"}, "group": result["change_group_id"]}]
 
 
 # --- маршруты ------------------------------------------------------------------------
@@ -203,3 +207,23 @@ def test_pts_bad_kind_is_404(monkeypatch):
     monkeypatch.setattr("routers.pts.acquire_conn", _acquire)
     r = TestClient(main.app).get("/api/v1/pts/sites", params={"kind": "xx"})
     assert r.status_code == 404 and r.json()["detail"]["code"] == "bad_kind"
+
+
+# --- правка оборудования ----------------------------------------------------------------
+
+def test_equipment_edit_allow_list_and_guards(monkeypatch):
+    from routers import equipment_edit as ee
+
+    assert {"dampers", "regularmatures", "pumps", "pressregulators", "consumptregulators",
+            "pressdropregulators", "bypass", "diaphragms", "elevators"} <= set(ee.EQUIPMENT_TABLES)
+    for table, extra in ee.EXTRA_FIELDS.items():
+        assert table in ee.EQUIPMENT_TABLES and all(sql_ident.is_valid_ident(c) for c in extra)
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    client = TestClient(main.app)
+    assert client.get("/api/v1/equipment-edit/users/1").status_code == 404
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    assert client.put("/api/v1/equipment-edit/dampers/1", json={"fields": {}},
+                      headers=_bearer("viewer")).status_code == 403
+    monkeypatch.setenv("MUTATIONS_ENABLED", "false")
+    assert client.put("/api/v1/equipment-edit/dampers/1", json={"fields": {"turncount": 1}},
+                      headers=_bearer("editor")).status_code == 503
