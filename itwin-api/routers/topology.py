@@ -12,11 +12,13 @@ from database.topology import (
     TopologyConflictError,
     TopologyDependencyError,
     TopologyNothingToUndo,
+    TopologyObjectMismatch,
     create_line,
     create_node,
     delete_line,
     delete_node,
     get_line_geometry,
+    get_line_ref,
     get_versions,
     last_undoable_operation,
     merge_nodes,
@@ -83,6 +85,9 @@ class ReverseLineRequest(BaseModel):
     include_pair: bool = True
     pair_line_id: Optional[int] = None
     pair_version: VersionField = None
+    # heatpipesections.id из карточки участка: сервер сверит его с паспортом line_id,
+    # при расхождении — 409 object_mismatch (QA F54: карточка несла id паспорта, не участка)
+    expected_section_id: Optional[int] = None
 
 
 class UndoRequest(BaseModel):
@@ -128,6 +133,11 @@ def _topology_http_error(exc: Exception, what: str) -> HTTPException:
             status_code=409,
             detail={"code": "version_conflict", "message": str(exc), "conflicts": exc.conflicts},
         )
+    if isinstance(exc, TopologyObjectMismatch):
+        return HTTPException(
+            status_code=409,
+            detail={"code": "object_mismatch", "message": str(exc), **exc.details},
+        )
     if isinstance(exc, TopologyDependencyError):
         return HTTPException(
             status_code=409,
@@ -160,6 +170,27 @@ async def topology_versions(
 ):
     """Версии узлов/участков для оптимистичной блокировки (запоминаются при выборе объекта)."""
     return await get_versions(_parse_ids(nodes), _parse_ids(lines))
+
+
+@router.get("/api/topology/line-ref")
+@router.get("/api/v1/topology/line-ref")
+async def topology_line_ref(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    line_id: Optional[int] = Query(None, description="linesobj.id"),
+    section_id: Optional[int] = Query(None, description="heatpipesections.id (паспорт трубы)"),
+):
+    """Участок ↔ паспорт трубы: linesobj.id по heatpipesections.id и обратно.
+
+    Слой GeoServer `id_heatpipesections` отдаёт heatpipesections.id, а все операции
+    с участком (история, журналы, анализ отключения, топология) ждут linesobj.id (QA F12).
+    """
+    try:
+        ref = await get_line_ref(line_id=line_id, section_id=section_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Участок не найден")
+    return ref
 
 
 @router.put("/topology/node/{id}/move")
@@ -246,10 +277,14 @@ async def api_delete_line(
     line_id: int,
     user: Annotated[AuthUser, Depends(require_roles("admin"))],
     expected_version: VersionField = None,
+    expected_section_id: Optional[int] = Query(None, description="heatpipesections.id из карточки (сверка, 409 object_mismatch)"),
 ):
     require_topology_mutations_enabled()
     try:
-        result = await delete_line(line_id, expected_version=expected_version, actor=user.username)
+        result = await delete_line(
+            line_id, expected_version=expected_version, actor=user.username,
+            expected_section_id=expected_section_id,
+        )
         return {"status": "success", "id": line_id, **result}
     except Exception as e:
         raise _topology_http_error(e, f"deleting line {line_id}")
@@ -297,6 +332,7 @@ async def api_reverse_line(
             include_pair=req.include_pair,
             pair_line_id=req.pair_line_id,
             pair_version=req.pair_version,
+            expected_section_id=req.expected_section_id,
         )
     except Exception as e:
         raise _topology_http_error(e, f"reversing line {req.line_id}")

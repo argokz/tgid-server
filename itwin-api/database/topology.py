@@ -99,6 +99,73 @@ class TopologyNothingToUndo(Exception):
     """У пользователя нет неотменённых операций (404)."""
 
 
+class TopologyObjectMismatch(Exception):
+    """Клиент прислал id не того объекта (409 object_mismatch, операция не выполняется).
+
+    QA F12/F54: карточка участка из слоя GeoServer `id_heatpipesections` несла
+    heatpipesections.id вместо linesobj.id — у 20 тыс. таких id есть другой живой участок.
+    Клиент передаёт heatpipesections.id из карточки (expected_section_id), сервер сверяет его
+    с паспортом участка line_id и отказывает при расхождении.
+    """
+
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
+async def _fetch_line_ref(conn, *, line_id: Optional[int] = None, section_id: Optional[int] = None):
+    """Участок (linesobj) и его паспорт трубы (heatpipesections, 1:1 по lineid)."""
+    if line_id is not None:
+        return await conn.fetchrow(
+            "SELECT l.id AS line_id, h.id AS section_id, l.fileid, l.nodeid1, l.nodeid2, "
+            "COALESCE(l.removed, 0) <> 0 AS removed "
+            "FROM linesobj l "
+            "LEFT JOIN LATERAL (SELECT id FROM heatpipesections WHERE lineid = l.id ORDER BY id LIMIT 1) h ON true "
+            "WHERE l.id = $1",
+            line_id,
+        )
+    return await conn.fetchrow(
+        "SELECT l.id AS line_id, h.id AS section_id, l.fileid, l.nodeid1, l.nodeid2, "
+        "COALESCE(l.removed, 0) <> 0 AS removed "
+        "FROM heatpipesections h JOIN linesobj l ON l.id = h.lineid "
+        "WHERE h.id = $1",
+        section_id,
+    )
+
+
+async def get_line_ref(line_id: Optional[int] = None, section_id: Optional[int] = None) -> Optional[dict]:
+    """Ссылка «участок ↔ паспорт трубы» по linesobj.id или heatpipesections.id (None — нет)."""
+    if (line_id is None) == (section_id is None):
+        raise ValueError("Укажите ровно один из параметров: line_id или section_id")
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await _fetch_line_ref(conn, line_id=line_id, section_id=section_id)
+    return dict(row) if row else None
+
+
+async def _check_line_section(conn, line_id: int, expected_section_id: Optional[int]) -> None:
+    """Сверка: expected_section_id — паспорт (heatpipesections.id) именно участка line_id."""
+    if expected_section_id is None:
+        return
+    row = await _fetch_line_ref(conn, line_id=line_id)
+    actual = row["section_id"] if row else None
+    if actual == expected_section_id:
+        return
+    owner = await _fetch_line_ref(conn, section_id=expected_section_id)
+    owner_line = owner["line_id"] if owner else None
+    message = (
+        f"Участок {line_id} не соответствует карточке: паспорт трубы {expected_section_id} "
+        + (f"относится к участку {owner_line}" if owner_line else "не найден")
+        + (f", у участка {line_id} паспорт {actual}" if actual else f", у участка {line_id} паспорта нет")
+        + ". Операция отменена — откройте карточку участка заново."
+    )
+    raise TopologyObjectMismatch(
+        message,
+        {"line_id": line_id, "expected_section_id": expected_section_id,
+         "actual_section_id": actual, "section_line_id": owner_line},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Версии объектов (оптимистичная блокировка)
 # ---------------------------------------------------------------------------
@@ -658,15 +725,22 @@ async def create_line(
     return await _run(False, body, "CREATE_LINE", actor)
 
 
-async def delete_line(line_id: int, expected_version: Optional[str] = None, actor: Optional[str] = None) -> dict:
+async def delete_line(
+    line_id: int,
+    expected_version: Optional[str] = None,
+    actor: Optional[str] = None,
+    expected_section_id: Optional[int] = None,
+) -> dict:
     """Мягкое удаление участка вместе с его паспортом; отчёт по зависимому оборудованию.
 
     Оборудование (задвижки, регуляторы…) на удалённой линии не пропадает
     (soft-delete сохраняет данные), но возвращается в отчёте, чтобы оператор
     знал, какие объекты теперь ссылаются на снятый участок.
+    expected_section_id — heatpipesections.id из карточки: при расхождении 409 (F54).
     """
     async def body(conn, op):
         await _lock_active(conn, "line", [line_id], {line_id: expected_version})
+        await _check_line_section(conn, line_id, expected_section_id)
         await _capture_lines_with_passports(conn, op, [line_id])
         now = datetime.now()
         equipment = await line_dependency_report(conn, line_id)
@@ -1029,8 +1103,11 @@ async def reverse_line(
     include_pair: bool = True,
     pair_line_id: Optional[int] = None,
     pair_version: Optional[str] = None,
+    expected_section_id: Optional[int] = None,
 ) -> dict:
     """Разворот участка: nodeid1 <-> nodeid2, ST_Reverse(shape), externalsignlineid 4 <-> 5.
+
+    expected_section_id — heatpipesections.id из карточки: при расхождении 409 (F54).
 
     Как десктоп (GidWidget::swap): вместе с участком разворачивается парная труба
     (подача ↔ обратка, см. find_pair_line), обе — в одной транзакции; dry-run отдаёт
@@ -1045,6 +1122,7 @@ async def reverse_line(
         accept_direction_change=True (иначе 409 с отчётом), dry-run показывает список.
     """
     async def body(conn, op):
+        await _check_line_section(conn, line_id, expected_section_id)
         pair = None
         if include_pair:
             pair = await find_pair_line(conn, line_id, candidate=pair_line_id)
