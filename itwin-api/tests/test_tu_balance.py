@@ -125,8 +125,8 @@ def test_sql_sums_contract_loads_in_kcal_columns():
 
 
 def test_excel_tu_balance_rows_use_same_gcal_values():
-    headers, rows = _run(reports_generator._rows_tu_balance(FakeConn(), year=2025))
-    tec = dict(zip(headers, rows[0]))
+    sheet = _run(reports_generator._rows_tu_balance(FakeConn(), reports_generator.ReportScope(year=2025)))
+    tec = dict(zip(sheet.headers, sheet.rows[0]))
     assert tec["Всего договорная, Гкал/ч"] == pytest.approx(210.0)
     assert tec["Отопление договорное"] == pytest.approx(120.0)
     assert tec["Баланс по присоединённой нагрузке, Гкал/ч"] == pytest.approx(200.0)

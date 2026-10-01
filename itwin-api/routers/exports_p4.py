@@ -12,17 +12,31 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from app_logging import get_logger
 from database.connect import acquire_conn
+from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL, parse_fragment_ids
 from word_reports.word_generator import generate_ops_act_word
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["exports-p4"])
 
+# Участки фрагмента — по linesobj.fileid, как в SHP и GeoJSON (database.fragment_filter, QA F13)
+_DXF_LINES_SQL = f"""
+    SELECT lo.id,
+           ST_AsText(ST_Transform(lo.shape, 4326)) AS wkt
+      FROM linesobj lo
+     WHERE {LIVE_LINE_SQL}
+       AND {LINE_IN_FRAGMENTS_SQL}
+       AND lo.shape IS NOT NULL
+     ORDER BY lo.id
+     LIMIT $2
+"""
+
 
 @router.get("/api/export/dxf")
 async def export_network_dxf(
     fragment_id: Optional[int] = Query(None, ge=1),
-    limit: int = Query(5000, ge=1, le=50000),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
+    limit: int = Query(50000, ge=1, le=200000),
 ):
     """Export active lines as DXF (lightweight 2D polyline dump)."""
     try:
@@ -34,31 +48,7 @@ async def export_network_dxf(
         ) from exc
 
     async with acquire_conn() as conn:
-        if fragment_id:
-            rows = await conn.fetch(
-                """
-                SELECT lo.id,
-                       ST_AsText(ST_Transform(lo.shape, 4326)) AS wkt
-                  FROM linesobj lo
-                  JOIN nodes n1 ON n1.id = lo.nodeid1
-                 WHERE coalesce(lo.removed, 0) = 0
-                   AND n1.fileid = $1
-                 LIMIT $2
-                """,
-                fragment_id,
-                limit,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT lo.id,
-                       ST_AsText(ST_Transform(lo.shape, 4326)) AS wkt
-                  FROM linesobj lo
-                 WHERE coalesce(lo.removed, 0) = 0
-                 LIMIT $1
-                """,
-                limit,
-            )
+        rows = await conn.fetch(_DXF_LINES_SQL, parse_fragment_ids(fragment_id, fragments), limit)
 
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
@@ -165,42 +155,26 @@ async def export_ops_word(journal: str, record_id: int):
     )
 
 
-def _fragment_ids(fragment_id: Optional[int], fragments: Optional[str]) -> Optional[list[int]]:
-    """fragment_id и/или fragments=1,2,3 -> список fileid (None — вся сеть)."""
-    ids: set[int] = set()
-    if fragments:
-        for part in fragments.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if not part.isdigit():
-                raise HTTPException(status_code=400, detail="fragments must be comma-separated integers")
-            ids.add(int(part))
-    if fragment_id is not None:
-        ids.add(int(fragment_id))
-    return sorted(ids) or None
-
-
-_LINES_WITH_PASSPORT_SQL = """
+_LINES_WITH_PASSPORT_SQL = f"""
     SELECT
-        l.id,
-        l.registnum AS name,
-        l.nodeid1,
-        l.nodeid2,
-        l.fileid,
+        lo.id,
+        lo.registnum AS name,
+        lo.nodeid1,
+        lo.nodeid2,
+        lo.fileid,
         hps.pipesectlength AS length,
         hps.diameterinternal AS diameter,
         hps.tuberoughness AS roughness,
-        ST_AsGeoJSON(ST_Transform(l.shape, 4326)) AS geometry
-    FROM linesobj l
+        ST_AsGeoJSON(ST_Transform(lo.shape, 4326)) AS geometry
+    FROM linesobj lo
     LEFT JOIN LATERAL (
         SELECT pipesectlength, diameterinternal, tuberoughness FROM heatpipesections
-        WHERE lineid = l.id ORDER BY id LIMIT 1
+        WHERE lineid = lo.id ORDER BY id LIMIT 1
     ) hps ON true
-    WHERE COALESCE(l.removed, 0) = 0
-      AND ($1::int[] IS NULL OR l.fileid = ANY($1::int[]))
-      AND l.shape IS NOT NULL
-    ORDER BY l.id
+    WHERE {LIVE_LINE_SQL}
+      AND {LINE_IN_FRAGMENTS_SQL}
+      AND lo.shape IS NOT NULL
+    ORDER BY lo.id
     LIMIT $2
 """
 
@@ -223,7 +197,7 @@ async def export_network_geojson(
     limit: int = Query(10000, ge=1, le=50000),
 ):
     """Экспорт участков сети в стандартный GeoJSON (WGS84) для QGIS: геометрия и паспорт трубы."""
-    rows = await _fetch_lines(_fragment_ids(fragment_id, fragments), limit)
+    rows = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
     features = []
     for r in rows:
         if not r["geometry"]:
@@ -263,7 +237,7 @@ async def export_network_geojson_attrs(
     K_E — эквивалентная шероховатость. Нет паспорта трубы — поле null (раньше подставлялись
     выдуманные 10 м / 200 мм). Старый адрес /api/export/zulugis оставлен как алиас.
     """
-    rows = await _fetch_lines(_fragment_ids(fragment_id, fragments), limit)
+    rows = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
     features = []
     for r in rows:
         if not r["geometry"]:

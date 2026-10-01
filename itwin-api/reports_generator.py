@@ -6,15 +6,19 @@
 падал с 500 — теперь источник данных один на журнал и на отчёт.
 """
 
+import asyncio
 import io
 import os
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 import openpyxl
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from database.connect import acquire_conn
+from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL
 from database.consumer_load_diagnostics import get_consumer_load_diagnostics
 from database.defects import get_defects
 from database.inspections import get_inspections
@@ -26,8 +30,6 @@ from database.repairs import get_repairs
 from database.shurfs import get_shurfs
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "report_templates")
-
-MAX_REPORT_ROWS = 5000
 
 
 def get_template_content(filename: str) -> str:
@@ -191,84 +193,169 @@ def _render_html(
 
 
 # --- Excel-ведомости --------------------------------------------------------
+#
+# Отбор по фрагменту — единое правило database.fragment_filter: участок по linesobj.fileid,
+# арматура/байпасы/насосы — по fileid своего участка, потребители — по fileid узла.
+# Лимит строк (QA F14): раньше молча 5000. Теперь по фрагменту выгружается всё (до предела
+# листа Excel), по всей сети — до MAX_NETWORK_REPORT_ROWS (с запасом больше всех ведомостей
+# Алматы: участков 121 тыс.). Если строк больше — файл не режется молча: лист «Примечание»,
+# заголовки X-Report-Rows/X-Report-Total/X-Report-Truncated и предупреждение в UI.
 
-async def _rows_pipelines(conn) -> tuple[List[str], List[List[Any]]]:
+EXCEL_MAX_DATA_ROWS = 1_048_575  # 1 048 576 строк листа минус шапка
+MAX_NETWORK_REPORT_ROWS = 200_000
+
+
+@dataclass
+class ReportScope:
+    fragment_ids: Optional[List[int]] = None
+    limit: int = MAX_NETWORK_REPORT_ROWS
+    year: Optional[int] = None
+
+
+@dataclass
+class SheetData:
+    headers: List[str]
+    rows: List[List[Any]]
+    total: int
+
+
+@dataclass
+class ExcelReport:
+    content: bytes
+    rows: int
+    total: int
+    fragment_ids: Optional[List[int]] = None
+    fragment_filter_applied: bool = False
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def truncated(self) -> bool:
+        return self.total > self.rows
+
+    def headers(self) -> Dict[str, str]:
+        return {
+            "X-Report-Rows": str(self.rows),
+            "X-Report-Total": str(self.total),
+            "X-Report-Truncated": "1" if self.truncated else "0",
+            "X-Report-Fragments": ",".join(str(f) for f in self.fragment_ids or []) if self.fragment_filter_applied else "",
+        }
+
+
+def report_limit(fragment_ids: Optional[List[int]]) -> int:
+    return EXCEL_MAX_DATA_ROWS if fragment_ids else MAX_NETWORK_REPORT_ROWS
+
+
+def report_filename(doc_type: str, *, year: Optional[int] = None, fragment_ids: Optional[List[int]] = None) -> str:
+    suffix = f"_{year}" if year else ""
+    if fragment_ids:
+        suffix += f"_f{fragment_ids[0]}" if len(fragment_ids) == 1 else "_frag"
+    return f"report_{doc_type}{suffix}.xlsx"
+
+
+async def _paged_items(fetch: Callable, conn, scope: ReportScope, *, by_fragment: bool = True, **filters):
+    """Все записи журнала (одна страница размером с лимит) — по фрагментам или по всей сети.
+
+    Возвращает (items, total); total — сколько записей есть в БД, items — не больше scope.limit.
+    """
+    targets: List[Optional[int]] = list(scope.fragment_ids) if (by_fragment and scope.fragment_ids) else [None]
+    items: List[Dict[str, Any]] = []
+    total = 0
+    for fragment_id in targets:
+        remaining = scope.limit - len(items)
+        extra = {"fragment_id": fragment_id} if fragment_id is not None else {}
+        data = await fetch(conn, page=1, page_size=max(remaining, 1), **extra, **filters)
+        total += int(data.get("total") or 0)
+        if remaining > 0:
+            items.extend(data.get("items", [])[:remaining])
+    return items, total
+
+
+_PIPELINES_WHERE = f"WHERE {LIVE_LINE_SQL} AND {LINE_IN_FRAGMENTS_SQL}"
+
+
+async def _rows_pipelines(conn, scope: ReportScope) -> SheetData:
     headers = ["ID участка", "Узел 1", "Узел 2", "Длина, м", "Ø внутр., мм",
                "Ø условный, мм", "Ø наружн., мм", "Толщина стенки, мм"]
+    total = await conn.fetchval(f"SELECT count(*) FROM linesobj lo {_PIPELINES_WHERE}", scope.fragment_ids)
+    # Одна строка на участок: паспорт трубы — первая запись heatpipesections (как в GeoJSON)
     rows = await conn.fetch(
-        """
-        SELECT L.id, L.nodeid1, L.nodeid2,
-               HPS.pipesectlength, HPS.diameterinternal, HPS.diametercondit,
-               HPS.diameterexternal, HPS.wallthickness
-        FROM linesobj L
-        LEFT JOIN heatpipesections HPS ON HPS.lineid = L.id
-        WHERE COALESCE(L.removed, 0) = 0
-        ORDER BY L.id
-        LIMIT $1
+        f"""
+        SELECT lo.id, lo.nodeid1, lo.nodeid2,
+               hps.pipesectlength, hps.diameterinternal, hps.diametercondit,
+               hps.diameterexternal, hps.wallthickness
+          FROM linesobj lo
+          LEFT JOIN LATERAL (
+              SELECT pipesectlength, diameterinternal, diametercondit, diameterexternal, wallthickness
+                FROM heatpipesections WHERE lineid = lo.id ORDER BY id LIMIT 1
+          ) hps ON true
+        {_PIPELINES_WHERE}
+         ORDER BY lo.id
+         LIMIT $2
         """,
-        MAX_REPORT_ROWS,
+        scope.fragment_ids,
+        scope.limit,
     )
-    return headers, [
+    return SheetData(headers, [
         [r["id"], r["nodeid1"], r["nodeid2"], r["pipesectlength"], r["diameterinternal"],
          r["diametercondit"], r["diameterexternal"], r["wallthickness"]]
         for r in rows
-    ]
+    ], int(total or 0))
 
 
-async def _rows_armatures(conn) -> tuple[List[str], List[List[Any]]]:
-    data = await get_network_armatures(conn, page=1, page_size=MAX_REPORT_ROWS)
+async def _rows_armatures(conn, scope: ReportScope) -> SheetData:
+    items, total = await _paged_items(get_network_armatures, conn, scope)
     headers = ["ID", "Участок", "Наименование", "Назначение", "Ø условный, мм",
                "Состояние", "Открытие, %", "Число оборотов", "Типоразмер"]
-    return headers, [
+    return SheetData(headers, [
         [i.get("id"), i.get("line_id"), i.get("display_name"), i.get("purpose_name"),
          i.get("nominal_diameter"), i.get("state_name"), i.get("opening_percent"),
          i.get("turn_count"), i.get("standard_mark")]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_bypasses(conn) -> tuple[List[str], List[List[Any]]]:
-    data = await get_network_bypasses(conn, page=1, page_size=MAX_REPORT_ROWS)
+async def _rows_bypasses(conn, scope: ReportScope) -> SheetData:
+    items, total = await _paged_items(get_network_bypasses, conn, scope)
     headers = ["ID", "Участок", "Наименование", "Узел подключения", "Состояние",
                "Трубопровод", "Длина, м", "Ø внутр., мм", "Расход (задание)", "Напор (задание)"]
-    return headers, [
+    return SheetData(headers, [
         [i.get("id"), i.get("line_id"), i.get("display_name"), i.get("connection_node_id"),
          i.get("state_name"), i.get("pipeline_sign_name"), i.get("length"),
          i.get("internal_diameter"), i.get("set_flow"), i.get("set_head")]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_pumps(conn) -> tuple[List[str], List[List[Any]]]:
-    data = await get_installed_pumps(conn, page=1, page_size=MAX_REPORT_ROWS)
+async def _rows_pumps(conn, scope: ReportScope) -> SheetData:
+    items, total = await _paged_items(get_installed_pumps, conn, scope)
     headers = ["ID", "Участок", "Номер", "Насосная станция", "Модель", "Тип",
                "Кол-во агрегатов", "Тип привода", "Состояние", "Фрагмент"]
-    return headers, [
+    return SheetData(headers, [
         [i.get("id"), i.get("line_id"), i.get("number"), i.get("station_name"),
          i.get("model_name"), i.get("model_type"), i.get("parallel_count"),
          i.get("drive_type_name"), i.get("state_name"), i.get("fragment_name")]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_consumers(conn) -> tuple[List[str], List[List[Any]]]:
-    data = await get_consumer_load_diagnostics(conn, page=1, page_size=MAX_REPORT_ROWS)
+async def _rows_consumers(conn, scope: ReportScope) -> SheetData:
+    items, total = await _paged_items(get_consumer_load_diagnostics, conn, scope)
     headers = ["Тип", "ID", "Узел", "Наименование", "Состояние", "Отопление, Гкал/ч",
                "Вентиляция, Гкал/ч", "ГВС, Гкал/ч", "Итого, Гкал/ч", "Фрагмент"]
     type_names = {"generalized": "Обобщённый", "real": "Реальный"}
-    return headers, [
+    return SheetData(headers, [
         [type_names.get(i.get("consumer_type"), i.get("consumer_type")), i.get("id"),
          i.get("node_id"), i.get("name"), i.get("state_name"), i.get("heating_load"),
          i.get("ventilation_load"), i.get("hot_water_load"), i.get("total_load"),
          i.get("fragment_name")]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_technical_conditions(conn) -> tuple[List[str], List[List[Any]]]:
+async def _rows_technical_conditions(conn, scope: ReportScope) -> SheetData:
     from database.technical_conditions import get_technical_conditions
 
-    data = await get_technical_conditions(conn, page=1, page_size=MAX_REPORT_ROWS)
+    items, total = await _paged_items(get_technical_conditions, conn, scope, by_fragment=False)
     headers = [
         "ID",
         "Номер",
@@ -280,7 +367,7 @@ async def _rows_technical_conditions(conn) -> tuple[List[str], List[List[Any]]]:
         "Район",
         "Состояние",
     ]
-    return headers, [
+    return SheetData(headers, [
         [
             i.get("id"),
             i.get("number") or i.get("nomer_tu"),
@@ -292,14 +379,14 @@ async def _rows_technical_conditions(conn) -> tuple[List[str], List[List[Any]]]:
             i.get("district") or i.get("rayon_ekspluatatsii"),
             i.get("state_name") or i.get("state"),
         ]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_tu_balance(conn, year: Optional[int] = None) -> tuple[List[str], List[List[Any]]]:
+async def _rows_tu_balance(conn, scope: ReportScope) -> SheetData:
     from database.tu_balance import get_technical_condition_balance
 
-    data = await get_technical_condition_balance(conn, year=year)
+    data = await get_technical_condition_balance(conn, year=scope.year)
     headers = [
         "Источник",
         "ТУ, шт",
@@ -351,13 +438,13 @@ async def _rows_tu_balance(conn, year: Optional[int] = None) -> tuple[List[str],
         ]
         for i in data.get("items", [])
     ]
-    return headers, rows
+    return SheetData(headers, rows, len(rows))
 
 
-async def _rows_heat_loss_seasons(conn) -> tuple[List[str], List[List[Any]]]:
+async def _rows_heat_loss_seasons(conn, scope: ReportScope) -> SheetData:
     from database.heat_losses import get_heat_loss_seasons
 
-    data = await get_heat_loss_seasons(conn, page=1, page_size=MAX_REPORT_ROWS)
+    items, total = await _paged_items(get_heat_loss_seasons, conn, scope, by_fragment=False)
     headers = [
         "ID",
         "Название",
@@ -370,7 +457,7 @@ async def _rows_heat_loss_seasons(conn) -> tuple[List[str], List[List[Any]]]:
         "Объём МС",
         "Объём РС",
     ]
-    return headers, [
+    return SheetData(headers, [
         [
             i.get("id"),
             i.get("name"),
@@ -383,14 +470,14 @@ async def _rows_heat_loss_seasons(conn) -> tuple[List[str], List[List[Any]]]:
             i.get("volwaterhs"),
             i.get("volwatervs"),
         ]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
-async def _rows_heat_loss_sources(conn) -> tuple[List[str], List[List[Any]]]:
+async def _rows_heat_loss_sources(conn, scope: ReportScope) -> SheetData:
     from database.heat_losses import get_heat_loss_sources
 
-    data = await get_heat_loss_sources(conn, page=1, page_size=MAX_REPORT_ROWS)
+    items, total = await _paged_items(get_heat_loss_sources, conn, scope, by_fragment=False)
     headers = [
         "ID",
         "Источник",
@@ -400,7 +487,7 @@ async def _rows_heat_loss_sources(conn) -> tuple[List[str], List[List[Any]]]:
         "Месяцы",
         "Заполнение / обвязка",
     ]
-    return headers, [
+    return SheetData(headers, [
         [
             i.get("id"),
             i.get("name"),
@@ -410,8 +497,8 @@ async def _rows_heat_loss_sources(conn) -> tuple[List[str], List[List[Any]]]:
             "да" if i.get("has_month_parameters") else "нет",
             "да" if (i.get("has_filling_parameters") or i.get("has_harness")) else "нет",
         ]
-        for i in data.get("items", [])
-    ]
+        for i in items
+    ], total)
 
 
 EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
@@ -442,34 +529,43 @@ def excel_report_types() -> List[Dict[str, str]]:
     return [{"code": code, "title": title} for title, code in seen.items()]
 
 
-async def generate_excel_report(doc_type: str, *, year: Optional[int] = None) -> bytes:
-    entry = EXCEL_SHEETS.get(doc_type.lower())
-    if entry is None:
-        raise ValueError(
-            f"Неизвестный тип ведомости: {doc_type}. Доступны: {', '.join(sorted(EXCEL_SHEETS))}"
-        )
+# Ведомости, где есть отбор по фрагменту (через участок или узел). ТУ, баланс ТУ и сезоны
+# теплопотерь к фрагментам сети не привязаны — выгружаются целиком, с пометкой в «Примечании».
+FRAGMENT_AWARE_LOADERS = {_rows_pipelines, _rows_armatures, _rows_bypasses, _rows_pumps, _rows_consumers}
 
-    sheet_title, loader = entry
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = sheet_title[:31]
 
-    async with acquire_conn() as conn:
-        if doc_type.lower() in ("tu-balance", "tu_balance"):
-            headers, rows = await loader(conn, year=year)
+def _report_notes(
+    sheet_title: str, data: SheetData, scope: ReportScope, requested: Optional[List[int]]
+) -> List[str]:
+    notes: List[str] = []
+    if requested:
+        frags = ", ".join(str(f) for f in requested)
+        if scope.fragment_ids:
+            notes.append(f"Отбор по фрагментам: {frags}.")
         else:
-            headers, rows = await loader(conn)
+            notes.append(
+                f"Ведомость «{sheet_title}» не привязана к фрагментам сети: выгружены все записи "
+                f"(выбранные фрагменты {frags} не применяются)."
+            )
+    if data.total > len(data.rows):
+        if scope.fragment_ids:
+            hint = "Сузьте выбор фрагментов."
+        elif not requested:
+            hint = "Выберите фрагмент на карте, чтобы выгрузить ведомость полностью."
+        else:
+            hint = ""
+        notes.append(
+            f"Ведомость неполная: выгружено {len(data.rows)} строк из {data.total} "
+            f"(предел {scope.limit} строк). {hint}"
+        )
+    return notes
 
-    ws.append(headers)
-    for row in rows:
-        ws.append(row)
 
-    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> bytes:
+    # write_only: ведомость всей сети (сотни тысяч строк) пишется потоком, без модели ячеек в памяти
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet(sheet_title[:31])
+    headers, rows = data.headers, data.rows
 
     # Ширина колонок по содержимому первых строк + фиксация шапки и автофильтр
     for idx, header in enumerate(headers, start=1):
@@ -483,7 +579,71 @@ async def generate_excel_report(doc_type: str, *, year: Optional[int] = None) ->
     if rows:
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
 
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    header_cells = []
+    for header in headers:
+        cell = WriteOnlyCell(ws, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        header_cells.append(cell)
+    ws.append(header_cells)
+    for row in rows:
+        ws.append(row)
+
+    if notes:
+        note_ws = wb.create_sheet("Примечание")
+        note_ws.column_dimensions["A"].width = 120
+        for note in notes:
+            note_ws.append([note])
+
     output = io.BytesIO()
     wb.save(output)
-    output.seek(0)
     return output.getvalue()
+
+
+async def build_excel_report(
+    doc_type: str,
+    *,
+    year: Optional[int] = None,
+    fragment_ids: Optional[List[int]] = None,
+) -> ExcelReport:
+    entry = EXCEL_SHEETS.get(doc_type.lower())
+    if entry is None:
+        raise ValueError(
+            f"Неизвестный тип ведомости: {doc_type}. Доступны: {', '.join(sorted(EXCEL_SHEETS))}"
+        )
+    sheet_title, loader = entry
+    frags = sorted({int(f) for f in fragment_ids}) if fragment_ids else None
+    fragment_applied = bool(frags) and loader in FRAGMENT_AWARE_LOADERS
+    scope = ReportScope(
+        fragment_ids=frags if fragment_applied else None,
+        limit=report_limit(frags if fragment_applied else None),
+        year=year,
+    )
+
+    async with acquire_conn() as conn:
+        data = await loader(conn, scope)
+
+    notes = _report_notes(sheet_title, data, scope, frags)
+    content = await asyncio.to_thread(_render_workbook, sheet_title, data, notes)
+    return ExcelReport(
+        content=content,
+        rows=len(data.rows),
+        total=max(data.total, len(data.rows)),
+        fragment_ids=frags,
+        fragment_filter_applied=fragment_applied,
+        notes=notes,
+    )
+
+
+async def generate_excel_report(
+    doc_type: str,
+    *,
+    year: Optional[int] = None,
+    fragment_ids: Optional[List[int]] = None,
+) -> bytes:
+    """Совместимость: только байты xlsx (сведения о полноте — в build_excel_report)."""
+    return (await build_excel_report(doc_type, year=year, fragment_ids=fragment_ids)).content

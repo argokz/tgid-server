@@ -13,6 +13,37 @@ import geopandas as gpd
 from fastapi import HTTPException
 
 from database.connect import acquire_conn
+from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL
+
+
+# Участки фрагмента — по linesobj.fileid (единое правило database.fragment_filter, QA F13)
+_LINES_SQL = f"""
+    SELECT lo.id, lo.nodeid1, lo.nodeid2, lo.externalsignlineid, lo.fileid,
+           ST_AsGeoJSON(ST_Transform(lo.shape, 4326)) AS geom
+      FROM linesobj lo
+     WHERE {LIVE_LINE_SQL}
+       AND {LINE_IN_FRAGMENTS_SQL}
+       AND lo.shape IS NOT NULL
+     ORDER BY lo.id
+     LIMIT $2
+"""
+
+# Узлы фрагмента: свои (nodes.fileid) и концы его участков — у части участков узлы
+# числятся в другом фрагменте, без них слой линий ссылался бы на отсутствующие узлы
+_NODES_SQL = f"""
+    SELECT n.id, n.fileid, n.nodename AS name,
+           ST_AsGeoJSON(ST_Transform(n.shape, 4326)) AS geom
+      FROM nodes n
+     WHERE COALESCE(n.removed, 0) = 0
+       AND n.shape IS NOT NULL
+       AND ($1::int[] IS NULL
+            OR n.fileid = ANY($1::int[])
+            OR n.id IN (SELECT unnest(ARRAY[lo.nodeid1, lo.nodeid2])
+                          FROM linesobj lo
+                         WHERE {LIVE_LINE_SQL} AND lo.fileid = ANY($1::int[])))
+     ORDER BY n.id
+     LIMIT $2
+"""
 
 
 async def export_network_to_shp(
@@ -21,60 +52,10 @@ async def export_network_to_shp(
     limit: int = 50000,
 ) -> bytes:
     try:
-        frags = list(fragment_ids) if fragment_ids else None
+        frags = sorted({int(f) for f in fragment_ids}) if fragment_ids else None
         async with acquire_conn() as conn:
-            if frags:
-                res_nodes = await conn.fetch(
-                    """
-                    SELECT id, fileid, nodename AS name,
-                           ST_AsGeoJSON(ST_Transform(shape, 4326)) AS geom
-                      FROM nodes
-                     WHERE COALESCE(removed, 0) = 0
-                       AND fileid = ANY($1::int[])
-                       AND shape IS NOT NULL
-                     LIMIT $2
-                    """,
-                    frags,
-                    limit,
-                )
-                res_lines = await conn.fetch(
-                    """
-                    SELECT lo.id, lo.nodeid1, lo.nodeid2, lo.externalsignlineid,
-                           n1.fileid,
-                           ST_AsGeoJSON(ST_Transform(lo.shape, 4326)) AS geom
-                      FROM linesobj lo
-                      JOIN nodes n1 ON n1.id = lo.nodeid1
-                     WHERE COALESCE(lo.removed, 0) = 0
-                       AND n1.fileid = ANY($1::int[])
-                       AND lo.shape IS NOT NULL
-                     LIMIT $2
-                    """,
-                    frags,
-                    limit,
-                )
-            else:
-                res_nodes = await conn.fetch(
-                    """
-                    SELECT id, fileid, nodename AS name,
-                           ST_AsGeoJSON(ST_Transform(shape, 4326)) AS geom
-                      FROM nodes
-                     WHERE COALESCE(removed, 0) = 0
-                       AND shape IS NOT NULL
-                     LIMIT $1
-                    """,
-                    limit,
-                )
-                res_lines = await conn.fetch(
-                    """
-                    SELECT id, nodeid1, nodeid2, externalsignlineid,
-                           ST_AsGeoJSON(ST_Transform(shape, 4326)) AS geom
-                      FROM linesobj
-                     WHERE COALESCE(removed, 0) = 0
-                       AND shape IS NOT NULL
-                     LIMIT $1
-                    """,
-                    limit,
-                )
+            res_lines = await conn.fetch(_LINES_SQL, frags, limit)
+            res_nodes = await conn.fetch(_NODES_SQL, frags, limit)
 
         features_nodes = []
         for r in res_nodes:

@@ -16,7 +16,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Awaitable, Callable, Literal, Optional
+from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field
@@ -56,6 +56,7 @@ class PassportParams(BaseModel):
 class ReportExcelParams(BaseModel):
     doc_type: str = Field(..., min_length=1, max_length=64)
     year: Optional[int] = Field(None, ge=1990, le=2200)
+    fragments: Optional[list[Annotated[int, Field(ge=1)]]] = Field(None, max_length=500)
 
 
 class CatalogReportParams(BaseModel):
@@ -85,14 +86,18 @@ async def _passport(p: PassportParams) -> FileResult:
 
 
 async def _report_excel(p: ReportExcelParams) -> FileResult:
-    from reports_generator import generate_excel_report
+    from reports_generator import build_excel_report, report_filename
 
+    frags = sorted(set(p.fragments)) if p.fragments else None
     try:
-        content = await generate_excel_report(p.doc_type, year=p.year)
+        report = await build_excel_report(p.doc_type, year=p.year, fragment_ids=frags)
     except ValueError as e:
         raise FileJobError(400, str(e)) from e
-    suffix = f"_{p.year}" if p.year else ""
-    return FileResult(content, f"report_{p.doc_type}{suffix}.xlsx")
+    return FileResult(
+        report.content,
+        report_filename(p.doc_type, year=p.year, fragment_ids=frags),
+        headers=report.headers(),
+    )
 
 
 async def _catalog_report(p: CatalogReportParams) -> FileResult:

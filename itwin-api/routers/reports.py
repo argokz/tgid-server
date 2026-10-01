@@ -18,7 +18,8 @@ from database.export_shp import export_network_to_shp
 from database.passport_diagnostics import get_passport_site_diagnostics
 from database.passport_excel import XLSX_MEDIA_TYPE, PassportError, build_passport_xlsx
 from database.word_db import get_defect_info
-from reports_generator import excel_report_types, generate_excel_report, generate_form_html
+from database.fragment_filter import parse_fragment_ids
+from reports_generator import build_excel_report, excel_report_types, generate_form_html, report_filename
 from word_reports.word_generator import generate_defect_map_word
 
 logger = get_logger(__name__)
@@ -170,15 +171,7 @@ async def export_shp_endpoint(
     fragments: Optional[str] = Query(None, description="Comma-separated fileIDs"),
     limit: int = Query(50000, ge=1, le=200000),
 ):
-    ids: list[int] = []
-    if fragments:
-        for part in fragments.split(","):
-            part = part.strip()
-            if part.isdigit():
-                ids.append(int(part))
-    if fragment_id is not None:
-        ids.append(int(fragment_id))
-    frags = sorted(set(ids)) or None
+    frags = parse_fragment_ids(fragment_id, fragments)
     zip_data = await export_network_to_shp(frags, limit=limit)
     suffix = f"_f{frags[0]}" if frags and len(frags) == 1 else ("_frag" if frags else "")
     return StreamingResponse(
@@ -204,19 +197,24 @@ async def list_report_excel_types():
 async def get_report_excel_endpoint(
     doc_type: str,
     year: Optional[int] = Query(None, ge=1990, le=2200),
+    fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid); пусто — вся сеть"),
 ):
+    frags = parse_fragment_ids(fragment_id, fragments)
     try:
-        excel_bytes = await generate_excel_report(doc_type, year=year)
+        report = await build_excel_report(doc_type, year=year, fragment_ids=frags)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Excel report {doc_type} failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Не удалось сформировать ведомость: {e}")
-    suffix = f"_{year}" if year else ""
+    filename = report_filename(doc_type, year=year, fragment_ids=frags)
+    headers = {"Content-Disposition": f"attachment; filename={filename}", **report.headers()}
+    headers["Access-Control-Expose-Headers"] = ", ".join(["Content-Disposition", *report.headers()])
     return StreamingResponse(
-        io.BytesIO(excel_bytes),
+        io.BytesIO(report.content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=report_{doc_type}{suffix}.xlsx"}
+        headers=headers,
     )
 
 
