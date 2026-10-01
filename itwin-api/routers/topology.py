@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from app_logging import get_logger
 from auth import AuthUser, require_mutations_enabled, require_roles
+from database.connect import acquire_conn
+from database.topology_diagnostics import get_topology_diagnostics
 from database.topology import (
     TopologyConflictError,
     TopologyDependencyError,
@@ -170,6 +172,23 @@ async def topology_versions(
 ):
     """Версии узлов/участков для оптимистичной блокировки (запоминаются при выборе объекта)."""
     return await get_versions(_parse_ids(nodes), _parse_ids(lines))
+
+
+@router.get("/api/topology/diagnostics")
+@router.get("/api/v1/topology/diagnostics")
+async def topology_diagnostics(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    fragment_id: int = Query(..., ge=1, description="Фрагмент (nodes.fileid)"),
+    limit: int = Query(200, ge=1, le=2000, description="Не больше стольких проблем каждого типа в faults"),
+):
+    """Диагностика топологии фрагмента: изолированные и тупиковые узлы, участки со снятыми
+    узлами, замкнутые, повторяющиеся и межфрагментные участки, части сети без источника,
+    расхождение геометрии с узлами. counts — полные числа по типам (QA F35)."""
+    async with acquire_conn() as conn:
+        result = await get_topology_diagnostics(conn, fragment_id, limit=limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Фрагмент {fragment_id} не найден")
+    return result
 
 
 @router.get("/api/topology/line-ref")
