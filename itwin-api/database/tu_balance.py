@@ -6,6 +6,11 @@ from typing import Any, Optional
 
 import asyncpg
 
+# Договорные нагрузки (organizatsii.nagruzka__*_, zhile.nagruzka_*) хранятся в ккал/ч,
+# свод — в Гкал/ч: делим на 1e6, как tu.sql:32 (`sum(Qot)/1000000 AS QotD` …).
+# Мощности источников (prisoedinennaya_nagruzka_istochnikov, kotelnye) и ТУ в PG уже в Гкал/ч.
+KCAL_H_PER_GCAL_H = 1_000_000.0
+
 
 def _f(v: Any) -> float:
     try:
@@ -69,10 +74,10 @@ async def get_technical_condition_balance(
         nagr AS (
             SELECT
                 COALESCE(NULLIF(BTRIM(heat_source), ''), '(без источника)') AS heat_source,
-                SUM(q_ot)::float AS contract_heating,
-                SUM(q_v)::float AS contract_ventilation,
-                SUM(q_gvs)::float AS contract_gvs,
-                SUM(q_ot + q_v + q_gvs)::float AS contract_total
+                SUM(q_ot)::float AS contract_heating_kcal,
+                SUM(q_v)::float AS contract_ventilation_kcal,
+                SUM(q_gvs)::float AS contract_gvs_kcal,
+                SUM(q_ot + q_v + q_gvs)::float AS contract_total_kcal
               FROM (
                 SELECT
                     istochnik_tepla AS heat_source,
@@ -131,10 +136,10 @@ async def get_technical_condition_balance(
             COALESCE(i.source_gvs, 0)::float AS source_gvs,
             COALESCE(i.available_power, 0)::float AS available_power,
             COALESCE(i.normative_losses, 0)::float AS normative_losses,
-            COALESCE(n.contract_heating, 0)::float AS contract_heating,
-            COALESCE(n.contract_ventilation, 0)::float AS contract_ventilation,
-            COALESCE(n.contract_gvs, 0)::float AS contract_gvs,
-            COALESCE(n.contract_total, 0)::float AS contract_total,
+            COALESCE(n.contract_heating_kcal, 0)::float AS contract_heating_kcal,
+            COALESCE(n.contract_ventilation_kcal, 0)::float AS contract_ventilation_kcal,
+            COALESCE(n.contract_gvs_kcal, 0)::float AS contract_gvs_kcal,
+            COALESCE(n.contract_total_kcal, 0)::float AS contract_total_kcal,
             COALESCE(t.heating_increase, 0)::float AS heating_increase,
             COALESCE(t.ventilation_increase, 0)::float AS ventilation_increase,
             COALESCE(t.gvs_max_increase, 0)::float AS gvs_max_increase,
@@ -156,7 +161,11 @@ async def get_technical_condition_balance(
     items: list[dict[str, Any]] = []
     for r in rows:
         d = dict(r)
-        # Баланс по присоединённой нагрузке (как в tu.sql, без /1e6 — в PG уже Гкал/ч)
+        # Договорные: ккал/ч → Гкал/ч (tu.sql:32). Ключи *_kcal наружу не отдаём.
+        for key in ("contract_heating", "contract_ventilation", "contract_gvs", "contract_total"):
+            d[key] = _f(d.pop(f"{key}_kcal", None)) / KCAL_H_PER_GCAL_H
+        # Баланс по присоединённой нагрузке (tu.sql:15): мощность/потери/присоединённая
+        # источника в PG уже в Гкал/ч, договорная — пересчитана выше.
         d["balance_connected"] = (
             _f(d["available_power"])
             - _f(d["source_heating"])
