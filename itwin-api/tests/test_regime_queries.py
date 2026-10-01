@@ -43,6 +43,8 @@ def test_admissibility_lower_head_limit_is_consistent():
 def test_heat_consumption_system_filters():
     assert set(nq.SYSTEM_FILTERS) == {"closed", "open"}
     assert "= 0" in nq.SYSTEM_FILTERS["closed"] and "> 0" in nq.SYSTEM_FILTERS["open"]
+    # n_* — нагрузка (Гкал/ч), q_* — расход (т/ч): единица не в общем заголовке (QA F34)
+    assert all("Гкал" not in t and t.startswith("Итоговые значения") for t in nq.SYSTEM_TITLES.values())
 
 
 def test_regime_routes_registered():
