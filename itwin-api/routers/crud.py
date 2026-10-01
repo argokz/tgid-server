@@ -1,7 +1,8 @@
 """Универсальные CRUD-маршруты для атрибутов объектов (за флагом MUTATIONS_ENABLED)."""
 
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Optional
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -17,6 +18,7 @@ from auth import (
 from database.db import create_object, delete_object, update_object_attributes
 from database.ops_mutations import filter_ops_fields
 from database.sql_ident import UnknownIdentifierError
+from database.typed_edit import TypedEditError
 from database.tu_mutations import filter_tu_fields
 
 logger = get_logger(__name__)
@@ -28,6 +30,24 @@ def _identifier_error(exc: UnknownIdentifierError) -> HTTPException:
     if exc.kind == "table":
         return HTTPException(status_code=403, detail="Table is not in the mutation allow-list")
     return HTTPException(status_code=400, detail=f"Unknown column: {exc.name}")
+
+
+def mutation_client_error(exc: Exception) -> Optional[HTTPException]:
+    """Ошибка клиента при записи → 4xx (иначе None — это 500).
+
+    Неизвестная колонка/таблица → 400/403, значение не того типа → 422, нарушение
+    ограничений БД (NOT NULL, уникальность, внешний ключ) → 409, неверные данные → 422.
+    4xx клиент не повторяет; 500 означает сбой сервера.
+    """
+    if isinstance(exc, UnknownIdentifierError):
+        return _identifier_error(exc)
+    if isinstance(exc, TypedEditError):
+        return HTTPException(status_code=exc.status, detail=exc.detail)
+    if isinstance(exc, asyncpg.exceptions.IntegrityConstraintViolationError):
+        return HTTPException(status_code=409, detail=f"Нарушено ограничение БД: {exc.__class__.__name__}")
+    if isinstance(exc, asyncpg.exceptions.DataError):
+        return HTTPException(status_code=422, detail=f"Недопустимое значение: {exc}")
+    return None
 
 
 class UpdateAttributesParams(BaseModel):
@@ -67,9 +87,10 @@ async def update_object(
             new_data=fields,
         )
         return {"success": success, "message": "Атрибуты успешно обновлены"}
-    except UnknownIdentifierError as e:
-        raise _identifier_error(e)
     except Exception as e:
+        client_error = mutation_client_error(e)
+        if client_error is not None:
+            raise client_error from e
         logger.error(f"Error updating object {table} {id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка при обновлении")
 
@@ -87,6 +108,9 @@ async def api_create_object(
     if not user.has_role(role_for_mutation(table)):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
     fields = _prepare_fields(table, body.fields)
+    if not fields:
+        # QA F44: пустой create — ошибка клиента (400), а не 500, который выглядит как сбой
+        raise HTTPException(status_code=400, detail="No fields provided")
     try:
         new_id = await create_object(table, fields)
         await write_audit_log(
@@ -97,9 +121,10 @@ async def api_create_object(
             new_data=fields,
         )
         return {"success": True, "id": new_id, "message": "Объект успешно создан"}
-    except UnknownIdentifierError as e:
-        raise _identifier_error(e)
     except Exception as e:
+        client_error = mutation_client_error(e)
+        if client_error is not None:
+            raise client_error from e
         logger.error(f"Error creating object {table}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка при создании")
 
@@ -125,8 +150,9 @@ async def api_delete_object(
             record_id=id,
         )
         return {"success": success, "message": "Объект успешно удален"}
-    except UnknownIdentifierError as e:
-        raise _identifier_error(e)
     except Exception as e:
+        client_error = mutation_client_error(e)
+        if client_error is not None:
+            raise client_error from e
         logger.error(f"Error deleting object {table} {id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка при удалении")

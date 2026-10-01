@@ -9,6 +9,7 @@ from database.sql_ident import (
     resolve_table,
 )
 from utils.ini import list_tab_tables, parse_filtr, storage
+from database.typed_edit import _KINDS, FieldSpec, coerce_value
 import logging
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,27 @@ async def get_all_fragments() -> List[Dict[str, str]]:
         rows = await query_log(conn, query)
         return rows
 
+async def _coerce_for_columns(conn, table: str, columns: Dict[any, str], fields: Dict[any, any]) -> List[any]:
+    """Значения JSON → типы колонок (дата строкой, число строкой, '' → NULL).
+
+    Без этого asyncpg падает на ``'2026-01-01'`` для date (toordinal) → 500. Ошибка типа —
+    ``TypedEditError`` 422 (роутеры превращают её в HTTPException). Типы без описания
+    (геометрия, массивы) передаются как есть.
+    """
+    rows = await conn.fetch(
+        "SELECT column_name, data_type, character_maximum_length FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = $1",
+        table,
+    )
+    types = {str(r["column_name"]): (r.get("data_type"), r.get("character_maximum_length")) for r in rows}
+    values = []
+    for key, val in fields.items():
+        name = columns[key]
+        data_type, max_len = types.get(name, (None, None))
+        kind = _KINDS.get(data_type) if data_type else None
+        values.append(coerce_value(FieldSpec(name=name, label=name, kind=kind, max_length=max_len), val) if kind else val)
+    return values
+
 async def update_object_attributes(table: str, obj_id: int, fields: Dict[str, any]) -> bool:
     """Обновляет атрибуты объекта в БД."""
     if not fields:
@@ -339,7 +361,8 @@ async def update_object_attributes(table: str, obj_id: int, fields: Dict[str, an
         # Таблица — только из allow-list CRUD, колонки — только из каталога этой таблицы
         actual = await resolve_table(conn, table, mutable_tables())
         columns = await resolve_columns(conn, actual, fields.keys())
-        for i, (key, val) in enumerate(fields.items(), start=1):
+        typed = await _coerce_for_columns(conn, actual, columns, fields)
+        for i, (key, val) in enumerate(zip(fields.keys(), typed), start=1):
             set_clauses.append(f'{quote_ident(columns[key])} = ${i}')
             values.append(val)
 
@@ -368,7 +391,8 @@ async def create_object(table: str, fields: Dict[str, any]) -> int:
     async with acquire_conn() as conn:
         actual = await resolve_table(conn, table, mutable_tables())
         columns = await resolve_columns(conn, actual, fields.keys())
-        for i, (key, val) in enumerate(fields.items(), start=1):
+        typed = await _coerce_for_columns(conn, actual, columns, fields)
+        for i, (key, val) in enumerate(zip(fields.keys(), typed), start=1):
             cols.append(quote_ident(columns[key]))
             vals.append(val)
             placeholders.append(f'${i}')

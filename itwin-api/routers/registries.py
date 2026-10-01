@@ -35,6 +35,7 @@ from database.technical_conditions import (
 )
 from database.tu_balance import get_technical_condition_balance
 from database.tu_mutations import TU_TABLE, filter_tu_fields
+from routers.crud import mutation_client_error
 
 router = APIRouter(tags=["registries"])
 
@@ -232,6 +233,17 @@ class TuFieldsBody(BaseModel):
     fields: Dict[str, Any]
 
 
+async def _tu_write(action):
+    """Ошибки клиента (тип значения, ограничения БД) → 4xx вместо 500."""
+    try:
+        return await action
+    except Exception as exc:
+        client_error = mutation_client_error(exc)
+        if client_error is not None:
+            raise client_error from exc
+        raise
+
+
 @router.post("/api/technical-conditions")
 @router.post("/api/v1/technical-conditions")
 async def create_technical_condition(
@@ -241,7 +253,7 @@ async def create_technical_condition(
     """Vertical CRUD create for ТУ (gid6 etalon)."""
     require_mutations_enabled()
     fields = filter_tu_fields(body.fields)
-    new_id = await create_object(TU_TABLE, fields)
+    new_id = await _tu_write(create_object(TU_TABLE, fields))
     await write_audit_log(
         changed_by=user.username,
         operation="INSERT",
@@ -261,7 +273,7 @@ async def update_technical_condition(
 ):
     require_mutations_enabled()
     fields = filter_tu_fields(body.fields)
-    ok = await update_object_attributes(TU_TABLE, condition_id, fields)
+    ok = await _tu_write(update_object_attributes(TU_TABLE, condition_id, fields))
     await write_audit_log(
         changed_by=user.username,
         operation="UPDATE",
@@ -279,7 +291,7 @@ async def delete_technical_condition(
     user: Annotated[AuthUser, Depends(require_roles("editor"))],
 ):
     require_mutations_enabled()
-    ok = await delete_object(TU_TABLE, condition_id)
+    ok = await _tu_write(delete_object(TU_TABLE, condition_id))
     await write_audit_log(
         changed_by=user.username,
         operation="DELETE",

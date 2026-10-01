@@ -63,8 +63,11 @@ def test_tu_and_ops_field_filters():
     from database.tu_mutations import filter_tu_fields
     from database.ops_mutations import filter_ops_fields
 
-    tu = filter_tu_fields({"nomer_tu": "1", "evil": "x"})
-    assert tu == {"nomer_tu": "1"}
+    tu = filter_tu_fields({"nomer_tu": "1", "number": "2"})
+    assert tu == {"nomer_tu": "2"}
+    with pytest.raises(HTTPException) as exc:
+        filter_tu_fields({"nomer_tu": "1", "evil": "x"})
+    assert exc.value.status_code == 422
     defect = filter_ops_fields("defect", {"data_osmotra": "2020-01-01", "shape": "nope"})
     assert "data_osmotra" in defect
     assert "shape" not in defect
