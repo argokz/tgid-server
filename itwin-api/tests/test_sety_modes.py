@@ -121,3 +121,51 @@ def test_run_requires_calculator_role(monkeypatch):
     client = TestClient(main.app)
     r = client.post("/api/v1/calculations/run", json={"fragment_ids": [74]})
     assert r.status_code in (401, 403)
+
+
+@pytest.mark.parametrize("tn,leto,ok", [
+    (-25, False, True), (8, False, True), (0, False, True),
+    (-32, False, False), (8.5, False, False), (-32, True, True),
+])
+def test_tn_range_follows_sety_heat_system_check(tn, leto, ok):
+    from sety_modes import tn_range_error
+    err = tn_range_error(tn, -25.0, 8.0, leto=leto)
+    assert (err is None) is ok
+    if not ok:
+        assert "от -25 до 8" in err
+    assert tn_range_error(-40, None, 8.0, leto=False) is None  # нет heatSystem — решает sety
+
+
+class _FakeConn:
+    async def fetch(self, *_):
+        return [{"id": 74}]
+
+    async def fetchrow(self, *_):
+        return {"t_or": -25, "t_vnew": 8}
+
+
+def _fake_acquire(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    import routers.calc as calc
+
+    @asynccontextmanager
+    async def acquire():
+        yield _FakeConn()
+
+    monkeypatch.setattr(calc, "acquire_conn", acquire)
+    delays = []
+    monkeypatch.setattr(calc.run_sety_calculation, "delay", lambda *a, **k: delays.append(a))
+    return delays
+
+
+def test_run_rejects_tn_outside_heat_system_range(monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    delays = _fake_acquire(monkeypatch)
+    client = TestClient(main.app)
+    r = client.post("/api/v1/calculations/run", json={"fragment_ids": [74], "tn": -32})
+    assert r.status_code == 422
+    assert "от -25 до 8" in r.json()["detail"]
+    assert delays == []
+    r = client.get("/api/v1/calculations/temperature-range")
+    assert r.status_code == 200 and r.json() == {"t_or": -25.0, "t_vnew": 8.0}

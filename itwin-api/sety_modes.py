@@ -189,3 +189,20 @@ def build_sety_args(req: SetyRunRequest, user_gid: str) -> list[str]:
 def args_to_params(args: list[str]) -> str:
     """Список аргументов → строка для Celery-задачи (воркер разбирает её shlex.split)."""
     return shlex.join(args)
+
+
+def tn_range_error(tn: float, t_or: Optional[float], t_vnew: Optional[float], leto: bool) -> Optional[str]:
+    """Проверка sety (w.py) до постановки в очередь: Tн в [t_or; t_vnew] из «Системы теплоснабжения».
+
+    sety берёт первую строку heatSystem и при Tн вне диапазона завершается с ошибкой
+    (летний режим не проверяется). Десктоп не ограничивает ввод — sety так же отказывает,
+    а умолчание формы (-32) — из QSettings; у Алматы расчётная -25, поэтому ловим заранее.
+    """
+    if leto or t_or is None or t_vnew is None:
+        return None
+    if t_or <= tn <= t_vnew:
+        return None
+    return (
+        f"Температура наружного воздуха должна быть от {_num(t_or)} до {_num(t_vnew)} °C "
+        "(расчётная для отопления и конца отопительного периода, «Система теплоснабжения»)"
+    )

@@ -34,7 +34,7 @@ from database.throttling_calc import (
     calculate_orifice_plate_full,
     generate_throttling_excel,
 )
-from sety_modes import SetyRunRequest, args_to_params, build_sety_args
+from sety_modes import SetyRunRequest, args_to_params, build_sety_args, tn_range_error
 from worker import celery_app, run_sety_calculation, validate_sety_params
 
 logger = get_logger(__name__)
@@ -108,6 +108,28 @@ async def get_task_status(task_id: str):
     return response
 
 
+async def _heat_system_tn_range(conn) -> dict:
+    """t_or/t_vnew первой строки heatSystem — по ним sety (w.py) проверяет Tн."""
+    row = await conn.fetchrow("SELECT t_or, t_vnew FROM heatsystem ORDER BY id LIMIT 1")
+    return {
+        "t_or": float(row["t_or"]) if row and row["t_or"] is not None else None,
+        "t_vnew": float(row["t_vnew"]) if row and row["t_vnew"] is not None else None,
+    }
+
+
+@router.get("/api/calculations/temperature-range")
+@router.get("/api/v1/calculations/temperature-range")
+async def api_calculation_temperature_range(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Допустимая Tн расчёта: от расчётной для отопления (t_or) до конца отопительного периода (t_vnew).
+
+    Форма расчёта берёт t_or как умолчание; вне диапазона sety откажет (кроме летнего режима).
+    """
+    async with acquire_conn() as conn:
+        return await _heat_system_tn_range(conn)
+
+
 @router.post("/api/calculations/run")
 @router.post("/api/v1/calculations/run")
 async def run_sety_mode(
@@ -128,9 +150,13 @@ async def run_sety_mode(
             "SELECT id FROM fragments WHERE id = ANY($1::int[]) AND COALESCE(removed, 0) = 0",
             body.fragment_ids,
         )
+        t_range = await _heat_system_tn_range(conn)
     missing = sorted(set(body.fragment_ids) - {r["id"] for r in rows})
     if missing:
         raise HTTPException(status_code=404, detail=f"Фрагменты не найдены: {', '.join(map(str, missing))}")
+    tn_error = tn_range_error(body.tn, t_range["t_or"], t_range["t_vnew"], leto=body.leto)
+    if tn_error:
+        raise HTTPException(status_code=422, detail=tn_error)
 
     params = args_to_params(args)
     try:
