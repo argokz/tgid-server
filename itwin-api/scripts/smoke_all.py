@@ -42,13 +42,30 @@ FALLBACK_PARAMS = {
     "doc_type": "ut",
 }
 
+# Значения для обязательных query-параметров (FastAPI отвечает 422 «Field required», если их
+# не передать — это ложный FAIL). Реальные ID (fragment_id, season_id) подставляются из БД.
+QUERY_DEFAULTS = {
+    "fragment_id": "74",
+    "season_id": "1",
+    "kind": "unassigned_buildings",
+}
 
-def http_get(url: str, timeout: float = 120.0):
+# Маршруты, где обязателен «один из» необязательных параметров (FastAPI их не помечает required)
+EXTRA_QUERY = {
+    "/api/topology/line-ref": "line_id={line_id}",
+    "/api/v1/topology/line-ref": "line_id={line_id}",
+}
+
+# 503 «зависимость не установлена» — маршрут исправен, на хосте нет опционального пакета
+DEPENDENCY_MARKERS = ("is not installed",)
+
+
+def http_get(url: str, timeout: float = 120.0, max_bytes: int = 4096):
     started = time.monotonic()
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read(4096)
+            body = resp.read(max_bytes)
             return resp.status, body, time.monotonic() - started
     except urllib.error.HTTPError as e:
         return e.code, e.read(2048), time.monotonic() - started
@@ -84,6 +101,27 @@ def discover_ids(base: str) -> dict:
         "diaphragm_id": "/api/network-diaphragms/items?page=1&page_size=1",
         "elevator_id": "/api/elevators?page=1&page_size=1",
     }
+    # фрагмент и участок сети — из справочника фрагментов и топологии
+    status, body, _ = http_get(base + "/fragments", timeout=60, max_bytes=1 << 20)
+    if status == 200:
+        try:
+            frags = json.loads(body.decode("utf-8", "replace")).get("data") or []
+            frag_ids = [str(f["id"]) for f in frags if f.get("id") is not None]
+            if frag_ids:
+                ids["fragment_id"] = "74" if "74" in frag_ids else frag_ids[0]
+        except Exception:
+            pass
+    if "fragment_id" in ids:
+        status, body, _ = http_get(f"{base}/api/v1/topology/diagnostics?fragment_id={ids['fragment_id']}", timeout=90,
+                                   max_bytes=1 << 22)
+        if status == 200:
+            try:
+                faults = json.loads(body.decode("utf-8", "replace")).get("faults") or []
+                line = next((f for f in faults if f.get("object_type") == "line"), None)
+                if line:
+                    ids["line_id"] = str(line["object_id"])
+            except Exception:
+                pass
     for key, path in probes.items():
         status, body, _ = http_get(base + path, timeout=90)
         if status != 200:
@@ -114,8 +152,29 @@ def main() -> int:
 
     params = dict(FALLBACK_PARAMS)
     params.update({k: v for k, v in real_ids.items() if v})
+    query_values = dict(QUERY_DEFAULTS)
+    query_values.update({k: v for k, v in real_ids.items() if v and k in QUERY_DEFAULTS})
+    query_values["line_id"] = params.get("line_id", "1")
+    try:
+        from database.alseko_binding import ISSUE_KINDS
+        query_values["kind"] = next(iter(ISSUE_KINDS))
+    except Exception:
+        pass
+
+    def required_query(route) -> list[str]:
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            return []
+        names = []
+        stack = [dependant]
+        while stack:
+            dep = stack.pop()
+            names += [p.alias for p in dep.query_params if p.required]
+            stack.extend(dep.dependencies)
+        return names
 
     routes = []
+    route_query: dict[str, list[str]] = {}
     for route in app_main.app.routes:
         path = getattr(route, "path", "")
         methods = getattr(route, "methods", set()) or set()
@@ -125,9 +184,10 @@ def main() -> int:
             if method in SKIP_METHODS or method == "HEAD":
                 continue
             routes.append((method, path))
+            route_query[path] = required_query(route)
     routes = sorted(set(routes))
 
-    ok, empty_data, failed, skipped = [], [], [], []
+    ok, empty_data, failed, skipped, unavailable = [], [], [], [], []
 
     for method, path in routes:
         url_path = path
@@ -144,6 +204,21 @@ def main() -> int:
         if missing_param:
             skipped.append((path, f"нет значения для {{{missing_param}}}"))
             continue
+
+        query = []
+        missing_query = None
+        for name in route_query.get(path, []):
+            if name not in query_values:
+                missing_query = name
+                break
+            query.append(f"{name}={query_values[name]}")
+        if missing_query:
+            skipped.append((path, f"нет значения для ?{missing_query}"))
+            continue
+        if path in EXTRA_QUERY:
+            query.append(EXTRA_QUERY[path].format(**query_values))
+        if query:
+            url_path = f"{url_path}?{'&'.join(query)}"
 
         sep = "&" if "?" in url_path else "?"
         probe = url_path
@@ -163,6 +238,9 @@ def main() -> int:
             (empty_data if is_empty else ok).append((path, elapsed))
             mark = "ПУСТО" if is_empty else "OK   "
             print(f"  {mark} {status} {elapsed:6.2f}s {method:4} {path}")
+        elif status == 503 and any(m in text for m in DEPENDENCY_MARKERS):
+            unavailable.append((path, text))
+            print(f"  НЕТ   {status} {elapsed:6.2f}s {method:4} {path}  :: {text}")
         elif status in (404, 422) and "{" in path:
             # Ожидаемо для несуществующих ID/некорректных значений
             ok.append((path, elapsed))
@@ -172,7 +250,12 @@ def main() -> int:
             print(f"  FAIL  {status} {elapsed:6.2f}s {method:4} {path}  :: {text}")
 
     print(f"\nИтог: OK {len(ok)}, пустых данных {len(empty_data)}, "
-          f"ошибок {len(failed)}, пропущено {len(skipped)}")
+          f"ошибок {len(failed)}, пропущено {len(skipped)}, без зависимости {len(unavailable)}")
+
+    if unavailable:
+        print("\nНе установлен опциональный пакет на хосте API (pip install -r requirements.txt):")
+        for path, text in unavailable:
+            print(f"  - {path}: {text}")
 
     if empty_data:
         print("\nПустые (маршрут работает, данных в БД нет):")

@@ -271,6 +271,30 @@ class Ctx:
                 out["error"] = "расчёт без результатов по участкам"
         return out
 
+    async def load_existing_baseline(self) -> None:
+        """--skip-calc: участки/узлы «с результатом» берутся из последнего готового расчёта,
+        где есть узлы фрагмента; если такого нет — все действующие участки/узлы фрагмента."""
+        calc_id = await self.conn.fetchval(
+            """
+            SELECT o.calculationid FROM us_out o JOIN nodes n ON n.id = o.nodeid
+            WHERE n.fileid = $1 ORDER BY o.calculationid DESC LIMIT 1
+            """,
+            self.fragment,
+        )
+        if calc_id is not None:
+            self.baseline_lines = {r["lineid"] for r in await self.conn.fetch(
+                "SELECT DISTINCT lineid FROM ut_out WHERE calculationid = $1", calc_id)}
+            self.baseline_nodes = {r["nodeid"] for r in await self.conn.fetch(
+                "SELECT DISTINCT nodeid FROM us_out WHERE calculationid = $1", calc_id)}
+        else:
+            self.baseline_nodes = {r["id"] for r in await self.conn.fetch(
+                "SELECT id FROM nodes WHERE fileid = $1 AND COALESCE(removed, 0) = 0", self.fragment)}
+            self.baseline_lines = {r["id"] for r in await self.conn.fetch(
+                "SELECT l.id FROM linesobj l JOIN nodes n ON n.id = l.nodeid1 "
+                "WHERE n.fileid = $1 AND COALESCE(l.removed, 0) = 0", self.fragment)}
+        self.baseline_calc = {"ok": True, "skipped": True, "source_calc_id": calc_id,
+                              "ut_lines": len(self.baseline_lines), "us_nodes": len(self.baseline_nodes)}
+
     async def delete_calc(self, calc_id: int) -> None:
         await self.api("DELETE", f"/api/v1/calculations/{calc_id}")
         if calc_id in self.created_calcs:
@@ -1067,6 +1091,14 @@ def render(ctx: Ctx, scenarios: list[Scenario], started: datetime, seconds: floa
 
 # ---------------------------------------------------------------------------
 
+def _console_safe_output() -> None:
+    """Консоль Windows (cp1251/cp866) не умеет «→», «≤» из справки и отчёта — не падать."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 async def main() -> int:
     import asyncpg
     import httpx
@@ -1078,7 +1110,7 @@ async def main() -> int:
     ap.add_argument("--user", default=None, help="имя в токене (по умолчанию b7-<время>)")
     ap.add_argument("--only", default=None, help="номера сценариев через запятую (1..7)")
     ap.add_argument("--out", default=None, help="куда записать отчёт .md")
-    ap.add_argument("--skip-calc", action="store_true", help="отладка: без расчётов (базовый — только для выбора объектов)")
+    ap.add_argument("--skip-calc", action="store_true", help="отладка: без расчётов вообще (объекты выбираются по последнему готовому расчёту фрагмента)")
     args = ap.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -1106,15 +1138,27 @@ async def main() -> int:
         if not (cfg.get("topology_mutations_enabled") and cfg.get("mutations_enabled")):
             print(f"Отказ: на {args.base_url} выключены флаги топологии: {cfg}")
             return 2
+        # автор правок в audit_log — тот, кого видит API (при AUTH_DISABLED это всегда «dev»,
+        # имя из токена игнорируется)
+        me = await ctx.api("GET", "/api/v1/auth/me")
+        if me.get("username") and me["username"] != ctx.username:
+            print(f"API работает от имени «{me['username']}» (auth_disabled={cfg.get('auth_disabled')}), "
+                  f"а не «{ctx.username}» — проверяю audit_log по нему", flush=True)
+            ctx.username = me["username"]
         await ctx.discover()
         ctx.ref_baseline = await ctx.ref_counts()
         print(f"Колонок-ссылок: {len(ctx.ref_columns)}, таблиц в снимке: {len(ctx.snapshot_tables)}", flush=True)
-        ctx.baseline_calc = await ctx.run_calc("baseline")
-        print(f"Базовый расчёт: {ctx.baseline_calc}", flush=True)
-        if ctx.baseline_calc.get("calc_id"):
-            await ctx.delete_calc(ctx.baseline_calc["calc_id"])
-        if not ctx.baseline_calc.get("ok"):
-            print("Базовый расчёт не прошёл — приёмка операций бессмысленна")
+        if args.skip_calc:
+            # без расчётов вообще: объекты выбираются по последнему готовому расчёту фрагмента
+            await ctx.load_existing_baseline()
+            print(f"Базовый расчёт пропущен (--skip-calc): {ctx.baseline_calc}", flush=True)
+        else:
+            ctx.baseline_calc = await ctx.run_calc("baseline")
+            print(f"Базовый расчёт: {ctx.baseline_calc}", flush=True)
+            if ctx.baseline_calc.get("calc_id"):
+                await ctx.delete_calc(ctx.baseline_calc["calc_id"])
+            if not ctx.baseline_calc.get("ok"):
+                print("Базовый расчёт не прошёл — приёмка операций бессмысленна")
         selected = SCENARIOS
         if args.only:
             idx = {int(x) for x in args.only.split(",")}
@@ -1138,4 +1182,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    _console_safe_output()
     sys.exit(asyncio.run(main()))
