@@ -47,6 +47,18 @@ def test_heat_consumption_system_filters():
     assert all("Гкал" not in t and t.startswith("Итоговые значения") for t in nq.SYSTEM_TITLES.values())
 
 
+def test_network_queries_fragment_by_start_node_like_zap_cpp():
+    # gid6 zap.cpp: "AND n1.fileID IN (%s)" — участок во фрагменте по начальному узлу (QA F60)
+    assert nq._frag_clause("n1", None) == ("", [])
+    clause, args = nq._frag_clause("n1", [74, 75])
+    assert clause.strip() == "AND n1.fileid = ANY($1::int[])" and args == [[74, 75]]
+    from routers.analysis import _parse_fragments
+
+    assert _parse_fragments(None, "75, 74,x,74") == [74, 75]
+    assert _parse_fragments(74, None) == [74]
+    assert _parse_fragments(None, "") is None
+
+
 def test_regime_routes_registered():
     import main
 
