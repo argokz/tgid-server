@@ -34,7 +34,7 @@ class FakeConn:
 
     async def fetchval(self, sql, *args):
         self.calls.append((sql, args))
-        return self.total
+        return 0 if "FROM calculation" in sql else self.total  # расчётов нет — листы результатов пустые
 
 
 def _acquire(conn):
@@ -122,7 +122,7 @@ def test_ut_by_fragment_filters_by_line_fileid_and_is_not_capped(monkeypatch):
     assert (report.rows, report.total, report.truncated) == (4018, 4018, False)
     data, notes = _sheet(report.content)
     assert len(data) == 4018 + 1
-    assert notes == ["Отбор по фрагментам: 74."]
+    assert notes[0] == "Отбор по фрагментам: 74." and "Гидравлика" in notes[1]
     assert report.headers()["X-Report-Fragments"] == "74"
 
 
@@ -136,7 +136,7 @@ def test_whole_network_over_limit_is_reported_not_silently_cut(monkeypatch):
     assert report.headers()["X-Report-Truncated"] == "1"
     data, notes = _sheet(report.content)
     assert len(data) == 3 + 1
-    assert len(notes) == 1 and "3 строк из 10" in notes[0] and "Выберите фрагмент" in notes[0]
+    assert "3 строк из 10" in notes[0] and "Выберите фрагмент" in notes[0]
 
 
 def test_whole_network_default_limit_is_far_above_old_5000():
@@ -154,7 +154,7 @@ def test_paged_registers_query_each_selected_fragment(monkeypatch):
 
     monkeypatch.setattr(rg, "get_network_armatures", fake_armatures)
     monkeypatch.setattr(rg, "acquire_conn", _acquire(FakeConn()))
-    report = asyncio.run(rg.build_excel_report("zd", fragment_ids=[99, 74]))
+    report = asyncio.run(rg.build_excel_report("armatures", fragment_ids=[99, 74]))
     assert [s[0] for s in seen] == [74, 99]
     assert report.rows == report.total == 4
     data, _ = _sheet(report.content)
@@ -215,3 +215,41 @@ def test_file_job_report_excel_forwards_fragments_and_headers(monkeypatch):
     assert result.filename == "report_ut_f74.xlsx"
     assert result.headers["X-Report-Fragments"] == "74"
     assert result.headers["X-Report-Truncated"] == "0"
+
+
+# --- F15: колонки ведомостей ut / zd как в шаблонах десктопа G_UT / G_ZD -------------------
+
+def test_ut_columns_follow_desktop_g_ut():
+    from database import ut_out_columns as UT
+
+    h = rg.UT_HEADERS
+    assert len(h) == 24  # G_UT «Вх.Участки»: 24 колонки
+    assert h[3].startswith("Начальный узел") and h[5].endswith("признак трубопровода")
+    assert h[9] == "Тип трубы" and "шероховатость" in h[13] and "Kv" in h[16] and "Kv" in h[17]
+    assert h[22] == "Код источника тепла"
+    # «Гидравлика»: длина a7, диаметр a8, скорость a10 … полный напор a21 (маппинг ut_out_columns)
+    assert rg.UT_RESULT_COLUMNS[:4] == [UT.UT_LENGTH_M, UT.UT_DIAMETER_MM, UT.UT_VELOCITY_MS, UT.UT_TRAVEL_MIN]
+    assert rg.UT_RESULT_COLUMNS[5] == UT.UT_FLOW_TH == "a13"
+    assert rg.UT_RESULT_COLUMNS[6:10] == ["a14", "a16", "a15", "a17"]  # удельные, местные, линейные, общие
+    assert rg.UT_RESULT_HEADERS[8:10] == ["Длина участка, м", "Внутр. диаметр, мм"]
+    assert rg.UT_RESULT_HEADERS[13] == "Расход воды, т/ч"
+    for sql in (rg._UT_ROWS_SQL, rg._UT_RESULTS_SQL, rg._ZD_ROWS_SQL, rg._ZD_RESULTS_SQL):
+        assert LINE_IN_FRAGMENTS_SQL in sql and "LIMIT $2" in sql  # правило фрагмента и лимит a0abf5c
+
+
+def test_zd_columns_follow_desktop_g_zd():
+    assert len(rg.ZD_HEADERS) == 19 and len(rg.ZD_RESULT_HEADERS) == 22
+    assert rg.ZD_HEADERS[3].startswith("Узел присоединения") and rg.ZD_HEADERS[18] == "Код источника тепла"
+    assert rg.EXCEL_SHEETS["zd"][1] is rg._rows_dampers
+    assert "FROM dampers d" in rg._ZD_ROWS_SQL and "zd_out" in rg._ZD_RESULTS_SQL
+
+
+def test_ut_workbook_has_results_sheet_and_says_when_no_calculation(monkeypatch):
+    conn = FakeConn(total=2, rows=[{"id": 1, "x": "a"}, {"id": 2, "x": "b"}])
+    monkeypatch.setattr(rg, "acquire_conn", _acquire(conn))
+    report = asyncio.run(rg.build_excel_report("ut", fragment_ids=[74]))
+    wb = openpyxl.load_workbook(io.BytesIO(report.content), read_only=True)
+    assert wb.sheetnames == ["Участки теплопроводов", "Гидравлика", "Примечание"]
+    head = next(wb["Гидравлика"].iter_rows(values_only=True))
+    assert list(head) == rg.UT_RESULT_HEADERS
+    assert any("расчёт не выполнен" in n for n in report.notes)

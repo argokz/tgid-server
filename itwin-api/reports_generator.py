@@ -10,7 +10,7 @@ import asyncio
 import io
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import openpyxl
 from openpyxl.cell import WriteOnlyCell
@@ -27,6 +27,7 @@ from database.network_bypasses import get_network_bypasses
 from database.pressure_tests import get_pressure_tests
 from database.pump_equipment import get_installed_pumps
 from database.repairs import get_repairs
+from database import ut_out_columns as UT
 from database.shurfs import get_shurfs
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "report_templates")
@@ -217,6 +218,9 @@ class SheetData:
     headers: List[str]
     rows: List[List[Any]]
     total: int
+    # Дополнительные листы книги (как в шаблонах десктопа: «Вх.Участки» + «Гидравлика»)
+    extra_sheets: List[Tuple[str, "SheetData"]] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -272,34 +276,233 @@ async def _paged_items(fetch: Callable, conn, scope: ReportScope, *, by_fragment
 
 _PIPELINES_WHERE = f"WHERE {LIVE_LINE_SQL} AND {LINE_IN_FRAGMENTS_SQL}"
 
+# --- Ведомости по шаблонам десктопа (QA F15) --------------------------------------------
+# Состав и порядок колонок — как в gid6 excel2: G_UT (sql2/Участки.sql + OUT_Участки.sql) и
+# G_ZD (sql2/Задвижки.sql + OUT_Задвижки1.sql). Отбор по фрагменту и лимит — правила веба
+# (участок по linesobj.fileid, a0abf5c). Результаты расчёта — последний расчёт фрагмента участка
+# (как getOutID десктопа); если расчётов нет, листы результатов содержат только шапку.
+
+_SIGN1 = ("CASE {e} WHEN 1 THEN ' ' WHEN 2 THEN 'П' WHEN 3 THEN 'О' "
+          "WHEN 4 THEN 'П' WHEN 5 THEN 'О' END")
+_SIGN2 = ("CASE {e} WHEN 1 THEN ' ' WHEN 2 THEN 'П' WHEN 3 THEN 'О' "
+          "WHEN 4 THEN 'О' WHEN 5 THEN 'П' END")
+
+# Последний расчёт каждого фрагмента ($1 — фрагменты или NULL)
+_LAST_CALC_CTE = """
+    WITH calc AS (
+        SELECT fileid, MAX(id) AS cid FROM calculation
+         WHERE ($1::int[] IS NULL OR fileid = ANY($1::int[]))
+         GROUP BY fileid
+    )"""
+
+UT_HEADERS = [
+    "Код записи", "Состояние участка: подающего", "Состояние участка: обратного",
+    "Начальный узел: код расчётной схемы", "Начальный узел: наименование", "Начальный узел: признак трубопровода",
+    "Конечный узел: код расчётной схемы", "Конечный узел: наименование", "Конечный узел: признак трубопровода",
+    "Тип трубы", "Количество труб", "Длина участка, м", "Внутр. диаметр, мм",
+    "Эквивал. шероховатость, мм", "Сумма коэффициентов местных сопротивлений", "Доля местных потерь",
+    "Код группы Kv: подающий", "Код группы Kv: обратный", "Гидравлич. сопротивление участка, м·ч²/т²",
+    "Тип прокладки", "Толщина стенки, мм", "Коэффициент тепловых испытаний", "Код источника тепла",
+    "Балансовая принадлежность",
+]
+
+UT_RESULT_HEADERS = [
+    "Код записи", "Состояние участка",
+    "Начальный узел: код расчётной схемы", "Начальный узел: наименование", "Начальный узел: признак трубопровода",
+    "Конечный узел: код расчётной схемы", "Конечный узел: наименование", "Конечный узел: признак трубопровода",
+    "Длина участка, м", "Внутр. диаметр, мм", "Скорость потока, м/с", "Время прохождения потока, мин",
+    "Полное гидравлическое сопротивление, м·ч²/т²", "Расход воды, т/ч",
+    "Потери напора: удельные, мм/м", "Потери напора: местные, м", "Потери напора: линейные, м",
+    "Потери напора: общие, м", "Конечный узел: располагаемый напор, м", "Конечный узел: пьезометрический напор, м",
+    "Конечный узел: геодезическая отметка, м", "Конечный узел: полный напор, м", "Код источника тепла",
+    "Расчёт",
+]
+# Колонки ut_out в порядке листа «Гидравлика» G_UT (удельные, местные, линейные, общие)
+UT_RESULT_COLUMNS = [
+    UT.UT_LENGTH_M, UT.UT_DIAMETER_MM, UT.UT_VELOCITY_MS, UT.UT_TRAVEL_MIN, UT.UT_RESISTANCE,
+    UT.UT_FLOW_TH, UT.UT_SPEC_LOSS_MM_M, UT.UT_LOSS_LOCAL_M, UT.UT_LOSS_LINEAR_M, UT.UT_LOSS_TOTAL_M,
+    UT.UT_AVAIL_HEAD_END_M, UT.UT_PIEZO_HEAD_END_M, UT.UT_GROUND_END_M, UT.UT_FULL_HEAD_END_M,
+]
+
+_UT_ROWS_SQL = f"""
+    SELECT lo.id,
+           CASE WHEN hps.pipesectstateidflow = 1 THEN '' ELSE 'закр' END AS key_ut_p,
+           CASE WHEN hps.pipesectstateidret = 1 THEN '' ELSE 'закр' END AS key_ut_o,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="lo.externalsignlineid")} AS pr1,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="lo.externalsignlineid")} AS pr2,
+           s.name AS standard, hps.tubescount, hps.pipesectlength, hps.diameterinternal,
+           hps.tuberoughness, hps.localressum, hps.locallosesshare,
+           vcf.kodkv AS kodkvp, vcr.kodkv AS kodkvo, lo.hydrores,
+           tt.name AS name_typ, hps.wallthickness, hps.heattestscoeff,
+           hs.sourcename, org.name AS org_name
+      FROM linesobj lo
+      LEFT JOIN LATERAL (
+          SELECT * FROM heatpipesections WHERE lineid = lo.id ORDER BY id LIMIT 1
+      ) hps ON true
+      LEFT JOIN nodes n1 ON n1.id = lo.nodeid1
+      LEFT JOIN nodes n2 ON n2.id = lo.nodeid2
+      LEFT JOIN externalcodes ec1 ON ec1.id = n1.externalcodeid
+      LEFT JOIN externalcodes ec2 ON ec2.id = n2.externalcodeid
+      LEFT JOIN standards s ON s.id = hps.standardid
+      LEFT JOIN varcoefficients vcf ON vcf.id = hps.varcoeffidflow
+      LEFT JOIN varcoefficients vcr ON vcr.id = hps.varcoeffidret
+      LEFT JOIN tubingtypes tt ON tt.id = hps.tubingtypeid
+      LEFT JOIN heatsources hs ON hs.id = ec1.heatsourceid
+      LEFT JOIN organizations org ON org.id = lo.organizationid
+    {_PIPELINES_WHERE}
+     ORDER BY lo.id
+     LIMIT $2
+"""
+
+_UT_RESULTS_JOIN = """
+      FROM ut_out u
+      JOIN calc ON calc.cid = u.calculationid
+      JOIN linesobj lo ON lo.id = u.lineid AND lo.fileid = calc.fileid"""
+
+_UT_RESULTS_SQL = _LAST_CALC_CTE + f"""
+    SELECT lo.id,
+           CASE WHEN (u.externalsignlineid IN (1, 2, 4) AND hps.pipesectstateidflow = 2)
+                  OR (u.externalsignlineid IN (1, 3, 5) AND hps.pipesectstateidret = 2)
+                THEN 'закр' ELSE '' END AS sost,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="u.externalsignlineid")} AS pr1,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="u.externalsignlineid")} AS pr2,
+           {", ".join(f"u.{c}" for c in UT_RESULT_COLUMNS)},
+           hs.sourcename, u.calculationid
+    {_UT_RESULTS_JOIN}
+      LEFT JOIN LATERAL (
+          SELECT pipesectstateidflow, pipesectstateidret FROM heatpipesections
+           WHERE lineid = lo.id ORDER BY id LIMIT 1
+      ) hps ON true
+      LEFT JOIN nodes n1 ON n1.id = lo.nodeid1
+      LEFT JOIN nodes n2 ON n2.id = lo.nodeid2
+      LEFT JOIN externalcodes ec1 ON ec1.id = n1.externalcodeid
+      LEFT JOIN externalcodes ec2 ON ec2.id = n2.externalcodeid
+      LEFT JOIN heatsources hs ON hs.id = ec1.heatsourceid
+    {_PIPELINES_WHERE}
+     ORDER BY lo.id, u.externalsignlineid
+     LIMIT $2
+"""
+
+
+def _values(rows) -> List[List[Any]]:
+    return [list(r.values()) for r in rows]
+
+
+async def _result_sheet(conn, scope: ReportScope, title: str, headers: List[str],
+                        count_sql: str, rows_sql: str) -> Tuple[str, SheetData]:
+    total = int(await conn.fetchval(count_sql, scope.fragment_ids) or 0)
+    rows = await conn.fetch(rows_sql, scope.fragment_ids, scope.limit) if total else []
+    return title, SheetData(headers, _values(rows), total)
+
+
+def _result_notes(data: SheetData) -> List[str]:
+    notes = []
+    for title, sheet in data.extra_sheets:
+        if not sheet.total:
+            notes.append(f"Лист «{title}»: результатов расчёта нет (для фрагментов участков "
+                         "расчёт не выполнен) — лист содержит только шапку.")
+        elif sheet.total > len(sheet.rows):
+            notes.append(f"Лист «{title}» неполный: выгружено {len(sheet.rows)} строк из {sheet.total}.")
+    return notes
+
 
 async def _rows_pipelines(conn, scope: ReportScope) -> SheetData:
-    headers = ["ID участка", "Узел 1", "Узел 2", "Длина, м", "Ø внутр., мм",
-               "Ø условный, мм", "Ø наружн., мм", "Толщина стенки, мм"]
+    """G_UT: «Вх.Участки» (одна строка на участок) + «Гидравлика» (ut_out, подача/обратка)."""
     total = await conn.fetchval(f"SELECT count(*) FROM linesobj lo {_PIPELINES_WHERE}", scope.fragment_ids)
-    # Одна строка на участок: паспорт трубы — первая запись heatpipesections (как в GeoJSON)
-    rows = await conn.fetch(
-        f"""
-        SELECT lo.id, lo.nodeid1, lo.nodeid2,
-               hps.pipesectlength, hps.diameterinternal, hps.diametercondit,
-               hps.diameterexternal, hps.wallthickness
-          FROM linesobj lo
-          LEFT JOIN LATERAL (
-              SELECT pipesectlength, diameterinternal, diametercondit, diameterexternal, wallthickness
-                FROM heatpipesections WHERE lineid = lo.id ORDER BY id LIMIT 1
-          ) hps ON true
-        {_PIPELINES_WHERE}
-         ORDER BY lo.id
-         LIMIT $2
-        """,
-        scope.fragment_ids,
-        scope.limit,
+    rows = await conn.fetch(_UT_ROWS_SQL, scope.fragment_ids, scope.limit)
+    data = SheetData(list(UT_HEADERS), _values(rows), int(total or 0))
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Гидравлика", list(UT_RESULT_HEADERS),
+        _LAST_CALC_CTE + f"\n    SELECT count(*) {_UT_RESULTS_JOIN}\n    {_PIPELINES_WHERE}", _UT_RESULTS_SQL,
+    ))
+    data.notes.extend(_result_notes(data))
+    return data
+
+
+ZD_HEADERS = [
+    "Код записи", "Состояние задвижки", "Место установки",
+    "Узел присоединения: код расчётной схемы", "Узел присоединения: наименование",
+    "Узел присоединения: признак трубопровода",
+    "Узел на входе: код расчётной схемы", "Узел на входе: наименование", "Узел на входе: признак трубопровода",
+    "Узел на выходе: код расчётной схемы", "Узел на выходе: наименование", "Узел на выходе: признак трубопровода",
+    "Диаметр условный, мм", "Относительная протечка, % от Kv", "Частичное открытие, % от Kv",
+    "Гидравлич. сопротивление, м·ч²/т²", "Тип задвижки", "Содержательное наименование задвижки",
+    "Код источника тепла",
+]
+
+ZD_RESULT_HEADERS = [
+    "Узел присоединения: код расчётной схемы", "Узел присоединения: наименование",
+    "Узел присоединения: признак трубопровода", "Содержательное наименование узла",
+    "Узел на входе: код расчётной схемы", "Узел на входе: наименование", "Узел на входе: признак трубопровода",
+    "Узел на выходе: код расчётной схемы", "Узел на выходе: наименование", "Узел на выходе: признак трубопровода",
+    "Содержательное наименование (номер) задвижки", "Место установки", "Состояние",
+    "Степень открытия от Kv, %", "Расход через задвижку, т/ч", "Потеря напора на задвижке, м",
+    "Полное гидравл. сопротивление, м·ч²/т²", "Конечный узел: располагаемый напор, м",
+    "Конечный узел: пьезометрический напор, м", "Конечный узел: геодезическая отметка, м",
+    "Конечный узел: полный напор, м", "Расчёт",
+]
+
+_ZD_WHERE = f"WHERE {LIVE_LINE_SQL} AND {LINE_IN_FRAGMENTS_SQL}"
+_ZD_NODES_JOIN = """
+      LEFT JOIN nodes n1 ON n1.id = lo.nodeid1
+      LEFT JOIN nodes n2 ON n2.id = lo.nodeid2
+      LEFT JOIN externalcodes ec1 ON ec1.id = n1.externalcodeid
+      LEFT JOIN externalcodes ec2 ON ec2.id = n2.externalcodeid
+      LEFT JOIN nodes ni ON ni.id = n1.internalnodeid
+      LEFT JOIN externalcodes eci ON eci.id = ni.externalcodeid
+      LEFT JOIN externalsigns esi ON esi.id = ni.externalsignid
+      LEFT JOIN damperarmaturestates das ON das.id = d.damperarmaturestateid"""
+
+_ZD_ROWS_SQL = f"""
+    SELECT lo.id, das.name AS sost, d.dispatcherswitch AS name_zd,
+           eci.name AS kod_p, ni.externalnodename AS uzel_p, esi.name AS pr_p,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="lo.externalsignlineid")} AS pr1,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="lo.externalsignlineid")} AS pr2,
+           d.diametercondit, d.relatleakage, d.partdempopen, lo.hydrores,
+           sd.name_zc AS standard_mark, d.name AS damper_name, hs.sourcename
+      FROM dampers d
+      JOIN linesobj lo ON lo.id = d.lineid
+      {_ZD_NODES_JOIN}
+      LEFT JOIN standarddampers sd ON sd.id = NULLIF(d.standarddamplink, 0)
+      LEFT JOIN heatsources hs ON hs.id = ec1.heatsourceid
+    {_ZD_WHERE}
+     ORDER BY lo.id, d.id
+     LIMIT $2
+"""
+
+_ZD_RESULTS_JOIN = """
+      FROM zd_out z
+      JOIN calc ON calc.cid = z.calculationid
+      JOIN linesobj lo ON lo.id = z.lineid AND lo.fileid = calc.fileid
+      JOIN dampers d ON d.lineid = lo.id"""
+
+_ZD_RESULTS_SQL = _LAST_CALC_CTE + f"""
+    SELECT eci.name AS kod_p, ni.externalnodename AS uzel_p, esi.name AS pr_p, '' AS name_soder,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="z.externalsignlineid")} AS pr1,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="z.externalsignlineid")} AS pr2,
+           z.a8 AS name_soder_zd, d.dispatcherswitch AS name_zd, das.name AS sost, d.partdempopen,
+           z.a9, z.a10, z.a11, z.a12, z.a13, z.a14, z.a15, z.calculationid
+    {_ZD_RESULTS_JOIN}
+      {_ZD_NODES_JOIN}
+    {_ZD_WHERE}
+     ORDER BY lo.id, z.externalsignlineid
+     LIMIT $2
+"""
+
+
+async def _rows_dampers(conn, scope: ReportScope) -> SheetData:
+    """G_ZD: «Вх.Задвижки» (dampers) + «Все» (zd_out последнего расчёта)."""
+    total = await conn.fetchval(
+        f"SELECT count(*) FROM dampers d JOIN linesobj lo ON lo.id = d.lineid {_ZD_WHERE}", scope.fragment_ids
     )
-    return SheetData(headers, [
-        [r["id"], r["nodeid1"], r["nodeid2"], r["pipesectlength"], r["diameterinternal"],
-         r["diametercondit"], r["diameterexternal"], r["wallthickness"]]
-        for r in rows
-    ], int(total or 0))
+    rows = await conn.fetch(_ZD_ROWS_SQL, scope.fragment_ids, scope.limit)
+    data = SheetData(list(ZD_HEADERS), _values(rows), int(total or 0))
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Все", list(ZD_RESULT_HEADERS),
+        _LAST_CALC_CTE + f"\n    SELECT count(*) {_ZD_RESULTS_JOIN}\n    {_ZD_WHERE}", _ZD_RESULTS_SQL,
+    ))
+    data.notes.extend(_result_notes(data))
+    return data
 
 
 async def _rows_armatures(conn, scope: ReportScope) -> SheetData:
@@ -504,8 +707,9 @@ async def _rows_heat_loss_sources(conn, scope: ReportScope) -> SheetData:
 EXCEL_SHEETS: Dict[str, tuple[str, Callable]] = {
     "ut": ("Участки теплопроводов", _rows_pipelines),
     "pipelines": ("Участки теплопроводов", _rows_pipelines),
-    "zd": ("Задвижки и арматура", _rows_armatures),
-    "valves": ("Задвижки и арматура", _rows_armatures),
+    "zd": ("Задвижки", _rows_dampers),
+    "valves": ("Задвижки", _rows_dampers),
+    "armatures": ("Задвижки и арматура (реестр)", _rows_armatures),
     "bp": ("Байпасы", _rows_bypasses),
     "bypasses": ("Байпасы", _rows_bypasses),
     "ns": ("Насосные агрегаты", _rows_pumps),
@@ -531,7 +735,9 @@ def excel_report_types() -> List[Dict[str, str]]:
 
 # Ведомости, где есть отбор по фрагменту (через участок или узел). ТУ, баланс ТУ и сезоны
 # теплопотерь к фрагментам сети не привязаны — выгружаются целиком, с пометкой в «Примечании».
-FRAGMENT_AWARE_LOADERS = {_rows_pipelines, _rows_armatures, _rows_bypasses, _rows_pumps, _rows_consumers}
+FRAGMENT_AWARE_LOADERS = {
+    _rows_pipelines, _rows_dampers, _rows_armatures, _rows_bypasses, _rows_pumps, _rows_consumers,
+}
 
 
 def _report_notes(
@@ -561,15 +767,10 @@ def _report_notes(
     return notes
 
 
-def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> bytes:
-    # write_only: ведомость всей сети (сотни тысяч строк) пишется потоком, без модели ячеек в памяти
-    wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet(sheet_title[:31])
-    headers, rows = data.headers, data.rows
-
+def _write_sheet(ws, headers: List[str], rows: List[List[Any]]) -> None:
     # Ширина колонок по содержимому первых строк + фиксация шапки и автофильтр
     for idx, header in enumerate(headers, start=1):
-        width = len(str(header))
+        width = min(len(str(header)), 40)
         for row in rows[:200]:
             value = row[idx - 1] if idx - 1 < len(row) else None
             if value is not None:
@@ -592,6 +793,14 @@ def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> byt
     ws.append(header_cells)
     for row in rows:
         ws.append(row)
+
+
+def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> bytes:
+    # write_only: ведомость всей сети (сотни тысяч строк) пишется потоком, без модели ячеек в памяти
+    wb = openpyxl.Workbook(write_only=True)
+    _write_sheet(wb.create_sheet(sheet_title[:31]), data.headers, data.rows)
+    for title, extra in data.extra_sheets:
+        _write_sheet(wb.create_sheet(title[:31]), extra.headers, extra.rows)
 
     if notes:
         note_ws = wb.create_sheet("Примечание")
@@ -627,7 +836,7 @@ async def build_excel_report(
     async with acquire_conn() as conn:
         data = await loader(conn, scope)
 
-    notes = _report_notes(sheet_title, data, scope, frags)
+    notes = _report_notes(sheet_title, data, scope, frags) + data.notes
     content = await asyncio.to_thread(_render_workbook, sheet_title, data, notes)
     return ExcelReport(
         content=content,
