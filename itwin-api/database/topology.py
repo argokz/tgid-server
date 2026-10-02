@@ -418,7 +418,7 @@ async def move_node(
         affected = await conn.fetch(
             """
             UPDATE heatpipesections h
-            SET pipesectlength = ST_Length(l.shape)
+            SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
             FROM linesobj l
             WHERE h.lineid = l.id
               AND (l.nodeid1 = $1 OR l.nodeid2 = $1)
@@ -643,7 +643,8 @@ async def _create_line_passport(conn, line_id: int, nodeid1: int, nodeid2: int) 
         """,
         line_id, nodeid1, nodeid2, NEW_NODE_REFERENCE_RADIUS_M,
     )
-    length_sql = "ST_Length((SELECT shape FROM linesobj WHERE id = $1))"
+    # длина паспорта — до сантиметров, как в desktop (QA F55)
+    length_sql = "round(ST_Length((SELECT shape FROM linesobj WHERE id = $1))::numeric, 2)"
     if template is None:
         await conn.execute(
             f"INSERT INTO heatpipesections (lineid, pipesectlength) VALUES ($1, {length_sql})", line_id,
@@ -987,7 +988,7 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to
             'id', nextval('heatpipesections_id_seq'),
             -- явный ::int: в jsonb_build_object аргумент имеет тип "any"
             'lineid', $2::int,
-            'pipesectlength', ST_Length((SELECT shape FROM linesobj WHERE id = $2))
+            'pipesectlength', round(ST_Length((SELECT shape FROM linesobj WHERE id = $2))::numeric, 2)
           )
         )).*
         FROM heatpipesections hps
@@ -998,7 +999,7 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to
     await conn.execute(
         """
         UPDATE heatpipesections
-        SET pipesectlength = ST_Length((SELECT shape FROM linesobj WHERE id = $1))
+        SET pipesectlength = round(ST_Length((SELECT shape FROM linesobj WHERE id = $1))::numeric, 2)
         WHERE lineid = $1
         """,
         line_id,
@@ -1341,7 +1342,7 @@ async def merge_nodes(
             await conn.execute(
                 """
                 UPDATE heatpipesections h
-                SET pipesectlength = ST_Length(l.shape)
+                SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
                 FROM linesobj l
                 WHERE h.lineid = l.id AND l.id = ANY($1::int[]) AND l.shape IS NOT NULL
                 """,
@@ -1426,7 +1427,7 @@ async def update_line_geometry(
                 archivechangedate = $3
             FROM nodes n1, nodes n2
             WHERE l.id = $1 AND n1.id = l.nodeid1 AND n2.id = l.nodeid2
-            RETURNING ST_Length(l.shape) as new_len
+            RETURNING round(ST_Length(l.shape)::numeric, 2)::float8 as new_len
             """,
             line_id, geojson_geom, datetime.now(),
         )

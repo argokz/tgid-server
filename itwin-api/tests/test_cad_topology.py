@@ -405,7 +405,7 @@ def _geometry_conn(distance):
         _lock_rule({10: (0, TS, "1")}),
         ("SELECT id, nodeid1, nodeid2 FROM linesobj", {"id": 10, "nodeid1": 1, "nodeid2": 2}),
         ("WITH g AS", {"d_start_node": distance, "d_end_node": 0.1, "d_start_old": distance, "d_end_old": 0.1}),
-        ("RETURNING ST_Length", 142.50),
+        ("RETURNING round(ST_Length", 142.50),
     ])
 
 

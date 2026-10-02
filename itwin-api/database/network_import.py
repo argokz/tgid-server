@@ -818,7 +818,7 @@ async def _import_coords(conn, op, items: list[_Item], params: dict, report: dic
         if recalc:
             recalculated = len(await conn.fetch(
                 """
-                UPDATE heatpipesections h SET pipesectlength = ST_Length(l.shape)
+                UPDATE heatpipesections h SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
                 FROM linesobj l
                 WHERE h.lineid = l.id AND (l.nodeid1 = $1 OR l.nodeid2 = $1)
                   AND l.shape IS NOT NULL AND COALESCE(l.removed, 0) = 0
