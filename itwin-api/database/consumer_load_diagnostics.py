@@ -53,6 +53,8 @@ CONSUMER_DIAGNOSTICS_CTE = """
                     WHERE output.nodeid=consumer.node_id AND output.calculationid=latest.id
                ) END AS has_calculation_output,
                (consumer.heating_load=0) AS zero_heating_load,
+               -- gid6 OnPotNagr0 (zap.cpp): потребитель «без нагрузки», если Qot + Qgvs + Qvent = 0
+               (consumer.heating_load + consumer.ventilation_load + consumer.hot_water_load = 0) AS zero_load,
                (consumer.state_id=2) AS closed,
                (consumer.heating_load + consumer.ventilation_load
                 + consumer.conditioning_load + consumer.hot_water_load
@@ -89,7 +91,7 @@ def _build_filters(
     clauses: list[str] = []
     values: list[Any] = []
     if diagnostic == "zero_load":
-        clauses.append("consumer.zero_heating_load")
+        clauses.append("consumer.zero_load")
     elif diagnostic == "closed":
         clauses.append("consumer.closed")
     elif diagnostic == "disconnected":
@@ -133,7 +135,7 @@ async def get_consumer_load_lookups(conn: asyncpg.Connection) -> dict[str, Any]:
                count(*)::int AS total,
                count(*) FILTER (WHERE consumer_type='generalized')::int AS generalized,
                count(*) FILTER (WHERE consumer_type='real')::int AS real,
-               count(*) FILTER (WHERE zero_heating_load)::int AS zero_load,
+               count(*) FILTER (WHERE zero_load)::int AS zero_load,
                count(*) FILTER (WHERE closed)::int AS closed,
                count(*) FILTER (
                    WHERE calculation_available AND NOT has_calculation_output
@@ -154,7 +156,7 @@ async def get_consumer_load_lookups(conn: asyncpg.Connection) -> dict[str, Any]:
         SELECT count(*)::int AS total,
                count(*) FILTER (WHERE consumer_type='generalized')::int AS generalized,
                count(*) FILTER (WHERE consumer_type='real')::int AS real,
-               count(*) FILTER (WHERE zero_heating_load)::int AS zero_load,
+               count(*) FILTER (WHERE zero_load)::int AS zero_load,
                count(*) FILTER (WHERE closed)::int AS closed,
                count(*) FILTER (
                    WHERE calculation_available AND NOT has_calculation_output
@@ -201,6 +203,29 @@ async def get_consumer_load_diagnostics(
         state_id=state_id,
         search=search,
     )
+    # счётчики видов — по тем же фильтрам (фрагмент, тип, состояние, поиск), без самого вида
+    scope_sql, scope_values = _build_filters(
+        diagnostic=None,
+        consumer_type=consumer_type,
+        fragment_id=fragment_id,
+        state_id=state_id,
+        search=search,
+    )
+    counts = await conn.fetchrow(
+        CONSUMER_DIAGNOSTICS_CTE
+        + """
+        SELECT count(*)::int AS total,
+               count(*) FILTER (WHERE consumer.zero_load)::int AS zero_load,
+               count(*) FILTER (WHERE consumer.closed)::int AS closed,
+               count(*) FILTER (
+                   WHERE consumer.calculation_available AND NOT consumer.has_calculation_output
+               )::int AS disconnected,
+               count(*) FILTER (WHERE NOT consumer.calculation_available)::int AS not_calculated
+          FROM consumer_diagnostics consumer
+        """
+        + scope_sql,
+        *scope_values,
+    )
     total = await conn.fetchval(
         CONSUMER_DIAGNOSTICS_CTE
         + " SELECT count(*) FROM consumer_diagnostics consumer"
@@ -212,7 +237,7 @@ async def get_consumer_load_diagnostics(
         + " SELECT * FROM consumer_diagnostics consumer"
         + where_sql
         + f"""
-          ORDER BY consumer.zero_heating_load DESC, consumer.closed DESC,
+          ORDER BY consumer.zero_load DESC, consumer.closed DESC,
                    consumer.fragment_name NULLS LAST, consumer.name NULLS LAST,
                    consumer.consumer_type, consumer.id
           LIMIT ${len(values) + 1} OFFSET ${len(values) + 2}
@@ -227,6 +252,7 @@ async def get_consumer_load_diagnostics(
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
+        "counts": dict(counts) if counts else {},
     }
 
 
@@ -273,7 +299,7 @@ async def get_consumer_load_diagnostic(
         + """
         SELECT consumer_type, id, name, state_id, state_name,
                heating_load, ventilation_load, hot_water_load, total_load,
-               zero_heating_load, closed
+               zero_heating_load, zero_load, closed
           FROM consumer_diagnostics consumer
          WHERE consumer.node_id=$1
            AND NOT (consumer.consumer_type=$2 AND consumer.id=$3)
