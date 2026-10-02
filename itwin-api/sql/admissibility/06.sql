@@ -47,7 +47,7 @@ LEFT JOIN pumpStations hs ON hs.nodeID = n.id
 LEFT JOIN threeWayValves c3 ON c3.nodeID = n.id
 LEFT JOIN connectNodes us2 ON us2.nodeID = n.id
 LEFT JOIN (
-    SELECT c.fileID, MAX(c.id) AS cid FROM CALCULATION c LEFT JOIN fragments fr ON fr.id = c.fileID GROUP BY c.fileID
+    SELECT c.fileID, MAX(c.id) FILTER (WHERE $2::int IS NULL OR c.id = $2::int) AS cid FROM CALCULATION c LEFT JOIN fragments fr ON fr.id = c.fileID GROUP BY c.fileID
 ) calc ON calc.fileID = n.fileID
 
 LEFT JOIN US_OUT usP ON usP.nodeID = n.id AND usP.externalSign = 1 AND usP.calculationID = calc.cid

@@ -27,7 +27,7 @@ LEFT JOIN connectNodes us2 ON us2.nodeID = n.id
 LEFT JOIN (
     SELECT 
         c.fileID,
-        MAX(c.id) AS cid
+        MAX(c.id) FILTER (WHERE $2::int IS NULL OR c.id = $2::int) AS cid
     FROM CALCULATION c
     LEFT JOIN fragments fr ON fr.id = c.fileID
     GROUP BY c.fileID

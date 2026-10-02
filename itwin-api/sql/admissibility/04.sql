@@ -54,7 +54,7 @@ from
 	left join (
 		select
 			c.fileID,
-			MAX(c.id) as cid
+			MAX(c.id) FILTER (WHERE $2::int IS NULL OR c.id = $2::int) as cid
 		from
 			CALCULATION c
 		left join fragments fr on

@@ -17,7 +17,7 @@ WITH base AS (
   JOIN nodes n2 ON n2.id = l.nodeid2 AND n2.removed = 0
 
   LEFT JOIN (
-      SELECT c.fileID, MAX(c.id) AS cid
+      SELECT c.fileID, MAX(c.id) FILTER (WHERE $2::int IS NULL OR c.id = $2::int) AS cid
       FROM CALCULATION c
       LEFT JOIN fragments fr ON fr.id = c.fileID
       GROUP BY c.fileID

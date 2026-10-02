@@ -374,15 +374,22 @@ def admissibility_catalog() -> list[dict[str, Any]]:
     return [{"id": k, "title": v[0], "object": v[1]} for k, v in ADMISSIBILITY.items()]
 
 
-async def admissibility(conn, query_id: int, fragment_id: int) -> dict[str, Any]:
-    """Анализ режима (контроль допустимости) — запросы gid6 sql/admissibility (PostgreSQL)."""
+async def admissibility(conn, query_id: int, fragment_id: int,
+                        calculation_id: Optional[int] = None) -> dict[str, Any]:
+    """Анализ режима (контроль допустимости) — запросы gid6 sql/admissibility (PostgreSQL).
+
+    Результаты берутся из calculation_id (если указан и принадлежит фрагменту), иначе из
+    последнего расчёта фрагмента ($2 = NULL в SQL — MAX(id) по фрагменту)."""
     if query_id not in ADMISSIBILITY:
         raise ValueError(f"Нет запроса анализа режима №{query_id}")
+    calc = await resolve_calculation(conn, fragment_id, calculation_id)
+    if calculation_id and calc is None:
+        raise LookupError(f"Расчёт {calculation_id} не найден для фрагмента {fragment_id}")
     title, obj, mode_column = ADMISSIBILITY[query_id]
     sql = (ADMISSIBILITY_DIR / f"{query_id:02d}.sql").read_text(encoding="utf-8")
     stmt = await conn.prepare(sql)
     columns = [a.name for a in stmt.get_attributes()]
-    rows = await stmt.fetch(fragment_id)
+    rows = await stmt.fetch(fragment_id, calculation_id)
     id_col = next((c for c in columns if c.lower() in ("id", "node_id", "id узла")), None)
     items = []
     for r in rows:
@@ -400,6 +407,8 @@ async def admissibility(conn, query_id: int, fragment_id: int) -> dict[str, Any]
         "title": title,
         "object": obj,
         "fragment_id": fragment_id,
+        "calculation_id": calc["id"] if calc else None,
+        "calculation_date": calc["date1"].isoformat() if calc and calc["date1"] else None,
         "columns": columns,
         "mode_column": mode_column if mode_column in columns else None,
         "summary": summary,

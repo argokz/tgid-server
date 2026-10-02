@@ -35,6 +35,17 @@ def test_admissibility_sql_files_are_postgresql_and_parameterized():
         assert "OUTER APPLY" not in sql.upper() and "ISNULL(" not in sql.upper(), qid
 
 
+def test_admissibility_takes_selected_calculation():
+    # QA F39: $2 — выбранный расчёт (NULL — последний по фрагменту), одна точка выбора cid
+    for qid in R.ADMISSIBILITY:
+        sql = (R.ADMISSIBILITY_DIR / f"{qid:02d}.sql").read_text(encoding="utf-8")
+        assert sql.count("MAX(c.id) FILTER (WHERE $2::int IS NULL OR c.id = $2::int)") == 1, qid
+    import main
+
+    params = main.app.openapi()["paths"]["/api/analysis/admissibility/{query_id}"]["get"]["parameters"]
+    assert "calculation_id" in {p["name"] for p in params}
+
+
 def test_admissibility_lower_head_limit_is_consistent():
     sql = (R.ADMISSIBILITY_DIR / "01.sql").read_text(encoding="utf-8")
     assert "0.524" not in sql  # одна формула нижней границы: 0.535·t − 49.2

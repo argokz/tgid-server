@@ -180,11 +180,18 @@ async def admissibility_catalog():
 
 
 @router.get("/api/analysis/admissibility/{query_id}")
-async def admissibility_query(query_id: int, fragment_id: int = Query(..., ge=1)):
+async def admissibility_query(
+    query_id: int,
+    fragment_id: int = Query(..., ge=1),
+    calculation_id: Optional[int] = Query(None, ge=1, description="Расчёт фрагмента; по умолчанию последний"),
+):
     if query_id not in regime_queries.ADMISSIBILITY:
         raise HTTPException(status_code=404, detail=f"Нет запроса анализа режима №{query_id}")
     async with acquire_conn() as conn:
-        return await regime_queries.admissibility(conn, query_id, fragment_id)
+        try:
+            return await regime_queries.admissibility(conn, query_id, fragment_id, calculation_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/api/analysis/valve-isolation")
