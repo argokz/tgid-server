@@ -150,8 +150,10 @@ async def travel_time(conn: asyncpg.Connection, path: list[int],
     labels = {
         r["id"]: r["label"]
         for r in await conn.fetch(
-            """SELECT n.id, COALESCE(NULLIF(ec.name, ''), NULLIF(n.externalnodename, ''), n.id::text) AS label
-                 FROM nodes n LEFT JOIN externalcodes ec ON ec.id = n.externalcodeid
+            # Имя узла, как в пьезометре; externalcodes.name — тип узла («М2»), он одинаков
+            # у соседних узлов и давал подписи «М2 → М2» (QA F29)
+            """SELECT n.id, COALESCE(NULLIF(n.nodename, ''), NULLIF(n.externalnodename, ''), n.id::text) AS label
+                 FROM nodes n
                 WHERE n.id = ANY($1::int[])""",
             path,
         )
