@@ -6,6 +6,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("JWT_SECRET", "test-secret")
@@ -53,6 +54,8 @@ class FakeConn:
             return {"load_count": 0, "mkr": None, "street": None, "house": None,
                     "otop": None, "gvs": None, "vent": None, "par": None}
         if "FROM nodes nd" in sql:
+            if args[0] == 52:  # узел без карточки потребителя (QA F47)
+                return {"node_id": 52, "node_type_id": 13, "code": "ТК", "node_name": "node_7", "consumer_id": None}
             return {"node_id": 50, "node_type_id": 13, "code": "РС1", "node_name": "node_5",
                     "consumer_id": 3} if args[0] == 50 else None
         if "sum(otop * (otop_cxema = 1)::int)" in sql:
@@ -135,6 +138,16 @@ def test_bind_consumer_replaces_previous_buildings():
         _run(ab.bind_consumer_buildings(conn, 51, [7], dry_run=True))
     except ab.AlsekoError as exc:
         assert exc.status == 404
+
+
+def test_bind_consumer_rejects_non_consumer_node():
+    # gid6: привязка зданий (alsecoNagr) — только из карточки generalizedConsumers (QA F47)
+    conn = FakeConn()
+    with pytest.raises(ab.AlsekoError) as err:
+        _run(ab.bind_consumer_buildings(conn, 52, [7], dry_run=True))
+    assert err.value.status == 422 and err.value.detail["code"] == "not_consumer"
+    assert "не является потребителем" in err.value.detail["message"]
+    assert not conn.updates
 
 
 def test_routes_require_editor_and_mutations(monkeypatch):

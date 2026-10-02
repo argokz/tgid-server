@@ -433,6 +433,14 @@ async def bind_consumer_buildings(
     if len(ids) > MAX_CONSUMER_BUILDINGS:
         raise AlsekoError(422, "too_many", f"Не больше {MAX_CONSUMER_BUILDINGS} зданий за раз")
     consumer = await consumer_label(conn, node_id)
+    if consumer.get("consumer_id") is None:
+        # gid6: кнопка «Нагрузки АЛСЕКО» (alsecoNagr) есть только в карточке generalizedConsumers (QA F47)
+        raise AlsekoError(
+            422, "not_consumer",
+            f"Узел {node_id} ({consumer['label']}) не является потребителем: у него нет карточки "
+            "обобщённого потребителя. Здания АЛСЕКО привязываются только к узлу-потребителю.",
+            node_type_id=consumer.get("node_type_id"),
+        )
     label = consumer["label"]
     lock = "" if dry_run else " FOR UPDATE"
     found = await conn.fetch(f"SELECT id, potrebitel FROM zdaniya_2 WHERE id = ANY($1::int[]){lock}", ids)
