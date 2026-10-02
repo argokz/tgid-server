@@ -15,6 +15,7 @@ from app_logging import get_logger
 from database import excel_reports
 from database.connect import acquire_conn
 from database.export_shp import export_network_to_shp
+from database.network_export import export_headers
 from database.passport_diagnostics import get_passport_site_diagnostics
 from database.passport_excel import XLSX_MEDIA_TYPE, PassportError, build_passport_xlsx
 from database.word_db import get_defect_info
@@ -172,12 +173,16 @@ async def export_shp_endpoint(
     limit: int = Query(50000, ge=1, le=200000),
 ):
     frags = parse_fragment_ids(fragment_id, fragments)
-    zip_data = await export_network_to_shp(frags, limit=limit)
+    stats: dict = {}
+    zip_data = await export_network_to_shp(frags, limit=limit, stats=stats)
     suffix = f"_f{frags[0]}" if frags and len(frags) == 1 else ("_frag" if frags else "")
+    # обрезка по limit (узлы или участки) — заголовок X-Export-Truncated, предупреждение в web (QA F84)
+    headers = export_headers(max(stats.get("lines", 0), stats.get("nodes", 0)), limit,
+                             bool(stats.get("truncated")), expose=("Content-Disposition",))
     return StreamingResponse(
         io.BytesIO(zip_data),
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=network_export{suffix}.zip"},
+        headers={"Content-Disposition": f"attachment; filename=network_export{suffix}.zip", **headers},
     )
 
 

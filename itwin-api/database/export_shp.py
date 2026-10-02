@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from database.connect import acquire_conn
 from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL
+from database.network_export import split_limited
 
 
 # Участки фрагмента — по linesobj.fileid (единое правило database.fragment_filter, QA F13)
@@ -50,12 +51,17 @@ async def export_network_to_shp(
     fragment_ids: Optional[Sequence[int]] = None,
     *,
     limit: int = 50000,
+    stats: Optional[dict] = None,
 ) -> bytes:
+    """ZIP с nodes.shp и lines.shp. stats (если передан) получает lines/nodes/truncated:
+    запрос limit + 1 строки показывает, что выгрузка обрезана (QA F84)."""
     try:
         frags = sorted({int(f) for f in fragment_ids}) if fragment_ids else None
         async with acquire_conn() as conn:
-            res_lines = await conn.fetch(_LINES_SQL, frags, limit)
-            res_nodes = await conn.fetch(_NODES_SQL, frags, limit)
+            res_lines, lines_cut = split_limited(await conn.fetch(_LINES_SQL, frags, limit + 1), limit)
+            res_nodes, nodes_cut = split_limited(await conn.fetch(_NODES_SQL, frags, limit + 1), limit)
+        if stats is not None:
+            stats.update(lines=len(res_lines), nodes=len(res_nodes), truncated=lines_cut or nodes_cut)
 
         features_nodes = []
         for r in res_nodes:

@@ -8,28 +8,26 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app_logging import get_logger
 from database.connect import acquire_conn
 from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL, parse_fragment_ids
+from database.network_export import (
+    DXF_LINES_SQL,
+    DxfUnavailable,
+    build_network_dxf,
+    export_headers,
+    export_suffix,
+    split_limited,
+)
 from word_reports.word_generator import generate_ops_act_word
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["exports-p4"])
 
-# Участки фрагмента — по linesobj.fileid, как в SHP и GeoJSON (database.fragment_filter, QA F13)
-_DXF_LINES_SQL = f"""
-    SELECT lo.id,
-           ST_AsText(ST_Transform(lo.shape, 4326)) AS wkt
-      FROM linesobj lo
-     WHERE {LIVE_LINE_SQL}
-       AND {LINE_IN_FRAGMENTS_SQL}
-       AND lo.shape IS NOT NULL
-     ORDER BY lo.id
-     LIMIT $2
-"""
+_DXF_LINES_SQL = DXF_LINES_SQL  # прежнее имя (тесты правила фрагмента)
 
 
 @router.get("/api/export/dxf")
@@ -38,41 +36,22 @@ async def export_network_dxf(
     fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
     limit: int = Query(50000, ge=1, le=200000),
 ):
-    """Export active lines as DXF (lightweight 2D polyline dump)."""
+    """Export active lines as DXF (lightweight 2D polyline dump).
+
+    Синхронный путь; web идёт через фоновую задачу file-job «network_dxf» с прогрессом (QA F77).
+    Обрезка по limit — в заголовке X-Export-Truncated (QA F84)."""
+    frags = parse_fragment_ids(fragment_id, fragments)
     try:
-        import ezdxf
-    except ImportError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="ezdxf is not installed on the API host",
-        ) from exc
-
-    async with acquire_conn() as conn:
-        rows = await conn.fetch(_DXF_LINES_SQL, parse_fragment_ids(fragment_id, fragments), limit)
-
-    doc = ezdxf.new("R2010")
-    msp = doc.modelspace()
-    for row in rows:
-        wkt = row["wkt"] or ""
-        # LINESTRING(x y, x y, ...)
-        if not wkt.upper().startswith("LINESTRING"):
-            continue
-        inner = wkt[wkt.find("(") + 1 : wkt.rfind(")")]
-        pts = []
-        for part in inner.split(","):
-            nums = part.strip().split()
-            if len(nums) >= 2:
-                pts.append((float(nums[0]), float(nums[1])))
-        if len(pts) >= 2:
-            msp.add_lwpolyline(pts, dxfattribs={"layer": "HEATNET"})
-
-    buf = io.StringIO()
-    doc.write(buf)
-    data = buf.getvalue().encode("utf-8")
+        async with acquire_conn() as conn:
+            data, headers = await build_network_dxf(conn, frags, limit)
+    except DxfUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    headers = export_headers(int(headers["X-Export-Rows"]), limit, headers["X-Export-Truncated"] == "1",
+                             expose=("Content-Disposition",))
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/dxf",
-        headers={"Content-Disposition": 'attachment; filename="network.dxf"'},
+        headers={"Content-Disposition": f'attachment; filename="network{export_suffix(frags)}.dxf"', **headers},
     )
 
 
@@ -186,8 +165,9 @@ def _num(value) -> Optional[float]:
 
 
 async def _fetch_lines(fragment_ids: Optional[list[int]], limit: int):
+    """Не больше limit участков и признак обрезки (запрос limit + 1, QA F84)."""
     async with acquire_conn() as conn:
-        return await conn.fetch(_LINES_WITH_PASSPORT_SQL, fragment_ids, limit)
+        return split_limited(await conn.fetch(_LINES_WITH_PASSPORT_SQL, fragment_ids, limit + 1), limit)
 
 
 @router.get("/api/export/geojson")
@@ -197,7 +177,7 @@ async def export_network_geojson(
     limit: int = Query(10000, ge=1, le=50000),
 ):
     """Экспорт участков сети в стандартный GeoJSON (WGS84) для QGIS: геометрия и паспорт трубы."""
-    rows = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
+    rows, truncated = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
     features = []
     for r in rows:
         if not r["geometry"]:
@@ -216,7 +196,10 @@ async def export_network_geojson(
                 "roughness": _num(r["roughness"]),
             },
         })
-    return {"type": "FeatureCollection", "crs": _CRS84, "features": features}
+    return JSONResponse(
+        {"type": "FeatureCollection", "crs": _CRS84, "features": features},
+        headers=export_headers(len(rows), limit, truncated),
+    )
 
 
 @router.get("/api/export/geojson-attrs")
@@ -237,7 +220,7 @@ async def export_network_geojson_attrs(
     K_E — эквивалентная шероховатость. Нет паспорта трубы — поле null (раньше подставлялись
     выдуманные 10 м / 200 мм). Старый адрес /api/export/zulugis оставлен как алиас.
     """
-    rows = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
+    rows, truncated = await _fetch_lines(parse_fragment_ids(fragment_id, fragments), limit)
     features = []
     for r in rows:
         if not r["geometry"]:
@@ -259,4 +242,7 @@ async def export_network_geojson_attrs(
                 "Kst": 1.0,
             },
         })
-    return {"type": "FeatureCollection", "crs": _CRS84, "features": features}
+    return JSONResponse(
+        {"type": "FeatureCollection", "crs": _CRS84, "features": features},
+        headers=export_headers(len(rows), limit, truncated),
+    )

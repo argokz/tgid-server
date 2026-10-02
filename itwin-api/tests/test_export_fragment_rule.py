@@ -64,7 +64,8 @@ def test_shp_export_passes_fragments_to_line_and_node_queries(monkeypatch):
     conn = FakeConn()
     monkeypatch.setattr(export_shp, "acquire_conn", _acquire(conn))
     asyncio.run(export_shp.export_network_to_shp([74, 74], limit=123))
-    assert [c[1] for c in conn.calls] == [([74], 123), ([74], 123)]
+    # limit + 1: лишняя строка — признак обрезки (QA F84)
+    assert [c[1] for c in conn.calls] == [([74], 124), ([74], 124)]
     nodes_sql = conn.calls[1][0]
     # узлы — свои и концы участков фрагмента (часть узлов фрагмента 74 числится во фрагменте 99)
     assert "lo.fileid = ANY($1::int[])" in nodes_sql and "lo.nodeid1" in nodes_sql

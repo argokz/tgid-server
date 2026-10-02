@@ -73,6 +73,11 @@ class ElectricalReconciliationParams(BaseModel):
     tolerance: float = Field(8.0, gt=0, le=1000)
 
 
+class NetworkDxfParams(BaseModel):
+    fragments: Optional[list[Annotated[int, Field(ge=1)]]] = Field(None, max_length=500)
+    limit: int = Field(50000, ge=1, le=200000)
+
+
 # --- построители -----------------------------------------------------------------------
 
 async def _passport(p: PassportParams) -> FileResult:
@@ -151,12 +156,28 @@ async def _electrical_reconciliation(p: ElectricalReconciliationParams) -> FileR
     return FileResult(content, f"electrical_reconciliation_{date.today().isoformat()}.xlsx")
 
 
+async def _network_dxf(p: NetworkDxfParams) -> FileResult:
+    """DXF участков фрагмента(ов) — фоном: по фрагменту строится десятки секунд (QA F77)."""
+    from database.connect import acquire_conn
+    from database.network_export import DxfUnavailable, build_network_dxf, export_suffix
+
+    frags = sorted(set(p.fragments)) if p.fragments else None
+    try:
+        async with acquire_conn() as conn:
+            data, headers = await build_network_dxf(conn, frags, p.limit)
+    except DxfUnavailable as e:
+        raise FileJobError(503, str(e)) from e
+    headers.pop("Access-Control-Expose-Headers", None)
+    return FileResult(data, f"network{export_suffix(frags)}.dxf", media_type="application/dxf", headers=headers)
+
+
 PARAM_MODELS: dict[str, type[BaseModel]] = {
     "passport": PassportParams,
     "report_excel": ReportExcelParams,
     "catalog_report": CatalogReportParams,
     "alseko_reconciliation": AlsekoReconciliationParams,
     "electrical_reconciliation": ElectricalReconciliationParams,
+    "network_dxf": NetworkDxfParams,
 }
 
 BUILDERS: dict[str, Callable[[Any], Awaitable[FileResult]]] = {
@@ -165,6 +186,7 @@ BUILDERS: dict[str, Callable[[Any], Awaitable[FileResult]]] = {
     "catalog_report": _catalog_report,
     "alseko_reconciliation": _alseko_reconciliation,
     "electrical_reconciliation": _electrical_reconciliation,
+    "network_dxf": _network_dxf,
 }
 
 KINDS = tuple(PARAM_MODELS)
