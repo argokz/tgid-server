@@ -122,6 +122,37 @@ def _redact(text):
     return text.replace(password, "***")
 
 
+_CYR_LETTERS = frozenset("абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
+
+
+def _cyr_score(text: str) -> int:
+    return sum(1 for ch in text if ch in _CYR_LETTERS)
+
+
+def _decode_process_text(raw) -> str:
+    """Вывод ww.py/sety: UTF-8, кодировка локали (cp1251) или OEM-консоли (cp866) — по строкам.
+
+    В одном потоке встречаются строки Python-обвязки (кодировка локали) и нативного sety
+    (OEM, cp866); раньше всё читалось как cp1251 — в протоколе были «кракозябры» (QA F30).
+    Для каждой строки: UTF-8, если декодируется строго; иначе из cp1251/cp866 та, что даёт
+    больше кириллических букв (cp866, прочитанный как cp1251, — это в основном знаки «Ђ‚“…»).
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    out = []
+    for line in raw.splitlines(keepends=True):
+        try:
+            out.append(line.decode("utf-8"))
+            continue
+        except UnicodeDecodeError:
+            pass
+        candidates = [line.decode(enc, errors="replace") for enc in ("cp1251", "cp866")]
+        out.append(max(candidates, key=_cyr_score))
+    return "".join(out).replace("\r\n", "\n")
+
+
 def _sety_text_encoding() -> str:
     """Кодировка, в которой sety пишет out_file и SQL-файл.
 
@@ -214,8 +245,8 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
     out_file_path = cmd[cmd.index("-out_file") + 1]
     log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"ww_output_{request_id}_{label}.log")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        output = _redact(result.stdout)
+        result = subprocess.run(cmd, capture_output=True, check=True)
+        output = _redact(_decode_process_text(result.stdout))
         with open(log_file_path, "w", encoding="utf-8") as log_file:
             log_file.write(output or "")
         try:
@@ -229,9 +260,9 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
             output = f"{output or ''}\n{po_message}\n"
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        error_message = _redact(e.stderr) if e.stderr else "Неизвестная ошибка"
+        error_message = _redact(_decode_process_text(e.stderr)).strip() or "Неизвестная ошибка"
         logger.error(f"Ошибка запуска ww.py: {error_message}")
-        return {"status": "error", "output": _redact(e.stdout), "error": error_message}
+        return {"status": "error", "output": _redact(_decode_process_text(e.stdout)), "error": error_message}
     finally:
         try:
             if os.path.exists(out_file_path):

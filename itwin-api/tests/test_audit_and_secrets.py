@@ -148,7 +148,7 @@ def test_save_po_error_rolls_back_and_goes_to_protocol(tmp_path, monkeypatch):
     out_file, sql_file = _write_po_files(tmp_path, PO_SQL)
 
     def fake_run(cmd, **kw):
-        return subprocess.CompletedProcess(cmd, 0, stdout="Расчет закончен\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Расчет закончен\n".encode("cp1251"), stderr=b"")
 
     monkeypatch.setattr(worker.subprocess, "run", fake_run)
     run = worker._run_one(["ww.py", "-out_file", str(out_file)], "t", "1")
@@ -187,3 +187,23 @@ def test_connect_logs_users_config_without_password():
     if password:
         assert password not in str(connect.USERS_DB_URL)
     assert connect.users_engine.echo is False
+
+
+def test_sety_output_decoding_cp866_cp1251_utf8():
+    """QA F30: stderr sety (cp866) и вывод обвязки (cp1251/UTF-8) — без «кракозябр»."""
+    raw = ("Ошибка sety\r\n".encode("cp866") + "Расчёт окончен\n".encode("cp1251")
+           + "Узел №5 — UTF-8\n".encode("utf-8"))
+    assert worker._decode_process_text(raw) == "Ошибка sety\nРасчёт окончен\nУзел №5 — UTF-8\n"
+    assert worker._decode_process_text(None) == ""
+    assert worker._decode_process_text("уже текст") == "уже текст"
+
+
+def test_run_one_error_decodes_stderr(tmp_path, monkeypatch):
+    out_file = tmp_path / "out.txt"
+
+    def fake_run(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd, output=b"", stderr="Не найден фрагмент\r\n".encode("cp866"))
+
+    monkeypatch.setattr(worker.subprocess, "run", fake_run)
+    run = worker._run_one(["ww.py", "-out_file", str(out_file)], "t", "2")
+    assert run["status"] == "error" and run["error"] == "Не найден фрагмент"
