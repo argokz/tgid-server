@@ -23,8 +23,8 @@ DIAPHRAGM_CTE = """
     WITH diaphragm_inventory AS (
         SELECT diaphragm.id, diaphragm.lineid AS line_id,
                line.id AS linked_line_id,
-               coalesce(nullif(btrim(diaphragm.throtdiaphloc), ''),
-                        'Диафрагма №' || diaphragm.id) AS display_name,
+               -- заголовок карточки — номер; место установки (назначение) — отдельное поле (QA F51)
+               'Диафрагма №' || diaphragm.id AS display_name,
                diaphragm.throtdiaphloc AS installation_place,
                diaphragm.diameterinternal AS internal_diameter,
                diaphragm.consinstdiaphcount AS installed_count,

@@ -18,8 +18,8 @@ ELEVATOR_CTE = """
     WITH elevator_inventory AS (
         SELECT elevator.id, elevator.lineid AS line_id,
                line.id AS linked_line_id,
-               coalesce(nullif(btrim(elevator.elevatortype::text), ''),
-                        'Элеватор №' || elevator.id) AS display_name,
+               -- заголовок карточки — номер записи; тип элеватора («0» = не задан) — отдельное поле (QA F51)
+               'Элеватор №' || elevator.id AS display_name,
                elevator.elevatortype AS elevator_type,
                elevator.elevatornuminst AS elevator_num_inst,
                elevator.diameternozzle AS diameter_nozzle,
