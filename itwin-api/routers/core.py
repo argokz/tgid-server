@@ -2,17 +2,20 @@
 
 import json
 import time
+from typing import Optional
 
 from asyncpg.exceptions import UndefinedColumnError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app_logging import get_logger
+from database.connect import acquire_conn
 from database.db import (
     create_select_line,
     create_select_node,
     get_all_fragments,
     get_lookup_data,
 )
+from database.fragment_filter import parse_fragment_ids
 from database.sql_ident import UnknownIdentifierError
 from utils.russian_names import russian_names_manager
 
@@ -161,6 +164,33 @@ async def get_fragments():
     except Exception as e:
         logger.error(f"Ошибка при получении фрагментов: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка при получении фрагментов")
+
+
+# Охват фрагментов (WGS84) по действующим узлам — выбор фрагмента центрирует карту (QA F25)
+FRAGMENTS_EXTENT_SQL = """
+    SELECT ST_XMin(e) AS min_lng, ST_YMin(e) AS min_lat, ST_XMax(e) AS max_lng, ST_YMax(e) AS max_lat
+      FROM (SELECT ST_Extent(ST_Transform(n.shape, 4326)) AS e
+              FROM nodes n
+             WHERE n.fileid = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL) s
+"""
+
+
+@router.get("/api/fragments/extent")
+@router.get("/api/v1/fragments/extent")
+async def get_fragments_extent(
+    fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
+):
+    """Охват фрагментов [min_lng, min_lat, max_lng, max_lat]; bbox = null — у фрагментов нет узлов."""
+    ids = parse_fragment_ids(fragment_id, fragments)
+    if not ids:
+        raise HTTPException(status_code=422, detail="Укажите fragment_id или fragments")
+    async with acquire_conn() as conn:
+        row = await conn.fetchrow(FRAGMENTS_EXTENT_SQL, ids)
+    bbox = None
+    if row and row["min_lng"] is not None:
+        bbox = [row["min_lng"], row["min_lat"], row["max_lng"], row["max_lat"]]
+    return {"fragments": ids, "bbox": bbox}
 
 
 @router.get("/russian-names")
