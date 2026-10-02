@@ -211,8 +211,9 @@ async def query_closed_consumers(
     *,
     fragment_ids: Optional[Sequence[int]] = None,
 ) -> dict[str, Any]:
-    """Zap6: закрытые (физически отключённые) потребители — gid8 gidrSlot.cpp onZap6:
-    обобщённые и отдельные потребители с consumerstateid = 2, узел не удалён."""
+    """Zap6: закрытые (физически отключённые) потребители — gid6 zap.cpp OnZap6 (node.isOtkl):
+    обобщённые и отдельные потребители, у которых состояние не «включён» (gid6 mysql.cpp:
+    isOtkl = consumerStateID != 1; NULL читается как 0, т. е. тоже закрыт), узел не удалён."""
     extra, args = _frag_clause("n", fragment_ids)
     rows = await conn.fetch(
         f"""
@@ -221,9 +222,9 @@ async def query_closed_consumers(
           FROM nodes n
           JOIN externalcodes ec ON ec.id = n.externalcodeid
           JOIN (
-            SELECT gc.nodeid, gc.name, 'generalized' AS kind FROM generalizedconsumers gc WHERE gc.consumerstateid = 2
+            SELECT gc.nodeid, gc.name, 'generalized' AS kind FROM generalizedconsumers gc WHERE COALESCE(gc.consumerstateid, 0) <> 1
             UNION
-            SELECT rc.nodeid, rc.name, 'real' AS kind FROM realconsumers rc WHERE rc.consumerstateid = 2
+            SELECT rc.nodeid, rc.name, 'real' AS kind FROM realconsumers rc WHERE COALESCE(rc.consumerstateid, 0) <> 1
           ) pt ON pt.nodeid = n.id
          WHERE COALESCE(n.removed, 0) = 0
            {extra}
