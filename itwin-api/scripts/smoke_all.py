@@ -54,6 +54,8 @@ QUERY_DEFAULTS = {
 EXTRA_QUERY = {
     "/api/topology/line-ref": "line_id={line_id}",
     "/api/v1/topology/line-ref": "line_id={line_id}",
+    "/api/fragments/extent": "fragment_id={fragment_id}",
+    "/api/v1/fragments/extent": "fragment_id={fragment_id}",
 }
 
 # 503 «зависимость не установлена» — маршрут исправен, на хосте нет опционального пакета
