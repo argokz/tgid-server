@@ -254,3 +254,61 @@ def test_ut_workbook_has_results_sheet_and_says_when_no_calculation(monkeypatch)
     head = next(wb["Гидравлика"].iter_rows(values_only=True))
     assert list(head) == rg.UT_RESULT_HEADERS
     assert any("расчёт не выполнен" in n for n in report.notes)
+
+
+# --- F15: колонки ведомостей pt / ns как в шаблонах десктопа G_PT / G_NS(A) ----------------
+
+def test_pt_columns_follow_desktop_g_pt():
+    # G_PT «Вх.Реальные» и «Вх.Обобщенные» — по 35 колонок, «Гидравлика» — 21 + номер расчёта
+    assert len(rg.PT_REAL_HEADERS) == 35 and len(rg.PT_GENERALIZED_HEADERS) == 35
+    assert len(rg.PT_RESULT_HEADERS) == 22 and rg.PT_RESULT_HEADERS[-1] == "Расчёт"
+    real, gen = rg.PT_REAL_HEADERS, rg.PT_GENERALIZED_HEADERS
+    assert real[:12] == gen[:12] and real[3].startswith("Узел присоединения")
+    assert real[12] == "Относительная нагрузка уличного фасада" and real[-1] == "Балансовая принадлежность"
+    assert real[-2] == gen[-1] == "Код источника тепла"
+    assert "схем с ГВС" in gen[15] and "схем с ГВС" in gen[16]
+    # значение сопротивления, затем его признак (как в шапке шаблона)
+    assert real[27].startswith("Сопротивление") and real[28].startswith("Признак")
+    assert rg.PT_RESULT_COLUMNS == ["a4", "a5", "a6", "a11", "a12", "a13", "a14", "a15", "a16", "a17",
+                                    "a21", "a22", "a23", "gneob"]
+    assert rg.EXCEL_SHEETS["pt"][1] is rg._rows_consumers
+    for sql in (rg._PT_REAL_SQL, rg._PT_GENERALIZED_SQL, rg._PT_RESULTS_SQL):
+        assert "n.fileid = ANY($1::int[])" in sql and "LIMIT $2" in sql  # узел во фрагменте, лимит a0abf5c
+    assert "FROM realconsumers c" in rg._PT_REAL_SQL and "FROM generalizedconsumers c" in rg._PT_GENERALIZED_SQL
+    assert "FROM pt_out o" in rg._PT_RESULTS_SQL
+
+
+def test_ns_columns_follow_desktop_g_ns():
+    assert len(rg.NS_HEADERS) == 24 and len(rg.NS_RESULT_HEADERS) == 25  # gns «Вх.Насосы», G_NSA + расчёт
+    assert rg.NS_HEADERS[1].startswith("Насосная станция") and rg.NS_HEADERS[5] == "Номер насоса"
+    assert rg.NS_HEADERS[14].endswith("R0, м вод. ст.") and rg.NS_HEADERS[-1] == "Код источника тепла"
+    assert rg.NS_RESULT_HEADERS[0].startswith("Узел присоединения НС")
+    assert rg.NS_RESULT_HEADERS[16:18] == ["Рабочий напор, м", "Расход воды, т/ч"]
+    # ns_out: рабочая зона a9..a12, режим a13..a18, тип насоса a19 (так пишет движок sety)
+    assert rg.NS_RESULT_COLUMNS == [f"a{i}" for i in range(9, 20)]
+    assert rg.EXCEL_SHEETS["ns"][1] is rg._rows_pumps
+    for sql in (rg._NS_ROWS_SQL, rg._NS_RESULTS_SQL):
+        assert LINE_IN_FRAGMENTS_SQL in sql and "LIMIT $2" in sql
+    assert "FROM pumps p" in rg._NS_ROWS_SQL and "FROM ns_out o" in rg._NS_RESULTS_SQL
+
+
+def test_pt_workbook_has_desktop_sheets_and_counts_both_consumer_kinds(monkeypatch):
+    conn = FakeConn(total=2, rows=[{"id": 1, "x": "a\x01b"}, {"id": 2, "x": "c"}])
+    monkeypatch.setattr(rg, "acquire_conn", _acquire(conn))
+    report = asyncio.run(rg.build_excel_report("pt", fragment_ids=[74]))
+    wb = openpyxl.load_workbook(io.BytesIO(report.content), read_only=True)
+    assert wb.sheetnames == ["Потребители реальные", "Потребители обобщённые", "Гидравлика", "Примечание"]
+    assert list(next(wb["Гидравлика"].iter_rows(values_only=True))) == rg.PT_RESULT_HEADERS
+    assert list(next(wb["Потребители реальные"].iter_rows(values_only=True))) == rg.PT_REAL_HEADERS
+    assert list(wb["Потребители реальные"].iter_rows(values_only=True))[1] == (1, "ab")  # \x01 вычищен
+    assert (report.rows, report.total) == (4, 4)  # реальные + обобщённые; лист расчёта не считается
+    assert any("Гидравлика" in n and "расчёт не выполнен" in n for n in report.notes)
+
+
+def test_ns_workbook_has_results_sheet(monkeypatch):
+    monkeypatch.setattr(rg, "acquire_conn", _acquire(FakeConn(total=1, rows=[{"id": 1}])))
+    report = asyncio.run(rg.build_excel_report("ns", fragment_ids=[74]))
+    wb = openpyxl.load_workbook(io.BytesIO(report.content), read_only=True)
+    assert wb.sheetnames == ["Насосные агрегаты", "Насосы (расчёт)", "Примечание"]
+    assert list(next(wb["Насосы (расчёт)"].iter_rows(values_only=True))) == rg.NS_RESULT_HEADERS
+    assert report.rows == report.total == 1

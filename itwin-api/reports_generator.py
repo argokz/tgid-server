@@ -14,18 +14,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import openpyxl
 from openpyxl.cell import WriteOnlyCell
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from database.connect import acquire_conn
 from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL
-from database.consumer_load_diagnostics import get_consumer_load_diagnostics
 from database.defects import get_defects
 from database.inspections import get_inspections
 from database.network_armatures import get_network_armatures
 from database.network_bypasses import get_network_bypasses
 from database.pressure_tests import get_pressure_tests
-from database.pump_equipment import get_installed_pumps
 from database.repairs import get_repairs
 from database import ut_out_columns as UT
 from database.shurfs import get_shurfs
@@ -221,6 +220,11 @@ class SheetData:
     # Дополнительные листы книги (как в шаблонах десктопа: «Вх.Участки» + «Гидравлика»)
     extra_sheets: List[Tuple[str, "SheetData"]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # Имя первого листа, если оно уже названия ведомости («Потребители» -> «Потребители реальные»)
+    title: Optional[str] = None
+    # Лист результатов расчёта (*_out): пустой лист — «расчёт не выполнен»; входные листы
+    # (как «Обобщённые» у потребителей) считаются в X-Report-Rows/Total вместе с первым
+    is_result: bool = False
 
 
 @dataclass
@@ -392,15 +396,15 @@ async def _result_sheet(conn, scope: ReportScope, title: str, headers: List[str]
                         count_sql: str, rows_sql: str) -> Tuple[str, SheetData]:
     total = int(await conn.fetchval(count_sql, scope.fragment_ids) or 0)
     rows = await conn.fetch(rows_sql, scope.fragment_ids, scope.limit) if total else []
-    return title, SheetData(headers, _values(rows), total)
+    return title, SheetData(headers, _values(rows), total, is_result=True)
 
 
 def _result_notes(data: SheetData) -> List[str]:
     notes = []
     for title, sheet in data.extra_sheets:
-        if not sheet.total:
-            notes.append(f"Лист «{title}»: результатов расчёта нет (для фрагментов участков "
-                         "расчёт не выполнен) — лист содержит только шапку.")
+        if not sheet.total and sheet.is_result:
+            notes.append(f"Лист «{title}»: результатов расчёта нет (расчёт не выполнен) — "
+                         "лист содержит только шапку.")
         elif sheet.total > len(sheet.rows):
             notes.append(f"Лист «{title}» неполный: выгружено {len(sheet.rows)} строк из {sheet.total}.")
     return notes
@@ -529,30 +533,276 @@ async def _rows_bypasses(conn, scope: ReportScope) -> SheetData:
     ], total)
 
 
+NS_HEADERS = [
+    "Код записи",
+    "Насосная станция: код расчётной схемы", "Насосная станция: наименование узла",
+    "Насосная станция: содержательное наименование", "Насосная станция: признак трубопровода",
+    "Номер насоса", "Состояние насоса",
+    "Узел на входе насоса: код расчётной схемы", "Узел на входе насоса: наименование",
+    "Узел на входе насоса: признак трубопровода",
+    "Узел на выходе насоса: код расчётной схемы", "Узел на выходе насоса: наименование",
+    "Узел на выходе насоса: признак трубопровода",
+    "Заданный рабочий напор, м",
+    "Коэффициент аппроксимации R0, м вод. ст.", "Коэффициент аппроксимации R1, м·ч/т",
+    "Коэффициент аппроксимации R2, м·ч²/т²",
+    "Рабочая зона: 1-я точка, напор, м", "Рабочая зона: 1-я точка, расход, т/ч",
+    "Рабочая зона: 2-я точка, напор, м", "Рабочая зона: 2-я точка, расход, т/ч",
+    "Количество насосов", "Тип насоса", "Код источника тепла",
+]
+
+NS_RESULT_HEADERS = [
+    "Узел присоединения НС: код расчётной схемы", "Узел присоединения НС: наименование",
+    "Узел присоединения НС: признак трубопровода", "Узел присоединения НС: содержательное наименование",
+    "Узел на входе насоса: код расчётной схемы", "Узел на входе насоса: наименование",
+    "Узел на входе насоса: признак трубопровода", "Узел на входе насоса: геодезическая отметка, м",
+    "Узел на выходе насоса: код расчётной схемы", "Узел на выходе насоса: наименование",
+    "Узел на выходе насоса: признак трубопровода", "Узел на выходе насоса: геодезическая отметка, м",
+    "Рабочая зона при мин. производительности: напор, м", "Рабочая зона при мин. производительности: расход, т/ч",
+    "Рабочая зона при макс. производительности: напор, м", "Рабочая зона при макс. производительности: расход, т/ч",
+    "Рабочий напор, м", "Расход воды, т/ч", "Пьезометрический напор на входе, м",
+    "Пьезометрический напор на выходе, м", "Загрузка насоса (насосного агрегата)", "Количество насосов",
+    "Тип насоса", "Код источника тепла", "Расчёт",
+]
+# Колонки ns_out листа «Насосы» G_NSA (OUT_Насосные_агрегаты.sql), после a4/a8 (отметки входа/выхода):
+# a9..a12 рабочая зона (напор/расход мин. и макс.; десктоп берёт их из standardPumps по a19 = id,
+# движок веба sety/w_out.py пишет их в ns_out сам, а в a19 — тип насоса), a13 рабочий напор,
+# a14 расход, a15/a16 пьезометр вход/выход, a17 загрузка, a18 число насосов, a19 тип насоса
+NS_RESULT_COLUMNS = ["a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19"]
+
+# Узел присоединения насосной станции — внутренний узел начала участка (как в G_NSA)
+_NS_NODES_JOIN = """
+      LEFT JOIN nodes n1 ON n1.id = lo.nodeid1
+      LEFT JOIN nodes n2 ON n2.id = lo.nodeid2
+      LEFT JOIN externalcodes ec1 ON ec1.id = n1.externalcodeid
+      LEFT JOIN externalcodes ec2 ON ec2.id = n2.externalcodeid
+      LEFT JOIN nodes ni ON ni.id = n1.internalnodeid
+      LEFT JOIN externalcodes eci ON eci.id = ni.externalcodeid
+      LEFT JOIN externalsigns esi ON esi.id = ni.externalsignid
+      LEFT JOIN LATERAL (
+          SELECT name FROM pumpstations WHERE nodeid = ni.id ORDER BY id LIMIT 1
+      ) ps ON true
+      LEFT JOIN heatsources hs ON hs.id = ec1.heatsourceid"""
+
+_NS_WHERE = f"WHERE {LIVE_LINE_SQL} AND {LINE_IN_FRAGMENTS_SQL}"
+
+_NS_ROWS_SQL = f"""
+    SELECT lo.id, eci.name AS kod_p, ni.externalnodename AS uzel_p,
+           COALESCE(ps.name, NULLIF(btrim(p.pumpstationid), '')) AS name_ns, esi.name AS pr_p,
+           p.number, st.name AS sost,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="lo.externalsignlineid")} AS pr1,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="lo.externalsignlineid")} AS pr2,
+           p.thrust, p.r0, p.r1, p.r2, sp.h_min, sp.q_min, sp.h_max, sp.q_max,
+           p.parallagregcount, sp.tip_nas, hs.sourcename
+      FROM pumps p
+      JOIN linesobj lo ON lo.id = p.lineid
+      {_NS_NODES_JOIN}
+      LEFT JOIN states st ON st.id = p.stateid
+      LEFT JOIN standardpumps sp ON sp.id = p.standardpumpid
+    {_NS_WHERE}
+     ORDER BY lo.id, p.number, p.id
+     LIMIT $2
+"""
+
+_NS_RESULTS_JOIN = """
+      FROM ns_out o
+      JOIN calc ON calc.cid = o.calculationid
+      JOIN linesobj lo ON lo.id = o.lineid AND lo.fileid = calc.fileid"""
+
+_NS_RESULTS_SQL = _LAST_CALC_CTE + f"""
+    SELECT eci.name AS kod_p, ni.externalnodename AS uzel_p, esi.name AS pr_p, ps.name AS name_ns,
+           ec1.name AS kod1, n1.externalnodename AS uzel1, {_SIGN1.format(e="o.externalsignlineid")} AS pr1, o.a4,
+           ec2.name AS kod2, n2.externalnodename AS uzel2, {_SIGN2.format(e="o.externalsignlineid")} AS pr2, o.a8,
+           {", ".join(f"o.{c}" for c in NS_RESULT_COLUMNS)},
+           hs.sourcename, o.calculationid
+    {_NS_RESULTS_JOIN}
+      {_NS_NODES_JOIN}
+    {_NS_WHERE}
+     ORDER BY lo.id, o.externalsignlineid
+     LIMIT $2
+"""
+
+
 async def _rows_pumps(conn, scope: ReportScope) -> SheetData:
-    items, total = await _paged_items(get_installed_pumps, conn, scope)
-    headers = ["ID", "Участок", "Номер", "Насосная станция", "Модель", "Тип",
-               "Кол-во агрегатов", "Тип привода", "Состояние", "Фрагмент"]
-    return SheetData(headers, [
-        [i.get("id"), i.get("line_id"), i.get("number"), i.get("station_name"),
-         i.get("model_name"), i.get("model_type"), i.get("parallel_count"),
-         i.get("drive_type_name"), i.get("state_name"), i.get("fragment_name")]
-        for i in items
-    ], total)
+    """G_NS «Вх.Насосы» (pumps, gns.xls) + «Насосы» G_NSA (ns_out последнего расчёта)."""
+    total = await conn.fetchval(
+        f"SELECT count(*) FROM pumps p JOIN linesobj lo ON lo.id = p.lineid {_NS_WHERE}", scope.fragment_ids
+    )
+    rows = await conn.fetch(_NS_ROWS_SQL, scope.fragment_ids, scope.limit)
+    data = SheetData(list(NS_HEADERS), _values(rows), int(total or 0))
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Насосы (расчёт)", list(NS_RESULT_HEADERS),
+        _LAST_CALC_CTE + f"\n    SELECT count(*) {_NS_RESULTS_JOIN}\n    {_NS_WHERE}", _NS_RESULTS_SQL,
+    ))
+    data.notes.extend(_result_notes(data))
+    return data
+
+
+# Потребители: G_PT «Вх.Реальные» (Потребители реальные.sql), «Вх.Обобщенные»
+# (Потребители обобщенные.sql), «Гидравлика» (OUT_Потребители2.sql). Узел во фрагменте — по
+# nodes.fileid (как n.fileID десктопа); источник тепла — через магистраль для objectid = 2.
+_PT_NODE_WHERE = (
+    "WHERE COALESCE(n.removed, 0) = 0 AND ($1::int[] IS NULL OR n.fileid = ANY($1::int[]))"
+)
+_PT_NODE_JOIN = """
+      LEFT JOIN externalcodes ec ON ec.id = n.externalcodeid
+      LEFT JOIN externalcodes ecm ON ecm.id = ec.belongmagistral AND ec.objectid = 2
+      LEFT JOIN heatsources hs
+             ON hs.id = CASE WHEN ec.objectid = 2 THEN ecm.heatsourceid ELSE ec.heatsourceid END"""
+_PT_SIGNS_JOIN = """
+      LEFT JOIN consumerstates cst ON cst.id = c.consumerstateid
+      LEFT JOIN specexpends se ON se.id = c.specexpendid
+      LEFT JOIN calctemperatures ct ON ct.id = c.calctemperatureid
+      LEFT JOIN varcoefficients vc ON vc.id = c.varcoeffid
+      LEFT JOIN hydromodesigns hms ON hms.id = c.hydromodesignid
+      LEFT JOIN closesyscalcsigns cscs ON cscs.id = c.closesyscalcsignid
+      LEFT JOIN setloadclosesyscalcsigns slp ON slp.id = c.calcsignsetloadopensysflow
+      LEFT JOIN setloadclosesyscalcsigns slo ON slo.id = c.calcsignsetloadopensysret"""
+
+_PT_HEAD = [
+    "Код записи", "Состояние потребителя", "Признак потребителя",
+    "Узел присоединения: код расчётной схемы", "Узел присоединения: наименование узла",
+    "Содержательное наименование потребителя или адрес", "Геодезическая отметка местности, м",
+    "Код удельных расходов тепла", "Код расчётных температур", "Наибольшая высота зданий, м",
+    "Отопление: зависимая схема, Гкал/ч", "Отопление: независимая схема, Гкал/ч",
+]
+_PT_GVS = [
+    "ГВС открытая система: из подающего трубопровода, Гкал/ч",
+    "ГВС открытая система: из обратного трубопровода, Гкал/ч",
+    "На компенсацию теплопотерь в циркуляции ГВС, %",
+    "ГВС закрытая система: параллельная схема, Гкал/ч", "ГВС закрытая система: смешанная схема, Гкал/ч",
+    "ГВС закрытая система: последовательная схема, Гкал/ч",
+    "ГВС закрытая система: предвключённая схема, Гкал/ч",
+    "Заданная утечка из подающей трубы, т/ч", "Заданная утечка из обратной трубы, т/ч",
+    "Код группы коэффициентов вариации", "Признак расчёта аварийного режима",
+    "Сопротивление закрытой системы, м·ч²/т²", "Признак сопротивления закрытой системы",
+    "Сопротивление: водоразбор из подающей трубы, м·ч²/т²", "Признак сопротивления (подающая труба)",
+    "Сопротивление: водоразбор из обратной трубы, м·ч²/т²", "Признак сопротивления (обратная труба)",
+    "Код источника тепла",
+]
+
+PT_REAL_HEADERS = _PT_HEAD + [
+    "Относительная нагрузка уличного фасада", "Внутренние тепловыделения, Гкал/ч",
+    "Вентиляция, Гкал/ч", "Кондиционирование, Гкал/ч",
+] + _PT_GVS + ["Балансовая принадлежность"]
+
+PT_GENERALIZED_HEADERS = _PT_HEAD + [
+    "Внутренние тепловыделения, Гкал/ч", "Вентиляция, Гкал/ч", "Кондиционирование, Гкал/ч",
+    "Суммарное на отопление схем с ГВС, Гкал/ч", "Суммарные внутр. тепловыделения схем с ГВС, Гкал/ч",
+] + _PT_GVS
+
+PT_RESULT_HEADERS = [
+    "Код записи", "Состояние потребителя", "Признак потребителя",
+    "Узел присоединения: код расчётной схемы", "Узел присоединения: наименование узла",
+    "Содержательное наименование потребителя",
+    "Расход сетевой воды на отопление (зав. схема), т/ч", "Расход сетевой воды на отопление (незав. схема), т/ч",
+    "Расход сетевой воды на вентиляцию и кондиционирование, т/ч",
+    "Расход на ГВС в закрытой системе, т/ч", "Расход на ГВС в открытой системе из подающего трубопровода, т/ч",
+    "Расход на ГВС в открытой системе из обратного трубопровода, т/ч", "Расход в циркуляционном трубопроводе, т/ч",
+    "Суммарный расход в закрытой системе, т/ч", "Суммарный расход в открытой системе из подающей трубы, т/ч",
+    "Суммарный расход в открытой системе из обратной трубы, т/ч",
+    "Пьезометрический напор в подающей трубе, м", "Пьезометрический напор в обратной трубе, м",
+    "Располагаемый напор, м", "Необходимый располагаемый напор, м", "Код источника тепла", "Расчёт",
+]
+# Колонки pt_out листа «Гидравлика» G_PT (OUT_Потребители2.sql)
+PT_RESULT_COLUMNS = ["a4", "a5", "a6", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a21", "a22", "a23", "gneob"]
+
+_PT_STATE = "CASE WHEN cst.name = 'открыто' THEN '' ELSE 'закр' END"
+# Признаки сопротивлений — после значения, как в шапке шаблона gpt.xls (Потребители реальные.sql
+# десктопа выводит их в обратном порядке, и колонки 28–33 сдвинуты относительно шапки)
+_PT_GVS_TAIL = """
+           c.setleakageflow, c.setleakageret, vc.kodkv, hms.name AS pr_avar,
+           c.hydroresclosesys, cscs.name AS gszpr, c.hydroreswdoflow, slp.name AS prznp,
+           c.hydroreswdoret, slo.name AS przno, hs.sourcename"""
+
+_PT_REAL_SQL = f"""
+    SELECT n.id, {_PT_STATE} AS sost, '' AS po_pr, ec.name AS kod, n.externalnodename AS uzel,
+           c.name AS name_building, n.geomarktoptube, se.specexpendid, ct.calctemperatureid, c.buildheight,
+           c.calchldep, c.calchlindep, c.relloadfacade, c.calcinternhd, c.calchlventil, c.avghlcond,
+           c.avghlgvsopenflow, c.avghlgvsopenret, c.circhlosopen,
+           c.avghlgvscloseparall, c.avghlgvsclosemix, c.avghlgvscloseconseq, c.avghlgvsclosepreon,
+           {_PT_GVS_TAIL}, org.name AS org_name
+      FROM realconsumers c
+      JOIN nodes n ON n.id = c.nodeid
+      {_PT_NODE_JOIN}
+      {_PT_SIGNS_JOIN}
+      LEFT JOIN organizations org ON org.id = n.organizationid
+    {_PT_NODE_WHERE}
+     ORDER BY n.id, c.id
+     LIMIT $2
+"""
+
+_PT_GENERALIZED_SQL = f"""
+    SELECT n.id, {_PT_STATE} AS sost, 'О' AS po_pr, ec.name AS kod, n.externalnodename AS uzel,
+           c.name AS name_building, n.geomarktoptube, se.specexpendid, ct.calctemperatureid,
+           c.maxbuildingheight, c.calchldep, c.calchlindep,
+           COALESCE(c.calcinternhddep, 0) + COALESCE(c.calcinternhdindep, 0) + COALESCE(c.internhdparall, 0)
+             + COALESCE(c.internhdmix, 0) + COALESCE(c.internhdconseq, 0) + COALESCE(c.internhdpreon, 0)
+             AS otopl_tp,
+           c.calchlventil, c.calchlcond,
+           COALESCE(c.calchlparall, 0) + COALESCE(c.calchlmix, 0) + COALESCE(c.calchlconseq, 0)
+             + COALESCE(c.calchlpreon, 0) AS q1,
+           COALESCE(c.internhdparall, 0) + COALESCE(c.internhdmix, 0) + COALESCE(c.internhdconseq, 0)
+             + COALESCE(c.internhdpreon, 0) AS q2,
+           c.avghlgvsopensysflow, c.avghlgvsopensysret, c.avghlcompopen,
+           c.calchlgvsparall, c.calchlgvsmix, c.calchlgvsconseq, c.calchlgvspreon,
+           {_PT_GVS_TAIL}
+      FROM generalizedconsumers c
+      JOIN nodes n ON n.id = c.nodeid
+      {_PT_NODE_JOIN}
+      {_PT_SIGNS_JOIN}
+    {_PT_NODE_WHERE}
+     ORDER BY n.id, c.id
+     LIMIT $2
+"""
+
+_PT_RESULTS_JOIN = """
+      FROM pt_out o
+      JOIN calc ON calc.cid = o.calculationid
+      JOIN nodes n ON n.id = o.nodeid AND n.fileid = calc.fileid"""
+
+_PT_RESULTS_SQL = _LAST_CALC_CTE + f"""
+    SELECT n.id,
+           CASE WHEN COALESCE(gc.consumerstateid, rc.consumerstateid) = 1 THEN '' ELSE 'закр' END AS sost,
+           CASE WHEN gc.consumerstateid IS NOT NULL THEN 'О' ELSE '' END AS prizn,
+           ec.name AS kod, n.externalnodename AS uzel, COALESCE(rc.name, gc.name) AS name_building,
+           {", ".join(f"o.{c}" for c in PT_RESULT_COLUMNS)},
+           hs.sourcename, o.calculationid
+    {_PT_RESULTS_JOIN}
+      LEFT JOIN LATERAL (
+          SELECT consumerstateid, name FROM generalizedconsumers WHERE nodeid = n.id ORDER BY id LIMIT 1
+      ) gc ON true
+      LEFT JOIN LATERAL (
+          SELECT consumerstateid, name FROM realconsumers WHERE nodeid = n.id ORDER BY id LIMIT 1
+      ) rc ON true
+      {_PT_NODE_JOIN}
+    {_PT_NODE_WHERE}
+     ORDER BY n.id
+     LIMIT $2
+"""
 
 
 async def _rows_consumers(conn, scope: ReportScope) -> SheetData:
-    items, total = await _paged_items(get_consumer_load_diagnostics, conn, scope)
-    headers = ["Тип", "ID", "Узел", "Наименование", "Состояние", "Отопление, Гкал/ч",
-               "Вентиляция, Гкал/ч", "ГВС, Гкал/ч", "Итого, Гкал/ч", "Фрагмент"]
-    type_names = {"generalized": "Обобщённый", "real": "Реальный"}
-    return SheetData(headers, [
-        [type_names.get(i.get("consumer_type"), i.get("consumer_type")), i.get("id"),
-         i.get("node_id"), i.get("name"), i.get("state_name"), i.get("heating_load"),
-         i.get("ventilation_load"), i.get("hot_water_load"), i.get("total_load"),
-         i.get("fragment_name")]
-        for i in items
-    ], total)
+    """G_PT: «Потребители реальные» + «Потребители обобщённые» + «Гидравлика» (pt_out)."""
+    real_total = await conn.fetchval(
+        f"SELECT count(*) FROM realconsumers c JOIN nodes n ON n.id = c.nodeid {_PT_NODE_WHERE}",
+        scope.fragment_ids,
+    )
+    real = await conn.fetch(_PT_REAL_SQL, scope.fragment_ids, scope.limit)
+    data = SheetData(list(PT_REAL_HEADERS), _values(real), int(real_total or 0), title="Потребители реальные")
+    gen_total = await conn.fetchval(
+        f"SELECT count(*) FROM generalizedconsumers c JOIN nodes n ON n.id = c.nodeid {_PT_NODE_WHERE}",
+        scope.fragment_ids,
+    )
+    gen = await conn.fetch(_PT_GENERALIZED_SQL, scope.fragment_ids, scope.limit)
+    data.extra_sheets.append(
+        ("Потребители обобщённые", SheetData(list(PT_GENERALIZED_HEADERS), _values(gen), int(gen_total or 0)))
+    )
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Гидравлика", list(PT_RESULT_HEADERS),
+        _LAST_CALC_CTE + f"\n    SELECT count(*) {_PT_RESULTS_JOIN}\n    {_PT_NODE_WHERE}", _PT_RESULTS_SQL,
+    ))
+    data.notes.extend(_result_notes(data))
+    return data
 
 
 async def _rows_technical_conditions(conn, scope: ReportScope) -> SheetData:
@@ -767,6 +1017,14 @@ def _report_notes(
     return notes
 
 
+def _cell_value(value: Any) -> Any:
+    # Управляющие символы в справочниках (в наименованиях узлов/потребителей копии Алматы
+    # встречаются –) openpyxl не пишет — книга падала бы IllegalCharacterError
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
+
+
 def _write_sheet(ws, headers: List[str], rows: List[List[Any]]) -> None:
     # Ширина колонок по содержимому первых строк + фиксация шапки и автофильтр
     for idx, header in enumerate(headers, start=1):
@@ -792,13 +1050,13 @@ def _write_sheet(ws, headers: List[str], rows: List[List[Any]]) -> None:
         header_cells.append(cell)
     ws.append(header_cells)
     for row in rows:
-        ws.append(row)
+        ws.append([_cell_value(v) for v in row])
 
 
 def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> bytes:
     # write_only: ведомость всей сети (сотни тысяч строк) пишется потоком, без модели ячеек в памяти
     wb = openpyxl.Workbook(write_only=True)
-    _write_sheet(wb.create_sheet(sheet_title[:31]), data.headers, data.rows)
+    _write_sheet(wb.create_sheet((data.title or sheet_title)[:31]), data.headers, data.rows)
     for title, extra in data.extra_sheets:
         _write_sheet(wb.create_sheet(title[:31]), extra.headers, extra.rows)
 
@@ -838,10 +1096,14 @@ async def build_excel_report(
 
     notes = _report_notes(sheet_title, data, scope, frags) + data.notes
     content = await asyncio.to_thread(_render_workbook, sheet_title, data, notes)
+    # Входные листы (у потребителей — реальные + обобщённые) считаются вместе; листы расчёта — нет
+    inputs = [data] + [extra for _, extra in data.extra_sheets if not extra.is_result]
+    rows = sum(len(sheet.rows) for sheet in inputs)
+    total = sum(max(sheet.total, len(sheet.rows)) for sheet in inputs)
     return ExcelReport(
         content=content,
-        rows=len(data.rows),
-        total=max(data.total, len(data.rows)),
+        rows=rows,
+        total=max(total, rows),
         fragment_ids=frags,
         fragment_filter_applied=fragment_applied,
         notes=notes,
