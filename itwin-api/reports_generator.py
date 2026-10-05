@@ -9,8 +9,11 @@
 import asyncio
 import io
 import os
+import re
+import zipfile
+from decimal import Decimal
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import openpyxl
 from openpyxl.cell import WriteOnlyCell
@@ -1019,13 +1022,82 @@ def _report_notes(
 
 def _cell_value(value: Any) -> Any:
     # Управляющие символы в справочниках (в наименованиях узлов/потребителей копии Алматы
-    # встречаются –) openpyxl не пишет — книга падала бы IllegalCharacterError
+    # встречаются \x01–\x1f) openpyxl не пишет — книга падала бы IllegalCharacterError
     if isinstance(value, str):
         return ILLEGAL_CHARACTERS_RE.sub("", value)
     return value
 
 
-def _write_sheet(ws, headers: List[str], rows: List[List[Any]]) -> None:
+# Быстрая запись строк данных. openpyxl тратит десятки мкс на ячейку (объект ячейки + элемент lxml):
+# ведомость pt всей сети (52 тыс. строк × 35 колонок) писалась 40–80 с. Строки данных листа
+# сериализуются здесь в тот же XML, что пишет openpyxl write_only (inlineStr, t="n" с "%.16g",
+# t="b", xml:space="preserve"); шапка, ширины, закрепление, автофильтр и стили — по-прежнему openpyxl.
+# Листы с иными типами значений (даты и т. п. — им нужен числовой формат) целиком пишет openpyxl.
+_FAST_VALUE_TYPES = frozenset({str, int, float, Decimal, bool, type(None)})
+_EXCEL_MAX_STR = 32767  # openpyxl Cell.check_string обрезает строку до этой длины
+# Символы, требующие обработки: недопустимые в XML управляющие (как ILLEGAL_CHARACTERS_RE) и экранируемые
+_XML_SPECIAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f&<>\r]")
+_ILLEGAL_TABLE = dict.fromkeys([*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20)])
+_ESCAPE_TABLE = {ord("&"): "&amp;", ord("<"): "&lt;", ord(">"): "&gt;", ord("\r"): "&#13;"}
+
+
+def _xml_str_cell(ref: str, value: str) -> str:
+    special = _XML_SPECIAL_RE.search(value) is not None
+    if special:
+        value = value.translate(_ILLEGAL_TABLE)
+    if len(value) > _EXCEL_MAX_STR:
+        value = value[:_EXCEL_MAX_STR]
+    if not value:
+        return f'<c r="{ref}" t="inlineStr"></c>'
+    space = ' xml:space="preserve"' if value != value.strip() else ""
+    if special:
+        value = value.translate(_ESCAPE_TABLE)
+    return f'<c r="{ref}" t="inlineStr"><is><t{space}>{value}</t></is></c>'
+
+
+def _xml_num(value: Any) -> str:
+    # openpyxl.compat.safe_string: NaN/±inf → пусто, иначе "%.16g"
+    return "" if value != value or value in (float("inf"), float("-inf")) else "%.16g" % value
+
+
+def _xml_rows(rows: List[List[Any]], width: int, first_row: int = 2) -> Iterator[str]:
+    """Элементы <row> листа (адреса и типы ячеек — как у openpyxl write_only)."""
+    letters = [get_column_letter(i) for i in range(1, width + 1)]
+    for row_idx, row in enumerate(rows, first_row):
+        num = str(row_idx)
+        cells = [f'<row r="{num}">']
+        for letter, value in zip(letters, row):
+            if value is None:
+                continue
+            kind = type(value)
+            if kind is str:
+                cells.append(_xml_str_cell(letter + num, value))
+            elif kind is float or kind is int:
+                # value - value != 0 отсекает ±inf (у NaN сравнение тоже ложно — его ловит value != value)
+                if kind is float and (value != value or value - value != 0):
+                    cells.append(f'<c r="{letter}{num}" t="n"><v></v></c>')
+                else:
+                    cells.append(f'<c r="{letter}{num}" t="n"><v>{"%.16g" % value}</v></c>')
+            elif kind is bool:
+                cells.append(f'<c r="{letter}{num}" t="b"><v>{int(value)}</v></c>')
+            else:  # Decimal
+                cells.append(f'<c r="{letter}{num}" t="n"><v>{_xml_num(value)}</v></c>')
+        cells.append("</row>")
+        yield "".join(cells)
+
+
+def _fast_width(rows: List[List[Any]]) -> Optional[int]:
+    """Число колонок, если все значения листа пишутся быстрым путём; иначе None (лист пишет openpyxl)."""
+    kinds = set()
+    width = 0
+    for row in rows:
+        kinds.update(map(type, row))
+        if len(row) > width:
+            width = len(row)
+    return width if kinds <= _FAST_VALUE_TYPES else None
+
+
+def _write_sheet(ws, headers: List[str], rows: List[List[Any]], *, with_data: bool = True) -> None:
     # Ширина колонок по содержимому первых строк + фиксация шапки и автофильтр
     for idx, header in enumerate(headers, start=1):
         width = min(len(str(header)), 40)
@@ -1049,16 +1121,73 @@ def _write_sheet(ws, headers: List[str], rows: List[List[Any]]) -> None:
         cell.alignment = header_alignment
         header_cells.append(cell)
     ws.append(header_cells)
-    for row in rows:
-        ws.append([_cell_value(v) for v in row])
+    if with_data:
+        for row in rows:
+            ws.append([_cell_value(v) for v in row])
+
+
+_NS_MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_NS_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_NS_PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def _sheet_paths(src: zipfile.ZipFile) -> Dict[str, str]:
+    """Название листа → путь его XML в архиве (номер sheetN.xml openpyxl назначает только при save)."""
+    from xml.etree import ElementTree as ET
+    rels = ET.fromstring(src.read("xl/_rels/workbook.xml.rels"))
+    targets = {r.get("Id"): r.get("Target") for r in rels.iter(f"{_NS_PKG_REL}Relationship")}
+    book = ET.fromstring(src.read("xl/workbook.xml"))
+    paths = {}
+    for sheet in book.iter(f"{_NS_MAIN}sheet"):
+        target = targets[sheet.get(f"{_NS_REL}id")]
+        paths[sheet.get("name")] = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+    return paths
+
+
+def _inject_rows(content: bytes, fast_by_title: Dict[str, Tuple[List[List[Any]], int]]) -> bytes:
+    """Дописывает строки данных в XML листов, где openpyxl записал только шапку."""
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(content)) as src, \
+            zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as dst:
+        paths = _sheet_paths(src)
+        fast_sheets = {paths[title]: rows for title, rows in fast_by_title.items()}
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename not in fast_sheets:
+                dst.writestr(info, data)
+                continue
+            rows, width = fast_sheets[info.filename]
+            head, sep, tail = data.rpartition(b"</sheetData>")
+            if not sep:
+                raise RuntimeError(f"{info.filename}: нет </sheetData>")
+            zinfo = zipfile.ZipInfo(info.filename, info.date_time)
+            zinfo.compress_type = zipfile.ZIP_DEFLATED  # ZipInfo() by default is STORED
+            with dst.open(zinfo, "w") as out:
+                out.write(head)
+                chunk: List[str] = []
+                for xml_row in _xml_rows(rows, width):
+                    chunk.append(xml_row)
+                    if len(chunk) >= 2000:
+                        out.write("".join(chunk).encode("utf-8"))
+                        chunk.clear()
+                if chunk:
+                    out.write("".join(chunk).encode("utf-8"))
+                out.write(sep + tail)
+    return output.getvalue()
 
 
 def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> bytes:
     # write_only: ведомость всей сети (сотни тысяч строк) пишется потоком, без модели ячеек в памяти
     wb = openpyxl.Workbook(write_only=True)
-    _write_sheet(wb.create_sheet((data.title or sheet_title)[:31]), data.headers, data.rows)
-    for title, extra in data.extra_sheets:
-        _write_sheet(wb.create_sheet(title[:31]), extra.headers, extra.rows)
+    fast_sheets: Dict[str, Tuple[List[List[Any]], int]] = {}
+    sheets = [((data.title or sheet_title)[:31], data)]
+    sheets += [(title[:31], extra) for title, extra in data.extra_sheets]
+    for title, sheet in sheets:
+        ws = wb.create_sheet(title)
+        width = _fast_width(sheet.rows) if sheet.rows else None
+        _write_sheet(ws, sheet.headers, sheet.rows, with_data=width is None)
+        if width is not None:
+            fast_sheets[ws.title] = (sheet.rows, width)
 
     if notes:
         note_ws = wb.create_sheet("Примечание")
@@ -1068,7 +1197,7 @@ def _render_workbook(sheet_title: str, data: SheetData, notes: List[str]) -> byt
 
     output = io.BytesIO()
     wb.save(output)
-    return output.getvalue()
+    return _inject_rows(output.getvalue(), fast_sheets) if fast_sheets else output.getvalue()
 
 
 async def build_excel_report(
