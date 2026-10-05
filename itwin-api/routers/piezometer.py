@@ -14,13 +14,12 @@
   узлы (list_pjezo_min), путь между ними строится заново.
 """
 
-import io
 import time
 from typing import Annotated, Optional
 
 import networkx as nx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
@@ -456,8 +455,8 @@ async def api_download_piezometer_excel(body: PiezometerExcelRequest):
                 second_calculation_id=body.calculation_id_2,
             )
 
-            return StreamingResponse(
-                io.BytesIO(excel_bytes),
+            return Response(
+                excel_bytes,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": "attachment; filename=piezometer_profile.xlsx"}
             )

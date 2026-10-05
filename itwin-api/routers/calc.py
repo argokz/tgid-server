@@ -1,6 +1,5 @@
 """Запуск расчёта sety через Celery, статус задач и результаты расчётов."""
 
-import io
 import time
 import uuid
 from typing import Annotated, Literal, Optional
@@ -9,7 +8,7 @@ from datetime import datetime
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
@@ -280,8 +279,8 @@ async def api_calculations_results_geojson(calculation_id: int):
 async def api_calculations_results_excel(calculation_id: int):
     async with acquire_conn() as conn:
         excel_bytes = await get_calculation_results_excel(conn, calculation_id)
-        return StreamingResponse(
-            io.BytesIO(excel_bytes),
+        return Response(
+            excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename=calculation_{calculation_id}_results.xlsx"}
         )
@@ -418,8 +417,8 @@ async def api_calc_throttling_sheet(req: ThrottlingSheetRequest):
         excel_bytes = generate_throttling_excel(data)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    return StreamingResponse(
-        io.BytesIO(excel_bytes),
+    return Response(
+        excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=throttling_calculation_sheet.xlsx"},
     )

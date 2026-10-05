@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from app_logging import get_logger
 from database.connect import acquire_conn
@@ -48,8 +47,8 @@ async def export_network_dxf(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     headers = export_headers(int(headers["X-Export-Rows"]), limit, headers["X-Export-Truncated"] == "1",
                              expose=("Content-Disposition",))
-    return StreamingResponse(
-        io.BytesIO(data),
+    return Response(
+        data,
         media_type="application/dxf",
         headers={"Content-Disposition": f'attachment; filename="network{export_suffix(frags)}.dxf"', **headers},
     )

@@ -1,6 +1,5 @@
 """Отчёты и экспорт: Excel-паспорт, Word-карта нарушения, иерархия паспортов, SHP, формы."""
 
-import io
 import os
 
 from urllib.parse import quote
@@ -8,7 +7,7 @@ from urllib.parse import quote
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from typing import Optional
 
 from app_logging import get_logger
@@ -45,8 +44,8 @@ def generate_passport_excel_query(table: str, obj_id: int):
     except Exception as e:
         logger.error(f"Passport generation failed for {table}/{obj_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Не удалось сформировать паспорт: {e}")
-    return StreamingResponse(
-        io.BytesIO(content),
+    return Response(
+        content,
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
@@ -179,8 +178,8 @@ async def export_shp_endpoint(
     # обрезка по limit (узлы или участки) — заголовок X-Export-Truncated, предупреждение в web (QA F84)
     headers = export_headers(max(stats.get("lines", 0), stats.get("nodes", 0)), limit,
                              bool(stats.get("truncated")), expose=("Content-Disposition",))
-    return StreamingResponse(
-        io.BytesIO(zip_data),
+    return Response(
+        zip_data,
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=network_export{suffix}.zip", **headers},
     )
@@ -216,8 +215,8 @@ async def get_report_excel_endpoint(
     filename = report_filename(doc_type, year=year, fragment_ids=frags)
     headers = {"Content-Disposition": f"attachment; filename={filename}", **report.headers()}
     headers["Access-Control-Expose-Headers"] = ", ".join(["Content-Disposition", *report.headers()])
-    return StreamingResponse(
-        io.BytesIO(report.content),
+    return Response(
+        report.content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
@@ -265,8 +264,8 @@ async def get_catalog_report_excel(
     data = await run_in_threadpool(excel_reports.render_report, report, calc, results)
     summary = excel_reports.report_summary(report, fragment_id, calc, results)
     filename = f"{report.title} ф{fragment_id}.xlsx"
-    return StreamingResponse(
-        io.BytesIO(data),
+    return Response(
+        data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
             "Content-Disposition": (

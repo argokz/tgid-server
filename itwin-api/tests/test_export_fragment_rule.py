@@ -201,6 +201,23 @@ def test_excel_endpoint_passes_fragments_and_exposes_completeness_headers(monkey
     assert "report_ut_frag.xlsx" in r.headers["content-disposition"]
 
 
+def test_excel_endpoint_sends_body_in_one_response_with_length(monkeypatch):
+    # Готовая книга отдаётся Response целиком: StreamingResponse(io.BytesIO) резал xlsx по байтам \n
+    # на десятки тысяч мелких кусков — pt всей сети (7,5 МБ) передавался по localhost ~15 с
+    body = bytes(range(256)) * 4096
+
+    async def fake_build(doc_type, *, year=None, fragment_ids=None):
+        return rg.ExcelReport(body, rows=1, total=1, fragment_ids=None, fragment_filter_applied=False)
+
+    monkeypatch.setattr("routers.reports.build_excel_report", fake_build)
+    with TestClient(main.app) as client:
+        r = client.get("/api/reports/excel/pt")
+    assert r.status_code == 200
+    assert r.content == body
+    assert r.headers["content-length"] == str(len(body))
+    assert "transfer-encoding" not in r.headers
+
+
 def test_file_job_report_excel_accepts_fragments():
     assert file_jobs.validate_params("report_excel", {"doc_type": "ut", "fragments": [74]})["fragments"] == [74]
     with pytest.raises(ValueError):
