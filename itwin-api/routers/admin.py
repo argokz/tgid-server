@@ -42,7 +42,8 @@ CapName = Literal["network", "network_struct", "acts", "geo", "pts", "corrosion"
 
 
 class CreateUserBody(BaseModel):
-    username: str = Field(..., min_length=2, max_length=50, pattern=r"^[\w.@-]+$")
+    # логины десктопа — «Фамилия Имя» (пробел), UsersDB — буквы, цифры, . _ @ -
+    username: str = Field(..., min_length=2, max_length=50, pattern=r"^[\w .@-]+$")
     password: str = PASSWORD_FIELD
     role: RoleName = "viewer"
     # AUTH_BACKEND=pg: предметные права, территория (фрагменты), профиль
