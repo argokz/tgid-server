@@ -89,7 +89,7 @@ async def fragment_rows(fileid: int, _: Annotated[AuthUser, Depends(require_role
 @router.post("/api/fragments/import")
 @router.post("/api/v1/fragments/import")
 async def import_fragment(
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))],
     file: UploadFile = File(..., description=".tgid (zip с tgid.txt) или tgid.txt"),
     name: Optional[str] = Form(None, description="Название нового фрагмента"),
     dry_run: bool = Form(True),
@@ -125,7 +125,7 @@ class MergeRequest(BaseModel):
 
 @router.post("/api/fragments/merge")
 @router.post("/api/v1/fragments/merge")
-async def merge(body: MergeRequest, user: Annotated[AuthUser, Depends(require_roles("editor"))]):
+async def merge(body: MergeRequest, user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))]):
     """Слияние: копии фрагментов сводятся в новый фрагмент (unite_tgid.py); исходные не меняются."""
     _require_apply_rights(user, body.dry_run)
 

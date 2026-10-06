@@ -10,6 +10,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -64,7 +65,10 @@ DEPENDENCY_MARKERS = ("is not installed",)
 
 def http_get(url: str, timeout: float = 120.0, max_bytes: int = 4096):
     started = time.monotonic()
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if os.getenv("SMOKE_TOKEN"):  # проверка от имени пользователя (AUTH_DISABLED=false, роли PostgreSQL)
+        headers["Authorization"] = f"Bearer {os.environ['SMOKE_TOKEN']}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(max_bytes)

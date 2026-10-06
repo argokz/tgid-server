@@ -8,11 +8,14 @@
 import os
 from contextlib import asynccontextmanager
 
+import asyncpg
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app_logging import configure_logging
@@ -24,9 +27,13 @@ load_dotenv()
 from auth import (  # noqa: E402
     PUBLIC_GET_PREFIXES,
     assert_production_auth_safe,
+    auth_disabled,
     auth_required_get,
+    db_role_for,
     decode_access_token,
 )
+from database.db_errors import privilege_error_detail  # noqa: E402
+from database.db_role import role_switch_enabled, set_db_role  # noqa: E402
 from database.connect import (  # noqa: E402
     close_db_pool,
     close_users_db_pool,
@@ -120,6 +127,55 @@ class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(AuthRequiredGetMiddleware)
+
+
+class DbRoleMiddleware:
+    """Роль PostgreSQL запроса из Bearer-токена (database/db_role.py), до зависимостей маршрута.
+
+    Нужна маршрутам без зависимости авторизации (чтение): без неё они работали бы как tgid_anon.
+    Зависимости get_current_user/get_optional_user после живой проверки уточняют роль.
+    Чистый ASGI (не BaseHTTPMiddleware): contextvar виден обработчику в той же задаче.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and role_switch_enabled() and not auth_disabled():
+            token_value = None
+            for name, value in scope.get("headers") or ():
+                if name == b"authorization" and value[:7].lower() == b"bearer ":
+                    token_value = value[7:].decode("latin-1").strip()
+                    break
+            user = None
+            if token_value:
+                try:
+                    user = decode_access_token(token_value)
+                except Exception:  # noqa: BLE001 — неверный токен: аноним, 401 даст зависимость
+                    user = None
+            set_db_role(db_role_for(user))
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(DbRoleMiddleware)
+
+
+@app.exception_handler(asyncpg.exceptions.InsufficientPrivilegeError)
+async def _pg_privilege_error(request: Request, exc: asyncpg.exceptions.InsufficientPrivilegeError):
+    detail = privilege_error_detail(str(exc)) or "Недостаточно прав для этой операции"
+    logger.info("403 %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(status_code=403, content={"detail": detail})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(request: Request, exc: StarletteHTTPException):
+    # Роутеры, обернувшие отказ PostgreSQL в HTTPException(500, str(e)), отдают 403
+    if exc.status_code >= 500 and isinstance(exc.detail, str):
+        detail = privilege_error_detail(exc.detail)
+        if detail:
+            return JSONResponse(status_code=403, content={"detail": detail})
+    return await http_exception_handler(request, exc)
+
 
 for router in all_routers:
     app.include_router(router)

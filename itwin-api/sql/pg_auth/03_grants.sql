@@ -63,6 +63,13 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+-- Имя оператора в карточках (operatorID → passwords.user_name, GID.lookup): только id и имя,
+-- хеш пароля и маска прав закрыты
+DO $$ BEGIN
+    IF to_regclass('public.passwords') IS NOT NULL THEN
+        GRANT SELECT (id, user_name) ON public.passwords TO tgid_anon, tgid_geoserver, tgid_worker;
+    END IF;
+END $$;
 -- История правок — вошедшим пользователям (viewer и выше)
 SELECT pg_temp.grant_on('SELECT', ARRAY['audit_log', 'audit_group_comments', 'topology_undo_log'], ARRAY['tgid_viewer']);
 -- Запись в историю: триггеры аудита (SECURITY INVOKER) пишут от имени пользователя;
@@ -107,7 +114,7 @@ SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY[
     -- нарушения, шурфовки, осмотры, опрессовки (journal_specs) и их дочерние таблицы
     'defect', 'defectdocuments', 'defectchannel', 'defectkamera', 'defectmeropr', 'defectopis', 'defecttube',
     'defectsforshurfy',
-    'shurfy', 'shurfdocuments',
+    'shurfy', 'shurfdocuments', 'vidy_elementov_for_shurfy', 'nalichie_vblizi_kommunikacij_for_shurfy',
     'osmotr', 'osmotrdeployed', 'osmotrdocuments',
     'opres', 'opresdeployed', 'opresdocuments', 'opresacts', 'opresmeropr',
     'ochered_opressovok', 'opressovki_uchastok_ocheredi', 'list_opres_node1', 'list_opres_node2',

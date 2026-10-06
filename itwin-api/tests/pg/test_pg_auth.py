@@ -115,7 +115,7 @@ async def test_viewer_reads_but_cannot_write(conn):
 async def test_credentials_are_hidden(conn):
     u = await make_user(conn, "editor", caps=["network"])
     await as_user(conn, u)
-    for sql in ("SELECT count(*) FROM passwords",
+    for sql in ("SELECT count(user_password) FROM passwords",  # имя оператора (id, user_name) открыто
                 "SELECT count(*) FROM tgid_auth.legacy_credentials",
                 "SELECT count(*) FROM auth.users"):
         await denied(conn, asyncpg.InsufficientPrivilegeError, sql)

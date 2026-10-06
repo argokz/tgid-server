@@ -77,11 +77,15 @@ async def init_db_pool():
             f"🔄 Инициализация пула для основной базы (min={min_size}, max={max_size}, "
             f"command_timeout={command_timeout}s)..."
         )
+        from database.db_role import apply_db_role
+
         pool = await asyncpg.create_pool(
             **DATABASE_CONFIG,
             min_size=min_size,
             max_size=max_size,
             command_timeout=command_timeout,
+            # DB_ROLE_SWITCH: SET ROLE пользователя при каждой выдаче соединения (database/db_role.py)
+            setup=apply_db_role,
             max_inactive_connection_lifetime=float(
                 os.getenv("DB_POOL_MAX_INACTIVE_LIFETIME", "300")
             ),

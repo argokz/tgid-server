@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, get_current_user, require_mutations_enabled
 from database.connect import acquire_conn
 from database.journal_specs import JOURNALS, JournalSpec, describe
 from database.journal_write import (
@@ -41,7 +41,20 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["journals"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+# Журнал ремонтов — предметное право «Ремонты» (бит 1024 десктопа), остальные — роль editor.
+# Окончательно права проверяет БД (sql/pg_auth/03_grants.sql).
+_JOURNAL_CAPS = {"repairs": "repairs"}
+
+
+async def _journal_editor(journal: str, user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    cap = _JOURNAL_CAPS.get(journal)
+    if user.allows("editor", cap):
+        return user
+    raise HTTPException(status_code=403, detail="Нет права «ремонты»" if cap and user.is_pg_user
+                        else f"Requires one of roles: editor (have {user.role})")
+
+
+Editor = Annotated[AuthUser, Depends(_journal_editor)]
 PREFIX = "/api/v1/journals/{journal}"
 
 

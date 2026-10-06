@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["pts"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="pts"))]
 PREFIX = "/api/v1/pts"
 
 

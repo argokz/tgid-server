@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def build_audit_insert(
     available: set[str],
     *,
-    changed_by: str,
+    changed_by: Optional[str],
     operation: str,
     table_name: str,
     record_id: Optional[int],
@@ -36,7 +36,10 @@ def build_audit_insert(
     CURRENT_TIMESTAMP) и одинаково работает для timestamp и timestamptz.
     """
     fields: dict[str, Any] = {}
-    if "changed_by" in available:
+    # changed_by=None — автор = роль PostgreSQL сессии (DB_ROLE_SWITCH: политика RLS audit_log
+    # пропускает только changed_by = current_user; см. sql/pg_auth/04_rls.sql)
+    by_current_user = changed_by is None and "changed_by" in available
+    if "changed_by" in available and not by_current_user:
         fields["changed_by"] = changed_by
     if "operation" in available:
         fields["operation"] = operation
@@ -54,11 +57,14 @@ def build_audit_insert(
         fields["old_data"] = json.dumps(old_data, ensure_ascii=False, default=str) if old_data else None
     if "new_data" in available:
         fields["new_data"] = json.dumps(new_data, ensure_ascii=False, default=str) if new_data else None
-    if not fields:
+    if not fields and not by_current_user:
         return None
 
     columns = [f'"{k}"' for k in fields]
     values = [f"${i}" for i in range(1, len(fields) + 1)]
+    if by_current_user:
+        columns.append('"changed_by"')
+        values.append("current_user")
     if "changed_at" in available:
         columns.append('"changed_at"')
         values.append("now()")
@@ -82,9 +88,12 @@ async def write_audit_log(
     С conn запись идёт через SAVEPOINT этой транзакции: фиксируется и откатывается
     вместе с операцией, а сбой вставки аудита не обрывает саму операцию.
     """
+    from database.db_role import role_switch_enabled
+
     group_id = change_group_id or str(uuid.uuid4())
     payload = {
-        "changed_by": changed_by,
+        # DB_ROLE_SWITCH: автор — роль PostgreSQL сессии (current_user), иначе — имя из токена
+        "changed_by": None if role_switch_enabled() else changed_by,
         "operation": operation,
         "table_name": table_name,
         "record_id": record_id,
@@ -105,7 +114,7 @@ async def write_audit_log(
     except Exception as exc:
         logger.warning("audit_log write failed, falling back to app log: %s", exc)
 
-    logger.info("AUDIT %s", json.dumps(payload, ensure_ascii=False, default=str))
+    logger.info("AUDIT %s", json.dumps({**payload, "changed_by": changed_by}, ensure_ascii=False, default=str))
     return group_id
 
 

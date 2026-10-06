@@ -13,6 +13,7 @@ from auth import (
     assert_mutable_table,
     get_current_user,
     require_mutations_enabled,
+    cap_for_mutation,
     role_for_mutation,
 )
 from database.db import create_object, delete_object, update_object_attributes
@@ -74,7 +75,7 @@ async def update_object(
     """Обновляет атрибуты объекта в БД."""
     require_mutations_enabled()
     table = assert_mutable_table(table)
-    if not user.has_role(role_for_mutation(table)):
+    if not user.allows(role_for_mutation(table), cap_for_mutation(table, "update")):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
     fields = _prepare_fields(table, body.fields)
     try:
@@ -105,7 +106,7 @@ async def api_create_object(
     """Создает новый объект в БД."""
     require_mutations_enabled()
     table = assert_mutable_table(table)
-    if not user.has_role(role_for_mutation(table)):
+    if not user.allows(role_for_mutation(table), cap_for_mutation(table, "insert")):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
     fields = _prepare_fields(table, body.fields)
     if not fields:
@@ -139,7 +140,7 @@ async def api_delete_object(
     """Удаляет объект из БД."""
     require_mutations_enabled()
     table = assert_mutable_table(table)
-    if not user.has_role(role_for_mutation(table)):
+    if not user.allows(role_for_mutation(table), cap_for_mutation(table, "delete")):
         raise HTTPException(status_code=403, detail=f"Role {user.role} cannot mutate {table}")
     try:
         success = await delete_object(table, id)

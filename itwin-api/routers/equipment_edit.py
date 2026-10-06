@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["equipment-edit"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="network"))]
 PREFIX = "/api/v1/equipment-edit"
 
 # Таблица оборудования → подпись. Ключ строки — id таблицы (как в реестрах).

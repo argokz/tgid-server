@@ -7,18 +7,22 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app_logging import get_logger
 from auth import (
+    PG_USER_PREFIX,
     AuthUser,
     ROLE_ORDER,
+    auth_backend,
     auth_disabled,
     create_access_token,
     dev_login_enabled,
     get_current_user,
+    invalidate_user_status,
     mutations_enabled,
+    pg_auth_enabled,
     resolve_user_role,
     strict_auth,
     verify_password,
 )
-from auth_models import AuthConfigResponse, LoginRequest, MeResponse, TokenResponse
+from auth_models import AuthConfigResponse, ChangePasswordRequest, LoginRequest, MeResponse, TokenResponse
 
 logger = get_logger(__name__)
 
@@ -33,6 +37,22 @@ async def auth_login(body: LoginRequest):
     if auth_disabled() or dev_login_enabled():
         token = create_access_token(username=body.username, role=role)
         return TokenResponse(access_token=token, role=role, username=body.username)
+
+    if pg_auth_enabled():
+        # Пользователь — роль PostgreSQL; пароль проверяет сам PostgreSQL (database/pg_users.py)
+        from database import pg_users
+
+        try:
+            result = await pg_users.login(body.username, body.password)
+        except pg_users.PgUserError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except Exception as exc:  # noqa: BLE001
+            logger.error("PG login failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=503, detail="База пользователей недоступна") from exc
+        token = create_access_token(
+            username=result["login"], role=result["base_role"], subject=result["role_name"]
+        )
+        return TokenResponse(access_token=token, role=result["base_role"], username=result["login"])
 
     # UsersDB verification
     try:
@@ -92,6 +112,17 @@ async def auth_config():
 @router.get("/api/v1/auth/me", response_model=MeResponse)
 @router.get("/auth/me", response_model=MeResponse)
 async def auth_me(user: Annotated[AuthUser, Depends(get_current_user)]):
+    extra: dict = {"auth_backend": auth_backend()}
+    if user.sub.startswith(PG_USER_PREFIX):
+        from database import pg_users
+
+        profile = await pg_users.me(user.sub)
+        extra.update(
+            display_name=profile.get("display_name"),
+            caps=list(profile.get("caps") or []),
+            fragments=profile.get("fragments"),
+            must_change_password=bool(profile.get("must_change_password")),
+        )
     return MeResponse(
         sub=user.sub,
         username=user.username,
@@ -101,4 +132,23 @@ async def auth_me(user: Annotated[AuthUser, Depends(get_current_user)]):
         auth_disabled=auth_disabled(),
         dev_login_enabled=dev_login_enabled(),
         strict_auth=strict_auth(),
+        **extra,
     )
+
+
+@router.post("/api/v1/auth/password")
+@router.post("/auth/password")
+async def auth_change_password(
+    body: ChangePasswordRequest, user: Annotated[AuthUser, Depends(get_current_user)]
+):
+    """Смена своего пароля (AUTH_BACKEND=pg): тот же пароль у веба и десктопа."""
+    if not user.sub.startswith(PG_USER_PREFIX):
+        raise HTTPException(status_code=409, detail="Смена пароля доступна пользователям PostgreSQL (AUTH_BACKEND=pg)")
+    from database import pg_users
+
+    try:
+        await pg_users.change_own_password(user.sub, body.current_password, body.new_password)
+    except pg_users.PgUserError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    invalidate_user_status(user.sub)
+    return {"success": True}

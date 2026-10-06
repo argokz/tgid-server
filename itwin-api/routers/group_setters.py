@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["group-setters"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="network"))]
 
 
 class SetterBody(BaseModel):

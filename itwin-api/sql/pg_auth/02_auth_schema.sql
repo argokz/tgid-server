@@ -219,9 +219,11 @@ GRANT SELECT ON tgid_auth.v_users TO tgid_anon;
 -- _impl (SECURITY DEFINER, владелец tgid_useradmin): роли PG и строки tgid_auth.
 -- Обёртки (INVOKER): проверка is_admin() и запись audit_log от имени администратора.
 
+-- Логин как есть, без lower(): lower() зависит от локали базы (кириллица в C-локали не меняется),
+-- а десктоп вычисляет имя роли сам, до подключения. Логин чувствителен к регистру, как в десктопе.
 CREATE OR REPLACE FUNCTION tgid_auth.role_for_login(p_login text) RETURNS name
 LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
-    SELECT ('tgid_u_' || lower(btrim(p_login)))::name
+    SELECT ('tgid_u_' || btrim(p_login))::name
 $$;
 
 CREATE OR REPLACE FUNCTION tgid_auth._check_access(p_base text, p_caps text[]) RETURNS void
