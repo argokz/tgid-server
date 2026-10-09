@@ -53,10 +53,11 @@ REGULATOR_CTE = """
                code2.name AS node_code_2, node2.externalnodename AS node_name_2,
                control_code.name AS control_node_code,
                control_node.externalnodename AS control_node_name,
+               -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_X(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS longitude,
+                    ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS longitude,
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_Y(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS latitude
+                    ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS latitude
           FROM pressregulators regulator
           LEFT JOIN linesobj line ON line.id=regulator.lineid
           LEFT JOIN fragments fragment ON fragment.id=line.fileid
@@ -93,10 +94,11 @@ REGULATOR_CTE = """
                code2.name AS node_code_2, node2.externalnodename AS node_name_2,
                control_code.name AS control_node_code,
                control_node.externalnodename AS control_node_name,
+               -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_X(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS longitude,
+                    ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS longitude,
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_Y(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS latitude
+                    ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS latitude
           FROM consumptregulators regulator
           LEFT JOIN linesobj line ON line.id=regulator.lineid
           LEFT JOIN fragments fragment ON fragment.id=line.fileid
@@ -132,10 +134,11 @@ REGULATOR_CTE = """
                code2.name AS node_code_2, node2.externalnodename AS node_name_2,
                control_code.name AS control_node_code,
                control_node.externalnodename AS control_node_name,
+               -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_X(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS longitude,
+                    ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS longitude,
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_Y(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS latitude
+                    ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS latitude
           FROM pressdropregulators regulator
           LEFT JOIN linesobj line ON line.id=regulator.lineid
           LEFT JOIN fragments fragment ON fragment.id=line.fileid

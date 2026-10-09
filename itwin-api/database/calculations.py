@@ -82,10 +82,12 @@ async def get_latest_calculations(conn: asyncpg.Connection, limit: int = 20) -> 
 async def get_calculation_results_geojson(conn: asyncpg.Connection, calculation_id: int) -> dict[str, Any]:
     # 1. Линейные результаты (ut_out). Раскраска и стрелки — по подаче,
     #    для участков без подачи (только обратка) — по обратке.
+    #    Участки и узлы внутренних схем узлов на карту не идут: схема нарисована
+    #    в условных координатах (в Астане — стопками в ~12 км от своих узлов).
     rows = await conn.fetch(
         _LINE_RESULTS_SQL.format(
             geometry=", ST_AsGeoJSON(ST_Transform(l.shape, 4326)) AS geometry",
-            where="WHERE l.shape IS NOT NULL",
+            where="WHERE l.shape IS NOT NULL AND l.internalnodeid IS NULL",
         ),
         calculation_id,
     )
@@ -161,6 +163,7 @@ async def get_calculation_results_geojson(conn: asyncpg.Connection, calculation_
         LEFT JOIN us_out u1 ON u1.nodeid = n.id AND u1.calculationid = $1 AND u1.externalsign = {US_SIGN_SUPPLY}
         LEFT JOIN us_out u2 ON u2.nodeid = n.id AND u2.calculationid = $1 AND u2.externalsign = {US_SIGN_RETURN}
         WHERE (u1.{US_PIEZO_HEAD_M} IS NOT NULL OR u2.{US_PIEZO_HEAD_M} IS NOT NULL) AND n.shape IS NOT NULL
+          AND n.internalnodeid IS NULL
     """, calculation_id)
 
     for nrow in node_rows:

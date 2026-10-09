@@ -92,19 +92,24 @@ def _envelope(key: str, title: str, fragment_id: int, calc, items: list[dict], *
 
 async def attach_coords(conn, items: list[dict], key: str = "node_id") -> list[dict]:
     """Дописывает longitude/latitude (WGS84) для показа на карте: узел — точка на объекте,
-    участок (key="line_id") — середина линии."""
+    участок (key="line_id") — середина линии. Объект внутренней схемы узла — точка
+    узла-владельца: схема нарисована в условных координатах."""
     ids = sorted({i[key] for i in items if i.get(key) is not None})
     if not ids:
         return items
     if key.endswith("line_id"):
         sql = """SELECT id, ST_X(p) AS lon, ST_Y(p) AS lat FROM (
-                   SELECT id, ST_Transform(ST_LineInterpolatePoint(ST_LineMerge(shape), 0.5), 4326) AS p
-                     FROM linesobj WHERE id = ANY($1::int[]) AND GeometryType(ST_LineMerge(shape)) = 'LINESTRING'
-                 ) q"""
+                   SELECT l.id, ST_Transform(COALESCE(owner.shape,
+                              CASE WHEN GeometryType(ST_LineMerge(l.shape)) = 'LINESTRING'
+                                   THEN ST_LineInterpolatePoint(ST_LineMerge(l.shape), 0.5) END), 4326) AS p
+                     FROM linesobj l LEFT JOIN nodes owner ON owner.id = l.internalnodeid
+                    WHERE l.id = ANY($1::int[])
+                 ) q WHERE p IS NOT NULL"""
     else:
         sql = """SELECT id, ST_X(p) AS lon, ST_Y(p) AS lat FROM (
-                   SELECT id, ST_Transform(ST_PointOnSurface(shape), 4326) AS p
-                     FROM nodes WHERE id = ANY($1::int[]) AND shape IS NOT NULL
+                   SELECT n.id, ST_Transform(ST_PointOnSurface(COALESCE(owner.shape, n.shape)), 4326) AS p
+                     FROM nodes n LEFT JOIN nodes owner ON owner.id = n.internalnodeid
+                    WHERE n.id = ANY($1::int[]) AND COALESCE(owner.shape, n.shape) IS NOT NULL
                  ) q"""
     coords = {r["id"]: (r["lon"], r["lat"]) for r in await conn.fetch(sql, ids)}
     for i in items:

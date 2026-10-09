@@ -299,10 +299,13 @@ async def _set_point(conn, spec: JournalSpec, record_id: int, point: Optional[tu
         return True
     if line_id is not None:
         status = await conn.execute(
+            # участок внутренней схемы узла — точка узла-владельца (схема в условных координатах)
             f"""UPDATE {table} SET {shape} = (
-                    SELECT ST_Transform(ST_LineInterpolatePoint(ST_LineMerge(l.shape), 0.5), $1::int)
-                      FROM linesobj l WHERE l.id = $2 AND l.shape IS NOT NULL
-                      AND GeometryType(ST_LineMerge(l.shape)) = 'LINESTRING')
+                    SELECT ST_Transform(COALESCE(owner.shape,
+                               CASE WHEN GeometryType(ST_LineMerge(l.shape)) = 'LINESTRING'
+                                    THEN ST_LineInterpolatePoint(ST_LineMerge(l.shape), 0.5) END), $1::int)
+                      FROM linesobj l LEFT JOIN nodes owner ON owner.id = l.internalnodeid
+                     WHERE l.id = $2 AND l.shape IS NOT NULL)
                 WHERE id = $3 AND {shape} IS NULL""",
             srid, line_id, record_id,
         )

@@ -239,10 +239,11 @@ async def get_sections(conn: asyncpg.Connection, calculation_id: int, *, heat_so
         limit_sql = f" LIMIT ${len(args) - 1} OFFSET ${len(args)}"
     rows = await conn.fetch(
         f"""SELECT u.*, l.fileid, l.nodeid1, l.nodeid2,
+                   -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                    CASE WHEN l.shape IS NULL THEN NULL
-                        ELSE ST_X(ST_Transform(ST_PointOnSurface(l.shape), 4326)) END AS longitude,
+                        ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = l.internalnodeid), ST_PointOnSurface(l.shape)), 4326)) END AS longitude,
                    CASE WHEN l.shape IS NULL THEN NULL
-                        ELSE ST_Y(ST_Transform(ST_PointOnSurface(l.shape), 4326)) END AS latitude
+                        ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = l.internalnodeid), ST_PointOnSurface(l.shape)), 4326)) END AS latitude
               FROM ut_teplo_out u LEFT JOIN linesobj l ON l.id = u.lineid
              WHERE {where} ORDER BY u.kod_ist, u.lineid, u.truba, u.id{limit_sql}""", *args)
     items = []

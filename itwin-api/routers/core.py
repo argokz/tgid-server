@@ -166,12 +166,14 @@ async def get_fragments():
         raise HTTPException(status_code=500, detail="Ошибка при получении фрагментов")
 
 
-# Охват фрагментов (WGS84) по действующим узлам — выбор фрагмента центрирует карту (QA F25)
+# Охват фрагментов (WGS84) по действующим узлам — выбор фрагмента центрирует карту (QA F25).
+# Узлы внутренних схем не в счёт: их координаты условные, охват уходил бы за город.
 FRAGMENTS_EXTENT_SQL = """
     SELECT ST_XMin(e) AS min_lng, ST_YMin(e) AS min_lat, ST_XMax(e) AS max_lng, ST_YMax(e) AS max_lat
       FROM (SELECT ST_Extent(ST_Transform(n.shape, 4326)) AS e
               FROM nodes n
-             WHERE n.fileid = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL) s
+             WHERE n.fileid = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL
+               AND n.internalnodeid IS NULL) s
 """
 
 

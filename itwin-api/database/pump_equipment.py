@@ -38,11 +38,12 @@ PUMP_CTE = """
                        THEN 'coefficients_missing'
                    ELSE 'configured'
                END AS configuration_status,
+               -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_X(ST_Transform(ST_LineInterpolatePoint(line.shape, 0.5), 4326))
+                    ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_LineInterpolatePoint(line.shape, 0.5)), 4326))
                END AS longitude,
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_Y(ST_Transform(ST_LineInterpolatePoint(line.shape, 0.5), 4326))
+                    ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_LineInterpolatePoint(line.shape, 0.5)), 4326))
                END AS latitude
           FROM pumps pump
           LEFT JOIN linesobj line ON line.id=pump.lineid

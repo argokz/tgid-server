@@ -72,8 +72,9 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
                coalesce(d.diametercondit, 100.0)::float as nominal_diameter,
                coalesce(d.damperarmaturestateid, 1)::int as state_id,
                coalesce(s.name, CASE WHEN d.damperarmaturestateid = 2 THEN 'Закрыта' ELSE 'Открыта' END) as state_name,
-               ST_X(ST_Transform(coalesce(ST_PointOnSurface(l.shape), owner.shape), 4326)) as lng,
-               ST_Y(ST_Transform(coalesce(ST_PointOnSurface(l.shape), owner.shape), 4326)) as lat
+               -- задвижка внутренней схемы — в точке узла-владельца (схема в условных координатах)
+               ST_X(ST_Transform(coalesce(owner.shape, ST_PointOnSurface(l.shape)), 4326)) as lng,
+               ST_Y(ST_Transform(coalesce(owner.shape, ST_PointOnSurface(l.shape)), 4326)) as lat
         FROM dampers d
         JOIN linesobj l ON l.id = d.lineid
         LEFT JOIN nodes owner ON owner.id = l.internalnodeid

@@ -121,7 +121,8 @@ async def _features(conn, where_sql: str, *args: Any) -> dict[str, Any]:
                COALESCE(NULLIF(n2.nodename, ''), n2.externalnodename, '№' || n2.id) AS end_name,
                h.diametercondit AS diameter,
                round(COALESCE(h.pipesectlength, ST_Length(l.shape))::numeric, 1)::float8 AS length,
-               CASE WHEN l.shape IS NULL THEN NULL
+               -- участок внутренней схемы узла без геометрии: она в условных координатах схемы
+               CASE WHEN l.shape IS NULL OR l.internalnodeid IS NOT NULL THEN NULL
                     ELSE ST_AsGeoJSON(ST_Transform(l.shape, 4326), 6) END AS geometry
           FROM linesobj l
           JOIN heatpipesections h ON h.lineid = l.id

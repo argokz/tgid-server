@@ -47,10 +47,11 @@ ELEVATOR_CTE = """
                line.nodeid2 AS node_id_2, node2.id AS linked_node_id_2,
                code1.name AS node_code_1, node1.externalnodename AS node_name_1,
                code2.name AS node_code_2, node2.externalnodename AS node_name_2,
+               -- участок внутренней схемы узла: точка узла-владельца (схема нарисована в условных координатах)
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_X(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS longitude,
+                    ELSE ST_X(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS longitude,
                CASE WHEN line.shape IS NULL THEN NULL
-                    ELSE ST_Y(ST_Transform(ST_PointOnSurface(line.shape), 4326)) END AS latitude
+                    ELSE ST_Y(ST_Transform(COALESCE((SELECT owner.shape FROM nodes owner WHERE owner.id = line.internalnodeid), ST_PointOnSurface(line.shape)), 4326)) END AS latitude
           FROM elevators elevator
           LEFT JOIN linesobj line ON line.id=elevator.lineid
           LEFT JOIN states state ON state.id=elevator.stateid
