@@ -166,6 +166,49 @@ async def site_pipes(conn, kind: SiteKind, site_id: int) -> dict[str, Any]:
     return await _features(conn, f"h.{quote_ident(kind.pipe_column)} = $1", site_id)
 
 
+HIGHLIGHT_WHERE = {
+    "ms": "h.magistralsite = $1",
+    "rs": "h.distsite = $1",
+    "nach": """(h.magistralsite IN (SELECT s.id FROM uchastok_ms s
+                                     JOIN uchastki_ekspluatatsii ue ON ue.id = s.nomer_uchastka
+                                    WHERE ue.nachalnik_uchastka = $1)
+              OR h.distsite IN (SELECT s.id FROM uchastok_rs s
+                                  JOIN uchastki_ekspluatatsii ue ON ue.id = s.nomer_uchastka
+                                 WHERE ue.nachalnik_uchastka = $1))""",
+}
+
+
+async def highlight_extent(conn, kind: str, item_id: int) -> dict[str, Any]:
+    """Подсветка на карте: трубы начальника участка (все его МС и РС) или одного участка.
+
+    Отбор — как поле ``warning`` SQL-view heatpipesections (web-itwin
+    scripts/geoserver/gid_desktop_style.py): трубы вне внутренних схем, фрагмент — по узлу 1.
+    Охват — для «Перейти к участку», фрагменты — для предупреждения десктопа «фрагмент не подключен».
+    """
+    where = HIGHLIGHT_WHERE.get(str(kind).lower())
+    if where is None:
+        raise PtsError(404, {"code": "bad_kind", "message": "Подсветка: nach | ms | rs"})
+    row = await conn.fetchrow(
+        f"""
+        WITH p AS (
+            SELECT n1.fileid, l.shape
+              FROM heatpipesections h
+              JOIN linesobj l ON l.id = h.lineid AND l.removed = 0
+              JOIN nodes n1 ON n1.id = l.nodeid1 AND n1.internalnodeid IS NULL
+             WHERE {where}
+        ), e AS (SELECT ST_Extent(ST_Transform(shape, 4326)) AS box FROM p WHERE shape IS NOT NULL)
+        SELECT (SELECT count(*)::int FROM p) AS pipes,
+               (SELECT array_agg(DISTINCT fileid ORDER BY fileid) FROM p WHERE fileid IS NOT NULL) AS fragment_ids,
+               ST_XMin(box) AS x1, ST_YMin(box) AS y1, ST_XMax(box) AS x2, ST_YMax(box) AS y2
+          FROM e
+        """,
+        item_id,
+    )
+    bbox = [row["x1"], row["y1"], row["x2"], row["y2"]] if row["x1"] is not None else None
+    return {"kind": kind, "id": item_id, "pipes": row["pipes"],
+            "fragment_ids": list(row["fragment_ids"] or []), "bbox": bbox}
+
+
 async def pipes_by_ids(conn, line_ids: list[int]) -> dict[str, Any]:
     return await _features(conn, "l.id = ANY($1::int[])", line_ids)
 

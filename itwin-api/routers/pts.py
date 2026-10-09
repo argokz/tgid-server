@@ -111,6 +111,16 @@ async def pts_site_pipes(kind: str, site_id: int):
             raise _http(exc)
 
 
+@router.get(PREFIX + "/highlight")
+async def pts_highlight(kind: str = Query(..., description="nach | ms | rs"), id: int = Query(..., ge=1)):
+    """Подсветка на карте (viewparams nach/ms/rs слоя участков): число труб, охват EPSG:4326, фрагменты."""
+    async with acquire_conn() as conn:
+        try:
+            return await pts.highlight_extent(conn, kind, id)
+        except _ERRORS as exc:
+            raise _http(exc)
+
+
 @router.post(PREFIX + "/sites/{kind}")
 async def pts_site_create(kind: str, body: SiteBody, user: Editor):
     require_mutations_enabled()

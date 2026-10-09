@@ -209,6 +209,44 @@ def test_pts_bad_kind_is_404(monkeypatch):
     assert r.status_code == 404 and r.json()["detail"]["code"] == "bad_kind"
 
 
+def test_highlight_extent_matches_view_warning_and_reports_fragments():
+    class Conn:
+        def __init__(self):
+            self.calls = []
+
+        async def fetchrow(self, sql, *args):
+            self.calls.append((sql, args))
+            return {"pipes": 3, "fragment_ids": [5, 7], "x1": 71.1, "y1": 51.0, "x2": 71.5, "y2": 51.2}
+
+    conn = Conn()
+    res = _run(pts.highlight_extent(conn, "rs", 227))
+    assert res == {"kind": "rs", "id": 227, "pipes": 3, "fragment_ids": [5, 7], "bbox": [71.1, 51.0, 71.5, 51.2]}
+    sql, args = conn.calls[0]
+    assert "h.distsite = $1" in sql and args == (227,)
+    # как SQL-view: трубы вне внутренних схем, фрагмент по узлу 1
+    assert "n1.internalnodeid IS NULL" in sql and "l.removed = 0" in sql
+    _run(pts.highlight_extent(conn, "nach", 2))
+    nach_sql = conn.calls[1][0]
+    assert "ue.nachalnik_uchastka = $1" in nach_sql and "uchastok_ms" in nach_sql and "uchastok_rs" in nach_sql
+    with pytest.raises(pts.PtsError) as err:
+        _run(pts.highlight_extent(conn, "ue", 1))
+    assert err.value.status == 404
+
+
+def test_highlight_route_validates_id(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _acquire():
+        yield FakeConn()
+
+    monkeypatch.setattr("routers.pts.acquire_conn", _acquire)
+    client = TestClient(main.app)
+    assert client.get("/api/v1/pts/highlight", params={"kind": "ms", "id": 0}).status_code == 422
+    r = client.get("/api/v1/pts/highlight", params={"kind": "xx", "id": 1})
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "bad_kind"
+
+
 # --- правка оборудования ----------------------------------------------------------------
 
 def test_equipment_edit_allow_list_and_guards(monkeypatch):
