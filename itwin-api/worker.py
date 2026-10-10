@@ -398,6 +398,11 @@ def build_file_job(self, kind: str, params: dict, user: str = ""):
             await close_db_pool()
 
     self.update_state(state="PROGRESS", meta={"message": "Формирование файла", "kind": kind})
+    # ход работы построителя («Участок 3 из 40: РС 227») — в статус задачи для UI. Построитель
+    # сообщает из своего потока, а self.request в Celery — свой у каждого потока: id задачи берём здесь
+    task_id = self.request.id
+    progress_token = file_jobs.set_progress(
+        lambda message: self.update_state(task_id=task_id, state="PROGRESS", meta={"message": message, "kind": kind}))
     started = time.monotonic()
     try:
         result = asyncio.run(_go())
@@ -407,6 +412,8 @@ def build_file_job(self, kind: str, params: dict, user: str = ""):
         logger.error("build_file_job %s failed: %s", kind, e, exc_info=True)
         return {"status": "error", "kind": kind, "status_code": 500,
                 "message": _redact(f"Не удалось сформировать файл: {e}")}
+    finally:
+        file_jobs.reset_progress(progress_token)
     meta = file_jobs.store_result(self.request.id, result, owner=user, kind=kind)
     return {"status": "success", "kind": kind, "filename": meta["filename"], "size": meta["size"],
             "media_type": meta["media_type"], "ttl": meta["ttl"],

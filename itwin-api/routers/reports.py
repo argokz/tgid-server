@@ -28,7 +28,11 @@ router = APIRouter(tags=["reports"])
 
 
 @router.post("/api/db/object/{table}/{obj_id}")
-def generate_passport_excel_query(table: str, obj_id: int):
+def generate_passport_excel_query(
+    table: str,
+    obj_id: int,
+    fragments: Optional[str] = Query(None, description="фрагменты карты 1,2,3 — как -fragments десктопа"),
+):
     """
     Эндпоинт для генерации полного Excel паспорта по клику на трубу (linesobj) или узел (nodes).
     Определяет принадлежность к магистральной или распределительной сети и генерирует паспорт участка.
@@ -38,7 +42,7 @@ def generate_passport_excel_query(table: str, obj_id: int):
     Паспорт строится 10–15 с; фоновый вариант — POST /api/v1/file-jobs (kind=passport).
     """
     try:
-        content, filename = build_passport_xlsx(table, obj_id)
+        content, filename = build_passport_xlsx(table, obj_id, parse_fragment_ids(None, fragments))
     except PassportError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
@@ -137,6 +141,7 @@ async def get_passports_hierarchy():
                     if n_id not in nach_map:
                         nach_map[n_id] = {
                             "id": f"nach_{ms_rs_type}_{n_id}",
+                            "nach_id": n_id,  # 0 — участки без начальника; паспорта по начальнику — passport_chief
                             "name": n_name,
                             "children": []
                         }

@@ -52,7 +52,11 @@ def test_validate_params_rejects_unknown_kind_and_bad_params():
         file_jobs.validate_params("nope", {})
     with pytest.raises(ValueError):  # pydantic ValidationError — подкласс ValueError
         file_jobs.validate_params("passport", {"table": "users", "obj_id": 1})
-    assert file_jobs.validate_params("passport", {"table": "nodes", "obj_id": "5"}) == {"table": "nodes", "obj_id": 5}
+    assert file_jobs.validate_params("passport", {"table": "nodes", "obj_id": "5"}) == {
+        "table": "nodes", "obj_id": 5, "fragments": None}
+    assert file_jobs.validate_params("passport", {"table": "uchastok_rs", "obj_id": 7, "fragments": [3, 2]})["fragments"] == [3, 2]
+    with pytest.raises(ValueError):
+        file_jobs.validate_params("passport", {"table": "uchastok_rs", "obj_id": 7, "fragments": [0]})
     assert set(file_jobs.KINDS) == set(file_jobs.BUILDERS)
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+from typing import Iterable, Optional
 
 import psycopg2
 
@@ -84,8 +85,19 @@ def resolve_passport_site(cur, table: str, obj_id: int) -> tuple[str, int]:
     return resolved
 
 
-def build_passport_xlsx(table: str, obj_id: int) -> tuple[bytes, str]:
-    """Полный паспорт участка объекта: (содержимое .xlsx, имя файла). PassportError — ошибки данных."""
+def fragments_arg(fragments: Optional[Iterable[int]]) -> str:
+    """Фрагменты для форм паспорта: «1,2,3» — как ``-fragments`` десктопа (подключённые фрагменты);
+    пусто — все фрагменты базы."""
+    return ",".join(str(int(f)) for f in sorted(set(fragments or [])))
+
+
+def build_passport_xlsx(table: str, obj_id: int, fragments: Optional[Iterable[int]] = None) -> tuple[bytes, str]:
+    """Полный паспорт участка объекта: (содержимое .xlsx, имя файла). PassportError — ошибки данных.
+
+    fragments — фрагменты карты: десктоп строит паспорт по подключённым фрагментам
+    (``GidWidget::Passport`` → ``-fragments m_par``). Без них в базе с фрагментами-вариантами
+    (копии магистралей в Астане) трубы участка попадают в паспорт по несколько раз.
+    """
     import openpyxl
 
     (async_do_passport, read_ms_rs, passport_connect, passport_db2, passport_ms1, passport_rs1,
@@ -119,7 +131,7 @@ def build_passport_xlsx(table: str, obj_id: int) -> tuple[bytes, str]:
     # Полный сценарий desktop-паспорта (passport_module/p.py::passport):
     # титульный лист участка → состав участка → граф участка (marked lines) →
     # 15 форм. Без make_graph формам приходил mark_line=0 и SQL падал.
-    fragments = ""
+    fragments = fragments_arg(fragments)
     passport_conn = passport_connect.connect(**passport_conn_params)
     try:
         wb = openpyxl.Workbook()
@@ -163,3 +175,142 @@ def build_passport_xlsx(table: str, obj_id: int) -> tuple[bytes, str]:
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue(), f"Passport_{ms_rs}_{site_id}.xlsx"
+
+
+# --- паспорта по начальнику участка --------------------------------------------------------
+#
+# Десктоп строит паспорт одного участка МС/РС (док ПТС → «Паспорт»: GidWidget::Passport,
+# passport_ps/p.py -type ms|rs -id N); в дереве дока участки сгруппированы по начальникам.
+# Паспорта по начальнику — те же паспорта всех его участков (формат десктопа без изменений),
+# одним архивом с перечнем: что вошло и что пропущено.
+
+KIND_TITLE = {"ms": "МС", "rs": "РС"}
+SITE_NAME_COLUMN = {"ms": "opisanie_uchastka_ms", "rs": "naimenovanie_uchastka_rs"}
+_BAD_FILENAME_CHARS = str.maketrans({c: "_" for c in '\\/:*?"<>|\r\n\t'})
+
+
+def safe_filename(name: str, limit: int = 120) -> str:
+    cleaned = " ".join(str(name).translate(_BAD_FILENAME_CHARS).split()).strip(" .")
+    return (cleaned[:limit].rstrip(" .") or "file")
+
+
+def chief_sites(cur, nach_id: int, kinds: Iterable[str], fragments: Optional[Iterable[int]]):
+    """ФИО начальника и его участки (порядок дока ПТС) с числом труб в выбранных фрагментах —
+    отбор как в sort_graph.make_graph (трубы вне внутренних схем, фрагмент по узлу 1)."""
+    cur.execute("SELECT fio FROM nachalniki_uchastkov WHERE id = %s", (nach_id,))
+    row = cur.fetchone()
+    if not row:
+        raise PassportError(404, f"Начальник участка {nach_id} не найден")
+    fio = (row[0] or "").strip() or f"Начальник {nach_id}"
+    frags = sorted(set(int(f) for f in fragments or []))
+    sites = []
+    for kind in ("ms", "rs"):
+        if kind not in kinds:
+            continue
+        table, name_col = f"uchastok_{kind}", SITE_NAME_COLUMN[kind]
+        pipe_col = "magistralsite" if kind == "ms" else "distsite"
+        cur.execute(
+            f"""
+            WITH s AS (
+                SELECT s.id, s.{name_col} AS name
+                  FROM {table} s
+                  JOIN uchastki_ekspluatatsii ue ON ue.id = s.nomer_uchastka
+                 WHERE ue.nachalnik_uchastka = %s
+            ), p AS (
+                SELECT h.{pipe_col} AS site_id, count(*) AS pipes
+                  FROM heatpipesections h
+                  JOIN linesobj l ON l.id = h.lineid AND l.removed = 0
+                  JOIN nodes n1 ON n1.id = l.nodeid1 AND n1.removed = 0 AND n1.internalnodeid IS NULL
+                  JOIN nodes n2 ON n2.id = l.nodeid2 AND n2.removed = 0
+                 WHERE h.{pipe_col} IN (SELECT id FROM s)
+                   AND (cardinality(%s::int[]) = 0 OR n1.fileid = ANY(%s::int[]))
+                 GROUP BY 1
+            )
+            SELECT s.id, s.name, COALESCE(p.pipes, 0) FROM s LEFT JOIN p ON p.site_id = s.id
+             ORDER BY s.name, s.id
+            """,
+            (nach_id, frags, frags),
+        )
+        sites += [(kind, sid, (name or "").strip(), int(pipes)) for sid, name, pipes in cur.fetchall()]
+    return fio, sites
+
+
+def _index_workbook(fio: str, fragments: str, rows: list[tuple]) -> bytes:
+    import openpyxl
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Перечень участков"
+    ws.append([f"Паспорта участков начальника участка {fio}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([f"Фрагменты: {fragments or 'все'}"])
+    ws.append([])
+    ws.append(["№", "Вид", "Участок", "Наименование", "Труб", "Файл паспорта / причина"])
+    for cell in ws[4]:
+        cell.font = Font(bold=True)
+    for i, row in enumerate(rows, 1):
+        ws.append([i, *row])
+    for col, width in zip("ABCDEF", (5, 6, 9, 60, 7, 70)):
+        ws.column_dimensions[col].width = width
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def build_chief_passports_zip(nach_id: int, kinds: Iterable[str] = ("ms", "rs"),
+                              fragments: Optional[Iterable[int]] = None,
+                              progress=None) -> tuple[bytes, str]:
+    """Паспорта всех участков начальника (МС и/или РС) — ZIP: по .xlsx на участок + перечень.
+
+    Участок без труб в выбранных фрагментах пропускается (десктоп: «Нет участков»); ошибка одного
+    паспорта не останавливает остальные — попадает в перечень. progress(message) — ход работы.
+    """
+    import zipfile
+
+    kinds = tuple(k for k in ("ms", "rs") if k in set(kinds))
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST"), database=os.getenv("DB_NAME"), user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"), port=os.getenv("DB_PORT"),
+    )
+    try:
+        fio, sites = chief_sites(conn.cursor(), nach_id, kinds, fragments)
+    finally:
+        conn.close()
+    if not sites:
+        raise PassportError(404, f"У начальника участка {fio} нет участков "
+                                 f"{' и '.join(KIND_TITLE[k] for k in kinds)}")
+    if not any(pipes for *_, pipes in sites):
+        raise PassportError(404, f"У участков начальника {fio} нет труб в выбранных фрагментах — "
+                                 "подключите фрагменты или привяжите трубы к участкам (инструмент «Участки ПТС»)")
+
+    buf = io.BytesIO()
+    index_rows, built, used = [], 0, set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n, (kind, site_id, name, pipes) in enumerate(sites, 1):
+            title = f"{KIND_TITLE[kind]} {site_id}"
+            if not pipes:
+                index_rows.append((KIND_TITLE[kind], site_id, name, 0, "пропущен: нет труб в выбранных фрагментах"))
+                continue
+            if progress:
+                progress(f"Участок {n} из {len(sites)}: {title}")
+            try:
+                content, _ = build_passport_xlsx(f"uchastok_{kind}", site_id, fragments)
+            except PassportError as e:
+                index_rows.append((KIND_TITLE[kind], site_id, name, pipes, f"не сформирован: {e.detail}"))
+                continue
+            except Exception as e:  # noqa: BLE001 — один участок не должен ронять весь архив
+                index_rows.append((KIND_TITLE[kind], site_id, name, pipes, f"ошибка: {e}"))
+                continue
+            fname = safe_filename(f"{title} — {name}" if name else title) + ".xlsx"
+            if fname in used:
+                fname = safe_filename(f"{title} ({n})") + ".xlsx"
+            used.add(fname)
+            zf.writestr(fname, content)
+            index_rows.append((KIND_TITLE[kind], site_id, name, pipes, fname))
+            built += 1
+        zf.writestr("Перечень участков.xlsx", _index_workbook(fio, fragments_arg(fragments), index_rows))
+    if not built:
+        raise PassportError(500, f"Ни один паспорт участков начальника {fio} не сформирован: "
+                                 + "; ".join(f"{k} {i}: {r}" for k, i, _, _, r in index_rows if r.startswith(("не", "ош")))[:900])
+    return buf.getvalue(), safe_filename(f"Паспорта участков — {fio}") + ".zip"

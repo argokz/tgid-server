@@ -69,41 +69,49 @@ where ms.ms_rs='{ms_rs}' and ms.id={id}
     return db2.read_q(conn, q)
 
 
-def async_do_passport(c, wb, ms_rs, id, fragments, mark_line, mark_pts, mark_node, vals):
-    conn = c
-    ws1 = wb.create_sheet(title="Ф1.Трубы")
-    ws2_1 = wb.create_sheet(title="Ф2_1.Механическое оборудование")
-    ws2_2 = wb.create_sheet(title="Ф2_2.Механическое оборудование")
-    ws3 = wb.create_sheet(title="Ф3.Каналы")
-    ws4 = wb.create_sheet(title="Ф4.Камеры")
-    ws5 = wb.create_sheet(title="Ф5.Павильоны")
-    ws6 = wb.create_sheet(title="Ф6.Опоры")
-    ws7 = wb.create_sheet(title="Ф7.Спец.констр.")
-    ws8 = wb.create_sheet(title="Ф8.Изоляция труб")
-    ws9 = wb.create_sheet(title="Ф9.Ответств.лицо")
-    ws10 = wb.create_sheet(title="Ф10.Ремонт")
-    ws11 = wb.create_sheet(title="Ф11.Нарушение")
-    ws12 = wb.create_sheet(title="Ф12.Шурфовки")
-    ws13 = wb.create_sheet(title="Ф13.Вырезки")
-    ws14 = wb.create_sheet(title="Ф14.Опрессовки")
-    ws15 = wb.create_sheet(title="Ф15.Осмотр")
+def form_workers():
+    # Сколько форм строить одновременно (у каждой своё соединение). Десктоп — 5; на сервере
+    # max_connections общий для всех баз, поэтому по умолчанию 3 (PASSPORT_FORM_WORKERS).
+    try:
+        return max(1, min(8, int(os.getenv('PASSPORT_FORM_WORKERS') or 3)))
+    except ValueError:
+        return 3
 
-    f1.do_passport(conn, ws1, ms_rs, id, fragments, mark_line, mark_pts)
-    f2_1.do_passport(conn, ws2_1, ms_rs, id, fragments, mark_line, mark_pts)
-    f2_2.do_passport(conn, ws2_2, ms_rs, id, fragments, mark_line, mark_pts)
-    f3.do_passport(conn, ws3, ms_rs, id, fragments, mark_line, mark_pts)
-    f4.do_passport(conn, ws4, ms_rs, id, fragments, mark_line, mark_pts, mark_node, vals)
-    f5.do_passport(conn, ws5, ms_rs, id, fragments, mark_line, mark_pts, mark_node, vals)
-    f6.do_passport(conn, ws6, ms_rs, id, fragments, mark_line, mark_pts)
-    f7.do_passport(conn, ws7, ms_rs, id, fragments, mark_line, mark_pts)
-    f8.do_passport(conn, ws8, ms_rs, id, fragments, mark_line, mark_pts)
-    f9.do_passport(conn, ws9, ms_rs, id, fragments, mark_line, mark_pts)
-    f10.do_passport(conn, ws10, ms_rs, id, fragments, mark_line, mark_pts)
-    f11.do_passport(conn, ws11, ms_rs, id, fragments, mark_line, mark_pts)
-    f12.do_passport(conn, ws12, ms_rs, id, fragments, mark_line, mark_pts)
-    f13.do_passport(conn, ws13, ms_rs, id, fragments, mark_line, mark_pts)
-    f14.do_passport(conn, ws14, ms_rs, id, fragments, mark_line, mark_pts)
-    f15.do_passport(conn, ws15, ms_rs, id, fragments, mark_line, mark_pts)
+
+def async_do_passport(c, wb, ms_rs, id, fragments, mark_line, mark_pts, mark_node, vals):
+    # Листы создаются по порядку, формы строятся параллельно — как в десктопе
+    # (gid8 python/docs/passport_ps/p.py: ThreadPoolExecutor); у каждой формы
+    # своё соединение (connect.connect(**c)). Ошибка формы не глотается (в десктопе — print и
+    # неполный паспорт): поднимается после завершения остальных.
+    forms = [
+        ("Ф1.Трубы", f1, False),
+        ("Ф2_1.Механическое оборудование", f2_1, False),
+        ("Ф2_2.Механическое оборудование", f2_2, False),
+        ("Ф3.Каналы", f3, False),
+        ("Ф4.Камеры", f4, True),
+        ("Ф5.Павильоны", f5, True),
+        ("Ф6.Опоры", f6, False),
+        ("Ф7.Спец.констр.", f7, False),
+        ("Ф8.Изоляция труб", f8, False),
+        ("Ф9.Ответств.лицо", f9, False),
+        ("Ф10.Ремонт", f10, False),
+        ("Ф11.Нарушение", f11, False),
+        ("Ф12.Шурфовки", f12, False),
+        ("Ф13.Вырезки", f13, False),
+        ("Ф14.Опрессовки", f14, False),
+        ("Ф15.Осмотр", f15, False),
+    ]
+    with ThreadPoolExecutor(max_workers=form_workers()) as executor:
+        futures = []
+        for title, form, with_nodes in forms:
+            ws = wb.create_sheet(title=title)
+            args = [c, ws, ms_rs, id, fragments, mark_line, mark_pts]
+            if with_nodes:
+                args += [mark_node, vals]
+            futures.append(executor.submit(form.do_passport, *args))
+        wait(futures)
+    for future in futures:
+        future.result()
     print("async_do_passport_end")
 
 

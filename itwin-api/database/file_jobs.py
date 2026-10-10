@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
@@ -48,9 +49,22 @@ class FileResult:
 
 # --- параметры -------------------------------------------------------------------------
 
+FragmentIds = Optional[list[Annotated[int, Field(ge=1)]]]
+
+
 class PassportParams(BaseModel):
     table: Literal["linesobj", "nodes", "uchastok_ms", "uchastok_rs"]
     obj_id: int = Field(..., ge=1)
+    # фрагменты карты — как -fragments десктопа; без них в паспорт попадают копии труб
+    # из фрагментов-вариантов
+    fragments: FragmentIds = Field(None, max_length=2000)
+
+
+class PassportChiefParams(BaseModel):
+    """Паспорта всех участков начальника участка — ZIP (database/passport_excel.py)."""
+    nach_id: int = Field(..., ge=1)
+    kinds: list[Literal["ms", "rs"]] = Field(default_factory=lambda: ["ms", "rs"], min_length=1, max_length=2)
+    fragments: FragmentIds = Field(None, max_length=2000)
 
 
 class ReportExcelParams(BaseModel):
@@ -78,16 +92,50 @@ class NetworkDxfParams(BaseModel):
     limit: int = Field(50000, ge=1, le=200000)
 
 
+# --- ход работы ------------------------------------------------------------------------
+
+_progress: ContextVar[Optional[Callable[[str], None]]] = ContextVar("file_job_progress", default=None)
+
+
+def set_progress(callback: Optional[Callable[[str], None]]):
+    """Куда построитель сообщает ход работы (воркер — в статус задачи Celery); вернуть токен."""
+    return _progress.set(callback)
+
+
+def reset_progress(token) -> None:
+    _progress.reset(token)
+
+
+def report_progress(message: str) -> None:
+    callback = _progress.get()
+    if callback is not None:
+        try:
+            callback(message)
+        except Exception:  # noqa: BLE001 — ход работы не должен ронять построение файла
+            pass
+
+
 # --- построители -----------------------------------------------------------------------
 
 async def _passport(p: PassportParams) -> FileResult:
     from database.passport_excel import PassportError, build_passport_xlsx
 
     try:
-        content, filename = await asyncio.to_thread(build_passport_xlsx, p.table, p.obj_id)
+        content, filename = await asyncio.to_thread(build_passport_xlsx, p.table, p.obj_id, p.fragments)
     except PassportError as e:
         raise FileJobError(e.status_code, e.detail) from e
     return FileResult(content, filename)
+
+
+async def _passport_chief(p: PassportChiefParams) -> FileResult:
+    from database.passport_excel import PassportError, build_chief_passports_zip
+
+    try:
+        content, filename = await asyncio.to_thread(
+            build_chief_passports_zip, p.nach_id, p.kinds, p.fragments, report_progress)
+    except PassportError as e:
+        raise FileJobError(e.status_code, e.detail) from e
+    return FileResult(content, filename, media_type="application/zip")
 
 
 async def _report_excel(p: ReportExcelParams) -> FileResult:
@@ -173,6 +221,7 @@ async def _network_dxf(p: NetworkDxfParams) -> FileResult:
 
 PARAM_MODELS: dict[str, type[BaseModel]] = {
     "passport": PassportParams,
+    "passport_chief": PassportChiefParams,
     "report_excel": ReportExcelParams,
     "catalog_report": CatalogReportParams,
     "alseko_reconciliation": AlsekoReconciliationParams,
@@ -182,6 +231,7 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
 
 BUILDERS: dict[str, Callable[[Any], Awaitable[FileResult]]] = {
     "passport": _passport,
+    "passport_chief": _passport_chief,
     "report_excel": _report_excel,
     "catalog_report": _catalog_report,
     "alseko_reconciliation": _alseko_reconciliation,

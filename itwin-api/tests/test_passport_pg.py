@@ -101,11 +101,15 @@ def test_form_sql_is_postgresql(name, ms_rs, captured):
 def test_object_binding_uses_index_friendly_postgis():
     q = sql.get_obj_ps(MARK_LINE, MARK_PTS, "(select id, shape from zapornaya_armatura)", ["id"])
     assert "ST_DWithin(z.shape, l.shape, 0.3)" in q  # по колонке — работает GiST-индекс
-    assert "ST_PointN(" in q  # точная привязка по первой точке, как STPointN(1)
+    # как десктоп с 921fc9e: расстояние от всей геометрии объекта (линейный канал у трубы — не по первой точке)
+    assert "ST_PointN(" not in q
     # одна нумерация «труба, затем узел»: при двух независимых объект выпадал из формы
     assert "1 AS rn2" in q and "ORDER BY ST_Distance(" in q
-    whole = sql.get_obj_ps(MARK_LINE, MARK_PTS, "(select id, shape from tkamera)", ["id"], use_first_point=False)
-    assert "ST_PointN(" not in whole
+    # строка на трубу: узлы самой трубы, участки ПТС не склеиваются (десктоп 921fc9e)
+    assert "l.nodeID1" in q and "mark_line.ord AS ps_ord" in q
+    assert q.count("join (values") - q.count("--join (values") == 1  # только mark_line, без mark_pts
+    first = sql.get_obj_ps(MARK_LINE, MARK_PTS, "(select id, shape from zapornaya_armatura)", ["id"], use_first_point=True)
+    assert "ST_PointN(" in first
 
 
 def test_first_point_handles_point_line_polygon():

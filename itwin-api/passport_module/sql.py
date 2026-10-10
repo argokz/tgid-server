@@ -147,7 +147,9 @@ join linesobj l on l.id=ps2.l_id
 {join_dop}
 
 --order by ps2.ps_ord
-order by ps2.ps_ord, ps2.l_id, ps2.obj_id
+--order by ps2.ps_ord, ps2.l_id, ps2.obj_id
+-- десктоп 921fc9e (19.12.2024): строки по трубам в порядке id трубы
+order by ps2.l_id, ps2.obj_id
 --, p.ps_rn
 ---------------------------------------------------------------------------------------------
     '''
@@ -241,7 +243,7 @@ def first_point(geom):
     return f'COALESCE(ST_PointN({g}, 1), ST_PointN(ST_ExteriorRing({g}), 1), {g})'
 
 
-def obj_anchor(geom, use_first_point=True):
+def obj_anchor(geom, use_first_point=False):
     return first_point(geom) if use_first_point else geom
 
 
@@ -258,9 +260,10 @@ def near(anchor, geom, other):
 #-------------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------------
 
-def get_obj_ps(mark_line, mark_pts, obj, cols = [], hps_cols = (), use_first_point=True):
+def get_obj_ps(mark_line, mark_pts, obj, cols = [], hps_cols = (), use_first_point=False):
     '''Объекты obj, привязанные к трубам участка (в пределах NEAR_TOLERANCE).
-    use_first_point=False — расстояние от всей геометрии (камеры, павильоны).'''
+    По умолчанию — расстояние от всей геометрии объекта, как в десктопе с 921fc9e (19.12.2024:
+    ST_Distance(z.shape, l.shape) вместо ST_PointN(z.shape, 1)); use_first_point=True — от первой точки.'''
     anchor = obj_anchor('z.shape', use_first_point)
     obj_par = ''
     obj_par1 = ''
@@ -302,18 +305,18 @@ z.id as obj_id,
 l.id as l_id,
 
 mark_line.pts as ps_id,
-mark_pts.nodeID1,
-mark_pts.nodeID2,
+-- десктоп 921fc9e: узлы и порядок самой трубы, а не участка ПТС (каждая труба — своя строка)
+l.nodeID1,
+l.nodeID2,
 mark_line.ord,
-mark_pts.ord AS ps_ord,
+mark_line.ord AS ps_ord,
 
 -- Объект относится к ближайшей трубе участка, камера — ближайший к нему узел.
 -- В десктопе было два независимых ROW_NUMBER (rn по трубе, rn2 по узлу) и условие
 -- rn=1 and rn2=1: при нескольких трубах и узлах рядом эти строки не совпадали и объект
 -- выпадал из формы. Одна нумерация: труба, затем узел.
--- mark_pts может содержать участок ПТС несколько раз (обход возвращается в него) — берём первое вхождение.
 ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY ST_Distance({anchor}, l.shape), l.id,
-                   ST_Distance({anchor}, n.shape), n.id, mark_pts.ord) AS rn,
+                   ST_Distance({anchor}, n.shape), n.id) AS rn,
 1 AS rn2
 
 {obj_par1}
@@ -323,7 +326,7 @@ join nodes n1 on n1.id=l.nodeID1
 JOIN heatPipeSections hps on hps.lineID=l.id
 
 join (values {mark_line}) mark_line(ord, id, napr, pts) on mark_line.id=l.id
-join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
+--join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
 
 
 join {obj} z on {near(anchor, 'z.shape', 'l.shape')}
@@ -343,7 +346,7 @@ where l.removed=0
 #-------------------------------------------------------------------------------------
 
 
-def get_obj_ps2(mark_line, mark_pts, obj, use_first_point=True):
+def get_obj_ps2(mark_line, mark_pts, obj, use_first_point=False):
     anchor = obj_anchor('z.shape', use_first_point)
 
     q = f'''
@@ -365,18 +368,18 @@ z.id as obj_id,
 l.id as l_id,
 
 mark_line.pts as ps_id,
-mark_pts.nodeID1,
-mark_pts.nodeID2,
+-- десктоп 921fc9e: узлы и порядок самой трубы, а не участка ПТС (каждая труба — своя строка)
+l.nodeID1,
+l.nodeID2,
 mark_line.ord,
-mark_pts.ord AS ps_ord,
+mark_line.ord AS ps_ord,
 
 -- Объект относится к ближайшей трубе участка, камера — ближайший к нему узел.
 -- В десктопе было два независимых ROW_NUMBER (rn по трубе, rn2 по узлу) и условие
 -- rn=1 and rn2=1: при нескольких трубах и узлах рядом эти строки не совпадали и объект
 -- выпадал из формы. Одна нумерация: труба, затем узел.
--- mark_pts может содержать участок ПТС несколько раз (обход возвращается в него) — берём первое вхождение.
 ROW_NUMBER() OVER (PARTITION BY z.id ORDER BY ST_Distance({anchor}, l.shape), l.id,
-                   ST_Distance({anchor}, n.shape), n.id, mark_pts.ord) AS rn,
+                   ST_Distance({anchor}, n.shape), n.id) AS rn,
 1 AS rn2
 
 
@@ -385,7 +388,7 @@ join nodes n1 on n1.id=l.nodeID1
 JOIN heatPipeSections hps on hps.lineID=l.id
 
 join (values {mark_line}) mark_line(ord, id, napr, pts) on mark_line.id=l.id
-join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
+--join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
 
 
 join {obj} z on {near(anchor, 'z.shape', 'l.shape')}
@@ -422,9 +425,10 @@ select
 --hps.pipeSectionID as id,
 mark_line.pts as id,
 mark_line.ord,
-mark_pts.nodeID1,
-mark_pts.nodeID2,
-mark_pts.ord AS ps_ord,
+-- десктоп 921fc9e: строка на трубу с её узлами (раньше — участок ПТС от узла до узла)
+l.nodeID1,
+l.nodeID2,
+mark_line.ord AS ps_ord,
 
 l.externalSignLineID,
 
@@ -448,7 +452,7 @@ case when l.externalSignLineID in (1, 3, 5) then hps.pipeSectLength*power(hps.di
 from linesobj l
 JOIN heatPipeSections hps on hps.lineID=l.id
 join (values {mark_line}) mark_line(ord, id, napr, pts) on mark_line.id=l.id
-join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
+--join (values {mark_pts}) mark_pts(ord, id, nodeID1, nodeID2) on mark_pts.id=mark_line.pts
 where l.removed=0
     
 ---------------------------------------------------------------------------------------------
