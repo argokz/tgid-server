@@ -1,0 +1,9 @@
+-!Узел с заданным напором
+Узел с заданным напором
+--  nodeID
+  pressFlow
+  pressRet
+  fragment_resultID Фрагмент присоединения
+--  file_result
+  kod_m
+  uzel_m

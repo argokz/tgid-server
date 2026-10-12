@@ -1,0 +1,42 @@
+Узел
+      externalCodeID
+      externalNodeName
+      externalSignID
+      geoMarkTopTube
+      geoMarkNodeArea
+Производственная служба
+--      nodeName Наименование узла ПТС
+      nodeTypeID
+-----     belongHN
+      organizationID
+--      $ms_view Участки МС
+--      $rs_view Участки РС
+      inventNumber
+      registNumber
+Даты эксплуатации
+      PICdate
+      lastRepairDate
+Архив
+      archiveChangeDate
+      operatorID
+      fileID
+--
+--      internalNodeID
+--      addressID
+--      calcPressFlow
+--      calcPressRet
+--      displaySign
+--      scheme
+--      memo
+--      gpsCoords
+--      belongHN
+--      passport
+--      pipelineSign
+--      nodeTypeID
+--      isBusy
+--      isLoaded
+--      belongMagistralSite
+--      belongDistSite
+--      magistralSite
+--      distSite
+--      fileID

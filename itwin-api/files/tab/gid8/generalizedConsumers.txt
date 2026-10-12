@@ -1,0 +1,240 @@
+-!Основные
+Основные
+  id
+  consumerStateID
+  name
+  quarter
+  maxBuildingHeight
+  specExpendID
+  calcTemperatureID
+-- gvsLoadGraphID # Код графика суточного нагрузки ГВ не используется
+  varCoeffID
+--  accumCoeff # Коэффициент аккумуляции здания  не релизовано, нужно сделать
+  normHLosFlow
+  normHLosRet
+-----  hydroModeSignID  Не нужно!!!
+-
+  PDvalveInstallLocID
+  setPDonRegulator
+  setLeakageFlow
+  setLeakageRet
+  WEmeteringDeviceID
+  volWaterHS
+  volWaterVS
+--  minThrustDS
+Гидравлические сопротивления
+  hydroResCloseSys
+  hydroResCloseSysSummer
+  closeSysCalcSignID
+  hydroResWDOFlow
+  calcSignOpenSysFlowID
+  hydroResWDORet
+  calcSignResWDORetID
+------------------- ???
+---  2021.12.28 Нужно проверить 2025
+  calcSignSetLoadCloseSys
+  calcSignSetLoadOpenSysFlow
+  calcSignSetLoadOpenSysRet
+-  hydroThrustIn
+-  hydroThrustOut
+-!Нагрузки
+Зависимая СО
+  calcHLdep
+  calcInternHDdep
+-  adjCalcHLdep
+-  adjCalcHDdep
+-  perspCalcHLdep
+-  perspCalcInternHDdep
+  calcTempDep
+  connectionSchemeID
+  mixFactCoeffDep
+Независимая СО
+  calcHLindep
+  calcInternHDindep
+-  adjCalcHLindep
+-  adjCalcInternHDindep
+-  perspCalcHLindep
+-  perspCalcInternHDindep
+  calcTempIndep
+-  mixFactCoeffIndep
+Вентиляция
+  calcHLventil
+-  adjCalcHLventil
+-  perspCalcHLventil
+  calcHLcond
+-  adjCalcHLcond
+-  perspCalcHLcond
+  calcHLcloseSys
+  calcHLopenSysFlow
+  calcHLopenSysRet
+-  adjCalcHLcloseSys
+-  adjCalcHLopenSysFlow
+-  adjCalcHLopenSysRet
+-  perspCalcHLcloseSys
+-  perspCalcHLopenSysFlow
+-  perspCalcHLopenSysRet
+  expendHWpart
+  calcTempHA
+Параллельная ГВС
+  calcHLparall
+  internHDparall
+-  adjCalcHLparall
+-  adjInternHDparall
+-  perspCalcHLparall
+-  perspInternHDparall
+  schemeParallID
+  calcHLGVSparall
+-  adjCalcHLGVSparall
+-  perspCalcHLGVSparall
+  hourIrregCoeffParall
+  avgHLcompParall
+  tempRecircPipeParall
+  calcTempHRparall
+  calcTempHWDOparall
+  AMRdepParall
+Смешанная ГВС
+  calcHLmix
+  internHDmix
+-  adjCalcHLmix
+-  adjInternHDmix
+-  perspCalcHLmix
+-  perspInternHDmix
+  schemeMixID
+  calcHLGVSmix
+-  adjCalcHLGVSmix
+-  perspCalcHLGVSmix
+  hourIrregCoeffMix
+  avgHLcompMix
+  tempRecircPipeMix
+  calcTempHRmix
+  calcTempHWDOmix
+  AMRdepMix
+Последовательная ГВС
+  calcHLconseq
+  internHDconseq
+-  adjCalcHLconseq
+-  adjInternHDconseq
+-  perspCalcHLconseq
+-  perspInternHDconseq
+  schemeConseqID
+  calcHLGVSconseq
+-  adjCalcHLGVSconseq
+-  perspCalcHLGVSconseq
+  hourIrregCoeffConseq
+  avgHLcompconseq
+  tempRecircPipeConseq
+  calcTempHRconseq
+  calcTempHWDOconseq
+  AMRdepConseq
+Предвключенная ГВС
+  calcHLpreON
+  internHDpreON
+-  adjCalcHLpreON
+-  adjInternHDpreON
+-  perspCalcHLpreON
+-  perspInternHDpreON
+  schemePreONID
+  calcHLGVSpreON
+-  adjCalcHLGVSpreON
+-  perspCalcHLGVSpreON
+  hourIrregCoeffPreON
+  avgHLcompPreON
+  tempRecircPipePreON
+  calcTempHRpreON
+  calcTempHWDOpreON
+  AMRdepPreON
+Открытая ГВС
+  avgHLGVSopenSysFlow
+  avgHLGVSopenSysRet
+-  adjAvgHLGVSopenSysFlow
+-  adjAvgHLGVSopenSysRet
+-  perspAvgHLGVSopenSysFlow
+-  perspAvgHLGVSopenSysRet
+  hourIrregCoeffOpen
+  avgHLcompOpen
+  tempRecircPipeOpen
+  calcTempHWDOopen
+-Остальное
+-  PDvalveInstallLocID
+-  setPDonRegulator
+-  setLeakageFlow
+-  setLeakageRet
+-  WEmeteringDeviceID
+-  volWaterHS
+-  volWaterVS
+-  minThrustDS
+-  hydroResCloseSys
+-  hydroResCloseSysSummer
+-  closeSysCalcSignID
+-  hydroResWDOFlow
+-  calcSignOpenSysFlowID
+-  hydroResWDORet
+-  calcSignResWDORetID
+-  calcSignSetLoadCloseSys
+-  calcSignSetLoadOpenSysFlow
+-  calcSignSetLoadOpenSysRet
+-  hydroThrustIn
+-  hydroThrustOut
+-Расчетные расходы
+-  calcExpendDep
+-  calcExpendIndep
+-  calcExpendVentil
+-  calcExpendCond
+-  calcExpendHWFlow
+-  calcExpendHWRet
+-  calcExpendRecircOpen
+-  calcExpendHWparall
+-  calcExpendHWmix
+-  calcExpendHWconseq
+-  calcExpendHWpreON
+-  calcThrustInWSD
+-!Нагрузки договорные и перспективные
+Нагрузки перспективные, Гкал/ч
+ perspCalcHLdep Отопление, зависимое СО
+ perspCalcInternHDdep Внутреннее тепловыделение, зависимое СО
+ perspCalcHLindep Отопление, независимое СО
+ perspCalcInternHDindep Внутреннее тепловыделение, независимое СО
+ perspCalcHLventil Вентиляция
+ perspCalcHLcond Кондиционирование
+- perspCalcHLcloseSys
+- perspCalcHLopenSysFlow
+- perspCalcHLopenSysRet
+ perspCalcHLparall Отопление, параллельная ГВС
+ perspCalcHLGVSparall ГВС, параллельная ГВС
+ perspInternHDparall Внутреннее тепловыделение, параллельная ГВС
+ perspCalcHLmix Отопление, смешанная ГВС 
+ perspCalcHLGVSmix ГВС, смешанная ГВС 
+ perspInternHDmix Внутреннее тепловыделение, смешанная ГВС
+ perspCalcHLconseq Отопление, последовательная ГВС 
+ perspCalcHLGVSconseq ГВС, последовательная ГВС 
+ perspInternHDconseq Внутреннее тепловыделение, последовательная ГВС
+ perspCalcHLpreON Отопление, предвключенная ГВС 
+ perspCalcHLGVSpreON ГВС, предвключенная ГВС 
+ perspInternHDpreON Внутреннее тепловыделение, предвключенная ГВС
+ perspAvgHLGVSopenSysFlow Открытая ГВС, из подающего
+ perspAvgHLGVSopenSysRet Открытая ГВС, из обратного
+-!Нагрузки договорные
+Нагрузки договорные, Гкал/ч
+ adjCalcHLdep Отопление, зависимое СО 
+ adjCalcHDdep Внутреннее тепловыделение, зависимое СО 
+ adjCalcHLindep Отопление, независимое СО 
+ adjCalcInternHDindep Внутреннее тепловыделение, независимое СО 
+ adjCalcHLventil Вентиляция 
+ adjCalcHLcond Кондиционирование 
+- adjCalcHLcloseSys 
+- adjCalcHLopenSysFlow 
+- adjCalcHLopenSysRet 
+ adjCalcHLparall Отопление, параллельная ГВС 
+ adjCalcHLGVSparall ГВС, параллельная ГВС 
+ adjInternHDparall Внутреннее тепловыделение, параллельная ГВС 
+ adjCalcHLmix Отопление, смешанная ГВС 
+ adjCalcHLGVSmix ГВС, смешанная ГВС 
+ adjInternHDmix Внутреннее тепловыделение, смешанная ГВС 
+ adjCalcHLconseq Отопление, последовательная ГВС 
+ adjCalcHLGVSconseq ГВС, последовательная ГВС 
+ adjInternHDconseq Внутреннее тепловыделение, последовательная ГВС 
+ adjCalcHLpreON Отопление, предвключенная ГВС 
+ adjCalcHLGVSpreON ГВС, предвключенная ГВС 
+ adjInternHDpreON Внутреннее тепловыделение, предвключенная ГВС 
+ adjAvgHLGVSopenSysFlow Открытая ГВС, из подающего
+ adjAvgHLGVSopenSysRet Открытая ГВС, из обратного

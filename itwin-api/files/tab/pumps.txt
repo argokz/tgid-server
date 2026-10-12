@@ -19,7 +19,7 @@
  repairCountPump
  replaceCountAgreg
  repairCountEM
- opc
+-- opc
 -!Коэффициенты апроксимации
 Коэффициенты апроксимации, номинальный режим
  r0 R0 характеристики напора H(G)

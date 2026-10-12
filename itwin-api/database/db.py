@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional, Dict, List, Tuple
 from database.connect import acquire_conn, query_log
 from database.sql_ident import (
@@ -154,6 +155,99 @@ async def create_select_line(tn: str, id: int) -> str:
         logger.debug(f"Generated query: {q[:100]}...")
         return await print_q(conn, 'L', tn, q, id, filtr)
 
+# Поля узла в карточке точечного объекта (десктоп: property/PropertyDial.cpp, _init_table): блок «Узел»
+# перед полями объекта и, кроме узлов и узлов с заданным напором, блоки в конце первой вкладки
+NODE_HEAD_FIELDS = ['externalCodeID', 'externalNodeName', 'externalSignID', 'geoMarkTopTube', 'geoMarkNodeArea']
+NODE_TAIL_SUBSECTIONS = [
+    ('Производственная служба', ['nodeTypeID', 'organizationID', 'inventNumber', 'registNumber']),
+    ('Даты эксплуатации', ['PICdate', 'lastRepairDate']),
+    ('Архив', ['archiveChangeDate', 'operatorID']),
+]
+NO_NODE_TAIL = frozenset({'nodes', 'setpressnodes'})
+
+_SCHEME_RE = re.compile(r'^(C?)([0-9]+)\.([0-9]+)$')
+_GVS_BY_N1 = {5: 'ps', 4: 'sm', 3: 'pr', 15: 'pw', 6: 'op', 7: 'oo'}
+
+
+def read_cxema(scheme: str) -> Optional[Dict[str, str]]:
+    """Признаки схемы подключения потребителя по номеру (десктоп: property/potr_fun.cpp, readCxema).
+
+    Ключи — как в realConsumers.vis: elev, otop (z/n), gvs (ps/sm/pr/pw/op/oo), gvs_all, vent, rez.
+    Пустая строка — признак не задан (правило видимости тогда берёт значение «1», как десктоп).
+    """
+    if scheme == '':
+        return None
+    r = {'elev': '0', 'otop': '', 'gvs': '', 'gvs_all': '', 'vent': '', 'rez': ''}
+    m = _SCHEME_RE.match(scheme)
+    if not m:
+        return r
+    c1, n1, n2 = m.group(1), int(m.group(2)), int(m.group(3))
+    if scheme == '2.1':  # только вентиляция
+        r['vent'] = '1'
+        return r
+    el = False
+    if n2 in (5, 6, 7, 8) or scheme in ('1.3', '1.4'):
+        r['otop'], el = 'z', True        # зависимая элеваторная
+    elif n2 in (1, 2, 3, 4):
+        r['otop'] = 'z'                  # зависимая
+    if n2 in (9, 10, 11, 12) or scheme in ('1.5', '1.6'):
+        r['otop'], el = 'n', False       # независимая
+    if c1:
+        r['otop'] = ''
+    r['elev'] = '1' if el else '0'
+    r['gvs'] = _GVS_BY_N1.get(n1, '')
+    if r['gvs']:
+        r['gvs_all'] = '1'
+    vent = (n1 > 2 and n2 in (3, 4, 7, 8, 11, 12)) or (n1 == 1 and n2 in (2, 4, 6)) or (n1 == 2 and n2 == 1)
+    r['vent'] = '1' if vent else '0'
+    r['rez'] = '1' if n1 > 2 and n2 % 2 == 0 and r['gvs'] in ('op', 'oo') else '0'
+    return r
+
+
+def _vis_text(value) -> str:
+    """Значение поля строкой, как QVariant::toString десктопа (1.0 → «1», NULL → «»)."""
+    if value is None:
+        return ''
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _apply_vis(rules: Dict[str, Dict[str, List[str]]], key: str, value: str, shown: Dict[str, bool]) -> None:
+    """init_map_b десктопа: поля ключа скрыть, поля ветки значения (пусто → «1») показать."""
+    branches = rules.get(key.lower())
+    if not branches:
+        return
+    for cols in branches.values():
+        for c in cols:
+            shown[c] = False
+    for c in branches.get((value or '1').lower(), []):
+        shown[c] = True
+
+
+def hidden_fields(tn: str, rules: Dict[str, Dict[str, List[str]]], row: Dict[str, object]) -> set:
+    """Поля карточки, которые десктоп скрывает (setPR для потребителя, затем setVisAll).
+
+    ``row`` — значения полей объекта (lower-колонка → значение; у справочных полей — код).
+    """
+    if not rules:
+        return set()
+    hidden: Dict[str, bool] = {}
+    if tn.lower() == 'realconsumers':
+        cx = read_cxema(_vis_text(row.get('schemenum')))
+        if cx:
+            for key in ('elev', 'otop', 'gvs', 'gvs_all', 'vent', 'rez'):
+                shown: Dict[str, bool] = {}
+                _apply_vis(rules, key, cx[key], shown)
+                hidden.update({c: not on for c, on in shown.items()})
+    shown = {}
+    for key in rules:
+        if key in row:
+            _apply_vis(rules, key, _vis_text(row[key]), shown)
+    hidden.update({c: not on for c, on in shown.items()})
+    return {c for c, h in hidden.items() if h}
+
+
 async def create_select_node(tn: str, id: int) -> str:
     logger.info(f"Creating select for node: table={tn!r}, id={id}")
     if tn == 'nodes':
@@ -163,7 +257,8 @@ async def create_select_node(tn: str, id: int) -> str:
         actual = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
         joins += 'LEFT JOIN nodes N ON N.id=T.nodeID\n'
-        (i, par1, par2, joins) = await get_3_param("nodes", "N", i, par1, par2, joins, ['externalCodeID','externalNodeName','externalSignID','geoMarkTopTube','geoMarkNodeArea'])
+        node_fields = NODE_HEAD_FIELDS + [c for _, cols in NODE_TAIL_SUBSECTIONS for c in cols]
+        (i, par1, par2, joins) = await get_3_param("nodes", "N", i, par1, par2, joins, node_fields)
         
         filtr = await storage.read_tab2(tn)
         (i, par1, par2, joins) = await get_3_param(actual, "T", i, par1, par2, joins, filtr)
@@ -219,7 +314,9 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
         logger.debug(f"No columns provided, reading tab2 for {tn}")
         cols = await storage.read_tab2(tn)
 
-    if cols is None:
+    # без описания карточки — все колонки запроса; служебные (n_id, …||N) отсекает требование подписи
+    no_card = cols is None
+    if no_card:
         logger.debug(f"No tab2 data, using query columns")
         cols = columns
         cols.insert(0, "!1 111")
@@ -228,91 +325,104 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
     logger.debug(f"Processing {len(columns)} columns")
     data = {"tabs": []}
 
-    async def print_col(subsection, map_col, tn, col, prefix):
+    # имена колонок в запросе — как в справочнике подписей или в lower; сверяем без регистра
+    map_col = {k.lower(): v for k, v in rows[0].items()}
+    labels = {} if no_card else await storage.read_tab_labels(tn)
+    # видимость полей как в десктопе (tab/<table>.vis, у потребителя — по номеру схемы)
+    vis_row = {k: map_col.get(k + '||', v) for k, v in map_col.items() if '||' not in k}
+    hidden = hidden_fields(tn, await storage.read_vis(tn), vis_row)
+
+    async def print_col(subsection, tn, col, prefix, labels=None):
         (tnr, fnr, txt, f1) = storage.get_help(tn, col)
-        col1 = col
+        # подпись как в десктопе: из строки описания карточки, иначе справочник, иначе имя колонки
+        label = (labels or {}).get(col.lower()) or txt
+        if no_card and txt == col:
+            return
+        key = (f'{col}||{prefix}' if prefix else col).lower()
+        if key not in map_col:
+            return
 
-        field = dict()
+        id = -1
+        if prefix == '':
+            id = map_col.get('id')
+        elif prefix == 'N':
+            id = map_col.get('n_id')
+        elif prefix == 'N1':
+            id = map_col.get('n1_id')
+        elif prefix == 'N2':
+            id = map_col.get('n2_id')
+        elif prefix == 'L':
+            id = map_col.get('l_id')
 
-        if txt != col:
-            if prefix != '':
-                col += '||' + prefix
+        field = {'table': tn, 'field': col, 'label': label, 'value': map_col.get(key), 'id': id}
 
-            id = -1
-            if prefix == '':
-                id = map_col.get('id')
-            elif prefix == 'N':
-                id = map_col.get('n_id')
-            elif prefix == 'N1':
-                id = map_col.get('n1_id')
-            elif prefix == 'N2':
-                id = map_col.get('n2_id')
-            elif prefix == 'L':
-                id = map_col.get('l_id')
+        if key + '||' in map_col:
+            l = storage.get_lookup(tn, col)
+            if l is None:
+                logger.error('Error: No lookup found!')
+                return
 
-            v1 = map_col.get(col)
-            v2 = map_col.get(col+'||')
+            (tn1, fn1, tn2, id2, fn2, srt) = l
+            field['code'] = map_col.get(key + '||')
+            field['type'] = 'select'
+            field['select'] = f'{tn2} {id2} {fn2} {srt}'
+        else:
+            field['type'] = 'text'
 
-            field['table'] = tn
-            field['field'] = col1
-            field['label'] = txt
-            field['value'] = v1
-            field['id'] = id
+        subsection['fields'].append(field)
 
-            if col+'||' in map_col:
-                l = storage.get_lookup(tn, col1)
-                if l is None:
-                    logger.error('Error: No lookup found!')
-                    return
-
-                (tn1, fn1, tn2, id2, fn2, srt) = l
-                field['code'] = v2
-                field['type'] = 'select'
-                field['select'] = f'{tn2} {id2} {fn2} {srt}'
-            else:
-                field['type'] = 'text'
-
-            subsection['fields'].append(field)
-
-    map_col = dict(rows[0])
-
-    first = True
+    first_tab = None
     tab = None
 
     for col in cols:
         if col[0:2] == '!1':
             tab = {"title": col[3:], "subsections": []}
             data["tabs"].append(tab)
-            if first:
-                first = False
+            if first_tab is None:
+                first_tab = tab
                 if typ == 'L':
                     subsection = {"title": "Начальный узел", "fields": []}
                     tab["subsections"].append(subsection)
-                    for col in ['externalCodeID', 'externalNodeName']:
-                        await print_col(subsection, map_col, 'nodes', col, 'N1')
+                    for c in ['externalCodeID', 'externalNodeName']:
+                        await print_col(subsection, 'nodes', c, 'N1')
 
                     subsection = {"title": "Конечный узел", "fields": []}
                     tab["subsections"].append(subsection)
-                    for col in ['externalCodeID', 'externalNodeName']:
-                        await print_col(subsection, map_col, 'nodes', col, 'N2')
+                    for c in ['externalCodeID', 'externalNodeName']:
+                        await print_col(subsection, 'nodes', c, 'N2')
 
                     subsection = {"title": "Общая информация", "fields": []}
                     tab["subsections"].append(subsection)
-                    for col in ['externalSignLineID','organizationID','hydroRes']:
-                        await print_col(subsection, map_col, 'linesobj', col, 'L')
+                    for c in ['externalSignLineID','organizationID','hydroRes']:
+                        await print_col(subsection, 'linesobj', c, 'L')
                 elif typ == 'N':
                     subsection = {"title": "Узел", "fields": []}
                     tab["subsections"].append(subsection)
-                    for col in ['externalCodeID','externalNodeName','externalSignID','geoMarkTopTube','geoMarkNodeArea']:
-                        await print_col(subsection, map_col, 'nodes', col, 'N')
+                    for c in NODE_HEAD_FIELDS:
+                        await print_col(subsection, 'nodes', c, 'N')
         elif col[0:2] == '!2':
             if tab is None:
                 tab = {"title": '!!', "subsections": []}
                 data["tabs"].append(tab)
             subsection = {'title': col[3:], "fields": []}
             tab["subsections"].append(subsection)
-        elif col in map_col:
-            await print_col(subsection, map_col, tn, col, '')
+        elif col.lower() in ('id', 'shape') or col.lower() in hidden:
+            continue
+        else:
+            await print_col(subsection, tn, col, '', labels)
+
+    # десктоп: у НС, источника, потребителей — поля узла в конце первой вкладки
+    if typ == 'N' and first_tab is not None and tn.lower() not in NO_NODE_TAIL:
+        for title, node_cols in NODE_TAIL_SUBSECTIONS:
+            subsection = {"title": title, "fields": []}
+            for c in node_cols:
+                await print_col(subsection, 'nodes', c, 'N')
+            if subsection["fields"]:
+                first_tab["subsections"].append(subsection)
+
+    # подразделы, оставшиеся без полей (всё скрыто или нет колонок), не показываем
+    for t in data["tabs"]:
+        t["subsections"] = [s for s in t["subsections"] if s["fields"]]
 
     logger.debug(f"Query result processed, returning JSON")
     return json.dumps(data, ensure_ascii=False, indent=4, default=str)

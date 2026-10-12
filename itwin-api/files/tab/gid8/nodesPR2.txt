@@ -1,0 +1,27 @@
+Общая информация
+-  nodeName Наименование ПТС
+  belongHN
+  organizationID
+  inventNumber
+  registNumber
+-
+  scheme
+  passport
+-  nodeTypeID
+-  isBusy
+-  isLoaded
+-  belongMagistralSite
+-  belongDistSite
+  calcPressFlow
+  calcPressRet
+  gpsCoords
+  memo Комментарий
+Даты эксплуатации
+  PICdate
+  lastRepairDate
+Сеть
+  magistralSite
+  distSite
+Архив
+  archiveChangeDate
+  operatorID

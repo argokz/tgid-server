@@ -1,3 +1,4 @@
+-!Основные
 Основные
   calcTemperatureID
   Tx
@@ -5,19 +6,23 @@
   Tn_r_v
   tn_isl
   T1_isl_2stup
+-!Зависимая СО
 Зависимая СО
   Tr_co_1_zco
   Tr_co_2_zco
   Tr_co_3_zco
+-!Независимая СО
 Независимая СО
   Tr_to_1_nco
   Tr_to_2_nco
   Tr_co_1m_nco
   Tr_co_2m_nco
   Tr_co_3m_nco
+-!Вентиляция СО
 Вентиляция СО
   Tr_1_cv
   Tr_2_cv
+-!Параллельная СО
 Параллельная СО
   Tr_co_1_zco_pr
   Tr_co_2_zco_pr
@@ -28,6 +33,7 @@
   Tr_co_2m_nco_pr
   Tr_co_3m_nco_pr
   T2_isl_2stup_pr
+-!Смешанная СО
 Смешанная СО
   Tr_co_1_zco_sm
   Tr_co_2_zco_sm
@@ -39,6 +45,7 @@
   Tr_co_3m_nco_sm
   T2_isl_2stup_sm
   delta_tg_sm
+-!Последовательная СО
 Последовательная СО
   Tr_co_1_zco_ps
   Tr_co_2_zco_ps
@@ -50,6 +57,7 @@
   Tr_co_3m_nco_ps
   T2_isl_2stup_ps
   delta_tg_ps
+-!Предвключеная СО
 Предвключеная СО
   Tr_co_1_zco_pw
   Tr_co_2_zco_pw

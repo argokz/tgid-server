@@ -1,0 +1,121 @@
+elev
+    1
+        elevatornuminst -- Номер элеватора
+        diameternozzle -- Диаметр сопла элеватора
+        mixFactCoeff
+        diameterThrotDiaph
+        diameterElevNozzle
+otop
+    z
+        calcHLdep
+        contCalcHLdep
+        perspCalcHLdep
+-----
+    n
+        calcHLindep
+        contcalcHLindep
+        perspcalcHLindep
+        zd7 -- Вход ТП
+        zd8 -- Выход ТП
+gvs
+    ps
+        avgHLGVScloseConseq
+        contAvgHLGVScloseConseq
+        perspAvgHLGVScloseConseq
+        calcThrustLosHeaters1
+        calcThrustLosHeaters2
+        b32 -- ГВС; закрытая
+        zd49 СО посл, предв       
+        zd50 Летняя СО посл, предв
+        zd27 Вход СО
+    sm
+        avgHLGVScloseMix
+        contAvgHLGVScloseMix
+        perspAvgHLGVScloseMix
+        calcThrustLosHeaters1
+        calcThrustLosHeaters2
+        b32 -- ГВС; закрытая
+        zd28 -- Вх.II ступен.ГВ
+    pr
+        avgHLGVScloseParall
+        contAvgHLGVScloseParall
+        perspAvgHLGVScloseParall
+--        calcThrustLosHeaters1
+        calcThrustLosHeaters2
+        b32 -- ГВС; закрытая
+        zd28 -- Вх.II ступен.ГВ
+    pw
+        avgHLGVSclosePreON
+        contAvgHLGVSclosePreON
+        perspAvgHLGVSclosePreON
+--        calcThrustLosHeaters1
+        calcThrustLosHeaters2
+        b32 -- ГВС; закрытая
+        zd49 СО посл, предв       
+        zd50 Летняя СО посл, предв
+        zd27 Вход СО
+    op
+        avgHLopenSysFlow
+        avgHLGVSopenFlow
+        contAvgHLGVSopenFlow
+        perspAvgHLopenFlow
+        perspAvgHLGVSopenFlow
+        calcThrustLosFlow
+        calcThrustLosFlowCirc
+        hydroResWDOFlow
+        calcSignOpenSysFlowID
+        calcSignSetLoadOpenSysFlow
+        calcThrustInWDO
+        b35 --  На входе подающего трубопровода открытой ГВС
+        zd36 -- ОткрГВ подача
+        zd49 -- Летняя открГВС
+        zd50 -- Летняя открГВС
+        zd27 Вход СО
+    oo
+        avgHLopenSysRet
+        avgHLGVSopenRet
+        contAvgHLGVSopenRet
+        perspAvgHLGVSopenRet
+        calcThrustLosFlow
+        calcThrustLosFlowCirc
+        hydroResWDORet
+        calcSignResWDORetID
+        calcSignSetLoadOpenSysRet
+        calcThrustInWDO
+        b35 -- На входе подающего трубопровода открытой ГВС
+        zd39 --  Летняя СО для открытой ГВС обратка
+        zd38 -- ОткрГВ обратка
+        zd27 Вход СО
+vent
+      1
+        calcHLventil
+        contCalcHLventil
+        perspCalcHLventil
+        calcTempVS
+--        calcThrustLosAC
+        calcThrustLosAH
+        zd48 --  Вход СВ 
+        b28 --  Вентиляция (воздушного отопления)
+teh
+      1
+        contAvgHLcloseSys
+        contAvgHLopenSysFlow
+        contAvgHLopenSysRet
+cond
+      1
+        avgHLcond
+        contAvgHLcond
+        perspAvgHLcond
+--        calcThrustLosAC
+        calcThrustLosAH
+rez
+    1
+        tempRecircPipe
+        circHLosOpen
+        b38 -- Ограничительная в циркуляционном контуре ГВС
+        b36 -- Подпорно-циркуляционная в открытой ГВС
+gvs_all
+    1
+        hourIrregCoeff
+        calcTempHWDO
+        calcThrustInWSD

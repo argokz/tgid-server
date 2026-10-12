@@ -1,0 +1,18 @@
+Основные
+  abonent
+  data_gp
+  data_vydachi
+  rayon
+  uchastok
+  nomer_papki
+  kvartal
+  tm Тепловой пункт
+  ut Распредсеть
+  nomer_akta
+--  abonent
+  obekt
+  telefon
+--  adres_staryy
+  adres
+  akt
+  vremennyy

@@ -1,0 +1,6 @@
+Узел
+    externalSign
+    pih
+    t
+    t2
+    ist

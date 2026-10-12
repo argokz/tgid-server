@@ -115,6 +115,66 @@ class LookupStorage:
             logger.warning(f"[read_tab2] File not found: {fn}.txt")
             return None
 
+    async def read_tab_labels(self, fn: str) -> Dict[str, str]:
+        """Подписи полей из строк описания карточки «  колонка Подпись» (lower-колонка → подпись).
+
+        Десктоп (PropertyDial::fillValues) берёт подпись из строки описания, а справочник kls/gid.txt* —
+        только если в строке её нет.
+        """
+        labels: Dict[str, str] = {}
+        try:
+            path = await open_tab(f"{fn}.txt")
+        except FileNotFoundError:
+            return labels
+        async with aiofiles.open(path, mode="r", encoding="cp1251") as f:
+            async for line in f:
+                line = line.rstrip("\r\n")
+                if not line.startswith(" "):
+                    continue
+                m = re.match(r'^\s+([^ ]+)\s+(.+?)\s*$', line)
+                if m and not m.group(1).startswith("$"):
+                    labels[m.group(1).lower()] = m.group(2)
+        return labels
+
+    async def read_vis(self, fn: str) -> Dict[str, Dict[str, List[str]]]:
+        """Правила видимости полей tab/<table>.vis, как read_disable десктопа (property/read_tab_db.cpp).
+
+        Уровни по отступу: ключ (поле или признак схемы) → значение → поля, видимые при этом значении.
+        Поля, упомянутые у ключа, при другом значении скрываются. Строки с «-» в начале пропускаются.
+        """
+        rules: Dict[str, Dict[str, List[str]]] = {}
+        try:
+            path = await open_tab(f"{fn}.vis")
+        except FileNotFoundError:
+            return rules
+        level, nn_old, level_n = 0, 0, [0] * 12
+        key = val = ""
+        async with aiofiles.open(path, mode="r", encoding="cp1251") as f:
+            async for line in f:
+                line = line.rstrip("\r\n")
+                if line.startswith("-"):
+                    continue
+                nn = len(line) - len(line.lstrip(" "))
+                if nn > nn_old:
+                    level += 1
+                    if level > 10:
+                        break
+                    level_n[level] = nn
+                elif nn < nn_old:
+                    for j in range(level - 1, -1, -1):
+                        if level_n[j] == nn:
+                            level = j
+                            break
+                nn_old = nn
+                token = line.strip().split(" ", 1)[0].lower()
+                if level == 0:
+                    key = token
+                elif level == 1:
+                    val = token
+                elif level == 2:
+                    rules.setdefault(key, {}).setdefault(val, []).append(token)
+        return rules
+
     def get_lookup(self, tn1: str, fn1: str) -> Optional[Tuple[str, str, str, str, str, int]]:
         key = (tn1.lower(), fn1.lower())
         if key not in self.map_lookup:
