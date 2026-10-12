@@ -56,3 +56,19 @@ def test_heatsource_card_from_gid8_with_labels():
     labels = _run(storage.read_tab_labels('heatSources'))
     assert labels['tn_5'] == 'Температура наружного воздуха для отопления'
     assert 'hsourcepower' not in labels  # без подписи в строке — из справочника
+
+
+def test_out_tables_like_desktop():
+    from database.db import OUT_TABLES, _is_zero
+    # cxema/cxema1.cpp: узлы, источники, НС — US_OUT; потребители — PT_OUT; участки — UT_OUT
+    assert OUT_TABLES['heatsources'] == OUT_TABLES['pumpstations'] == OUT_TABLES['nodes'] == 'us_out'
+    assert OUT_TABLES['realconsumers'] == OUT_TABLES['generalizedconsumers'] == 'pt_out'
+    assert OUT_TABLES['heatpipesections'] == 'ut_out'
+    # noZero десктопа: «0» скрывает строку, пусто (NULL) — нет
+    assert _is_zero(0) and _is_zero(0.0) and _is_zero('0')
+    assert not _is_zero(None) and not _is_zero(0.5)
+
+
+def test_dr_out_description_from_gid8():
+    cols = _run(storage.read_tab2('dr_out'))
+    assert cols and 'b3' in cols

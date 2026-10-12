@@ -151,9 +151,38 @@ async def create_select_line(tn: str, id: int) -> str:
         filtr = await storage.read_tab2(tn)
         (i, par1, par2, joins) = await get_3_param(actual, "T", i, par1, par2, joins, filtr)
 
-        q = f'SELECT \nT.id,L.id as L_id,N1.id AS N1_id,N2.id AS N2_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE L.id=$1'
+        ids = await line_pair_ids(conn, actual, id)
+        q = (f'SELECT \nT.id,L.id as L_id,N1.id AS N1_id,N2.id AS N2_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\n'
+             'WHERE L.id = ANY($1::int[]) ORDER BY array_position($1::int[], L.id)')
         logger.debug(f"Generated query: {q[:100]}...")
-        return await print_q(conn, 'L', tn, q, id, filtr)
+        data = await card_data(conn, 'L', tn, q, ids, filtr)
+        if data['tabs']:
+            data['tabs'] += await out_tabs(conn, actual, 'L', ids)
+        return json.dumps(data, ensure_ascii=False, indent=4, default=str)
+
+
+# Пара участка как в десктопе (cxema/read_lines.cpp): подающий (признак 2) и обратный (3) трубопровод
+# одного типа между теми же узлами и с той же геометрией — одна линия схемы, карточка в две колонки
+LINE_PAIR_SQL = '''
+SELECT b.id
+  FROM linesobj a
+  JOIN linesobj b ON b.nodeID1 = a.nodeID1 AND b.nodeID2 = a.nodeID2 AND b.id <> a.id AND b.removed = 0
+   AND b.externalSignLineID = CASE a.externalSignLineID WHEN 2 THEN 3 WHEN 3 THEN 2 END
+   AND ST_OrderingEquals(a.shape, b.shape)
+ WHERE a.id = $1 AND EXISTS (SELECT 1 FROM {table} t WHERE t.lineID = b.id)
+ ORDER BY b.id
+ LIMIT 1
+'''
+PAIR_COLUMNS = ['Подача', 'Обратка']
+
+
+async def line_pair_ids(conn, table: str, id: int) -> List[int]:
+    """[подающий, обратный] для пары, иначе [id]"""
+    other = await conn.fetchval(LINE_PAIR_SQL.format(table=quote_ident(table)), id)
+    if other is None:
+        return [id]
+    sign = await conn.fetchval('SELECT externalSignLineID FROM linesobj WHERE id = $1', id)
+    return [id, other] if sign == 2 else [other, id]
 
 # Поля узла в карточке точечного объекта (десктоп: property/PropertyDial.cpp, _init_table): блок «Узел»
 # перед полями объекта и, кроме узлов и узлов с заданным напором, блоки в конце первой вкладки
@@ -251,8 +280,11 @@ def hidden_fields(tn: str, rules: Dict[str, Dict[str, List[str]]], row: Dict[str
 async def create_select_node(tn: str, id: int) -> str:
     logger.info(f"Creating select for node: table={tn!r}, id={id}")
     if tn == 'nodes':
-        result = await create_select(tn, id)
-        return result
+        data = json.loads(await create_select(tn, id))
+        if data['tabs']:
+            async with acquire_conn() as conn:
+                data['tabs'] += await out_tabs(conn, 'nodes', 'N', [id])
+        return json.dumps(data, ensure_ascii=False, indent=4, default=str)
     async with acquire_conn() as conn:
         actual = await resolve_table(conn, tn, card_tables())
         (i, par1, par2, joins) = (1, '', '', '')
@@ -265,7 +297,101 @@ async def create_select_node(tn: str, id: int) -> str:
 
         q = f'SELECT \nT.id,N.id as N_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE N.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
-        return await print_q(conn, 'N', tn, q, id, filtr)
+        data = await card_data(conn, 'N', tn, q, id, filtr)
+        if data['tabs']:
+            data['tabs'] += await out_tabs(conn, actual, 'N', [id])
+        return json.dumps(data, ensure_ascii=False, indent=4, default=str)
+
+# Таблица результатов расчёта объекта (десктоп: cxema/cxema1.cpp, nodef/linef, getOutTable)
+OUT_TABLES = {
+    'nodes': 'us_out', 'heatsources': 'us_out', 'pumpstations': 'us_out', 'connectnodes': 'us_out',
+    'realconsumers': 'pt_out', 'generalizedconsumers': 'pt_out',
+    'heatpipesections': 'ut_out', 'pumps': 'ns_out', 'pressregulators': 'rs_out', 'consumptregulators': 'rs_out',
+    'pressdropregulators': 'rs_out', 'dampers': 'zd_out', 'regularmatures': 'zd2_out', 'bypass': 'bp_out',
+    'diaphragms': 'dro_out', 'reversevalves': 'ok_out', 'elevators': 'any_out', 'systemradiators': 'any_out',
+    'heatexchangers': 'any_out', 'airheaters': 'any_out',
+}
+OUT_SKIP = frozenset({'id', 'shape', 'calculationid', 'lineid', 'nodeid'})
+
+
+def _is_zero(value) -> bool:
+    return value is not None and _vis_text(value) == '0'
+
+
+async def out_tabs(conn, table: str, kind: str, ids: List[int]) -> List[dict]:
+    """Вкладки «Результат расчета» (и у реального потребителя «Дроссельные органы»), как PropertyDial::_init_out.
+
+    Последний расчёт фрагмента объекта; поля, где у всех колонок 0, не показываются (noZero десктопа).
+    """
+    outs = [(OUT_TABLES.get(table.lower()), 'Результат расчета')]
+    if table.lower() == 'realconsumers':
+        outs.append(('dr_out', 'Дроссельные органы'))
+    tabs = []
+    for out, title in outs:
+        if not out or await conn.fetchval("SELECT to_regclass('public.' || $1)", out) is None:
+            continue
+        tab = await _out_tab(conn, out, title, kind, ids)
+        if tab:
+            tabs.append(tab)
+    return tabs
+
+
+async def _out_tab(conn, out: str, title: str, kind: str, ids: List[int]) -> Optional[dict]:
+    filtr = await storage.read_tab2(out)
+    cols = filtr if filtr is not None else ['!2 Основные'] + [
+        r['column_name'] for r in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1"
+            " ORDER BY ordinal_position", out)]
+    (i, par1, par2, joins) = await get_3_param(out, 'T', 1, '', '', '', [c for c in cols if not c.startswith('!')])
+    if not par1:
+        return None
+    if kind == 'N':
+        key, frm, fileid = 'nodeID', 'JOIN nodes N ON N.id = T.nodeID', 'N.fileID'
+    else:
+        key, frm, fileid = 'lineID', 'JOIN linesobj L ON L.id = T.lineID JOIN nodes N1 ON N1.id = L.nodeID1', 'N1.fileID'
+    q = (f'SELECT T.{key} AS card_key, {par1}{par2}\nFROM {quote_ident(out)} T\n{frm}\n{joins}\n'
+         f'WHERE T.{key} = ANY($1::int[]) AND T.calculationID = (SELECT MAX(id) FROM calculation c WHERE c.fileID = {fileid})')
+    by_key = {r['card_key']: {k.lower(): v for k, v in r.items()} for r in await query_log(conn, q, ids)}
+    rows = [by_key.get(i) for i in ids]
+    if not any(rows):
+        return None
+    labels = await storage.read_tab_labels(out)
+    subsections: List[dict] = []
+    sub = {'title': title, 'fields': []}
+    for col in cols:
+        if col.startswith('!1'):
+            continue
+        if col.startswith('!2'):
+            sub = {'title': col[3:], 'fields': []}
+            subsections.append(sub)
+            continue
+        k = col.lower()
+        if k in OUT_SKIP or col.startswith('$'):
+            continue
+        present = [r for r in rows if r is not None]
+        if not any(k in r for r in present) or all(_is_zero(r.get(k + '||', r.get(k))) for r in present):
+            continue
+        if not subsections:
+            subsections.append(sub)
+        (_, _, txt, _) = storage.get_help(out, col)
+        field = {'table': out, 'field': col, 'label': labels.get(k) or txt}
+        lookup = storage.get_lookup(out, col) if any(k + '||' in r for r in present) else None
+        for n, r in enumerate(rows):
+            sfx = '' if n == 0 else str(n + 1)
+            field['value' + sfx] = r.get(k) if r else None
+            field['id' + sfx] = r.get('card_key') if r else None
+            if lookup:
+                field['code' + sfx] = r.get(k + '||') if r else None
+        if lookup:
+            (_, _, tn2, id2, fn2, srt) = lookup
+            field['type'] = 'select'
+            field['select'] = f'{tn2} {id2} {fn2} {srt}'
+        else:
+            field['type'] = 'text'
+        sub['fields'].append(field)
+    subsections = [x for x in subsections if x['fields']]
+    return {'title': title, 'subsections': subsections, 'readonly': True} if subsections else None
+
 
 async def create_select_geoline(tn: str) -> str:
     logger.info(f"Creating select for geoline: table={tn!r}")
@@ -302,12 +428,18 @@ async def create_select(tn: str, id: int) -> str:
         return await print_q(conn, '?', tn, q, id, filtr)
 
 async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[str]] = None) -> str:
+    data = await card_data(conn, typ, tn, q, id, cols)
+    return json.dumps(data, ensure_ascii=False, indent=4, default=str)
+
+
+async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str]] = None) -> dict:
+    """Карточка по запросу create_select_*: строка на колонку (участок с парой — подача и обратка)."""
     logger.debug(f"Executing query for {tn} with id={id}")
     rows = await query_log(conn, q, id)
     
     if not rows:
         logger.debug(f"No rows returned for query: {q[:100]}...")
-        return json.dumps({"tabs": []}, ensure_ascii=False, indent=4, default=str)
+        return {"tabs": []}
 
     columns = list(rows[0].keys())
     if cols is None:
@@ -326,7 +458,8 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
     data = {"tabs": []}
 
     # имена колонок в запросе — как в справочнике подписей или в lower; сверяем без регистра
-    map_col = {k.lower(): v for k, v in rows[0].items()}
+    maps = [{k.lower(): v for k, v in r.items()} for r in rows[:2]]
+    map_col = maps[0]
     labels = {} if no_card else await storage.read_tab_labels(tn)
     # видимость полей как в десктопе (tab/<table>.vis, у потребителя — по номеру схемы)
     vis_row = {k: map_col.get(k + '||', v) for k, v in map_col.items() if '||' not in k}
@@ -342,19 +475,12 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
         if key not in map_col:
             return
 
-        id = -1
-        if prefix == '':
-            id = map_col.get('id')
-        elif prefix == 'N':
-            id = map_col.get('n_id')
-        elif prefix == 'N1':
-            id = map_col.get('n1_id')
-        elif prefix == 'N2':
-            id = map_col.get('n2_id')
-        elif prefix == 'L':
-            id = map_col.get('l_id')
-
-        field = {'table': tn, 'field': col, 'label': label, 'value': map_col.get(key), 'id': id}
+        id_key = {'': 'id', 'N': 'n_id', 'N1': 'n1_id', 'N2': 'n2_id', 'L': 'l_id'}.get(prefix)
+        field = {'table': tn, 'field': col, 'label': label, 'value': map_col.get(key),
+                 'id': map_col.get(id_key) if id_key else -1}
+        if len(maps) > 1:
+            field['value2'] = maps[1].get(key)
+            field['id2'] = maps[1].get(id_key) if id_key else -1
 
         if key + '||' in map_col:
             l = storage.get_lookup(tn, col)
@@ -364,6 +490,8 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
 
             (tn1, fn1, tn2, id2, fn2, srt) = l
             field['code'] = map_col.get(key + '||')
+            if len(maps) > 1:
+                field['code2'] = maps[1].get(key + '||')
             field['type'] = 'select'
             field['select'] = f'{tn2} {id2} {fn2} {srt}'
         else:
@@ -402,7 +530,7 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
                         await print_col(subsection, 'nodes', c, 'N')
         elif col[0:2] == '!2':
             if tab is None:
-                tab = {"title": '!!', "subsections": []}
+                tab = {"title": 'Данные', "subsections": []}  # десктоп: описание без вкладок
                 data["tabs"].append(tab)
             subsection = {'title': col[3:], "fields": []}
             tab["subsections"].append(subsection)
@@ -424,8 +552,10 @@ async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[
     for t in data["tabs"]:
         t["subsections"] = [s for s in t["subsections"] if s["fields"]]
 
-    logger.debug(f"Query result processed, returning JSON")
-    return json.dumps(data, ensure_ascii=False, indent=4, default=str)
+    if len(maps) > 1:
+        data["columns"] = PAIR_COLUMNS
+    logger.debug(f"Query result processed")
+    return data
 
 
 async def get_all_fragments() -> List[Dict[str, str]]:
