@@ -4,6 +4,9 @@
 расчёты («режимщик» gid6), editor — правка журналов и атрибутов, admin — всё,
 включая топологию и управление пользователями. Блокировка — users.is_active=false.
 Пароли — только bcrypt (auth.hash_password), в ответы и журналы не попадают.
+
+Мастер-учётка (auth.MASTER_LOGIN) живёт вне UsersDB: её логин занят, а пока она настроена,
+последнего администратора UsersDB можно снять — управлять пользователями всё равно есть кому.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func, select
 
-from auth import ROLE_ORDER, hash_password, resolve_user_role
+from auth import ROLE_ORDER, hash_password, is_master_login, master_enabled, resolve_user_role, verify_password
 from database.connect import async_session
 from database.models import User
 
@@ -29,6 +32,12 @@ class UserAdminError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(detail)
+
+
+def _check_password(password: str) -> None:
+    # bcrypt учитывает только первые 72 байта: длиннее — часть пароля молча отбрасывалась бы
+    if len(password) < 8 or len(password.encode("utf-8")) > 72:
+        raise UserAdminError(422, "Пароль — от 8 символов и не длиннее 72 байт")
 
 
 def user_to_dict(row: User) -> dict[str, Any]:
@@ -66,6 +75,9 @@ async def _other_active_admins(session, exclude_id: int) -> int:
 async def create_user(username: str, password: str, role: str) -> dict[str, Any]:
     if role not in ROLE_ORDER:
         raise UserAdminError(422, f"Неизвестная роль: {role}")
+    if is_master_login(username):
+        raise UserAdminError(409, f"Логин «{username}» занят мастер-учёткой")
+    _check_password(password)
     async with async_session() as session:
         exists = (
             await session.execute(select(User.id).where(func.lower(User.username) == username.lower()))
@@ -112,7 +124,7 @@ async def update_user(
         if loses_admin:
             if actor_id is not None and str(user_id) == str(actor_id):
                 raise UserAdminError(409, "Нельзя снять с себя роль admin или заблокировать себя")
-            if await _other_active_admins(session, user_id) == 0:
+            if not master_enabled() and await _other_active_admins(session, user_id) == 0:
                 raise UserAdminError(409, "Это последний активный администратор")
         row.role = new_role
         row.is_admin = new_role == "admin"
@@ -123,6 +135,7 @@ async def update_user(
 
 
 async def set_password(user_id: int, password: str) -> dict[str, Any]:
+    _check_password(password)
     async with async_session() as session:
         row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
         if row is None:
@@ -130,3 +143,35 @@ async def set_password(user_id: int, password: str) -> dict[str, Any]:
         row.hashed_password = hash_password(password)
         await session.commit()
         return user_to_dict(row)
+
+
+async def delete_user(user_id: int, *, actor_id: Optional[str]) -> dict[str, Any]:
+    """Удалить учётную запись. Себя и последнего активного администратора (без мастер-учётки) — нельзя."""
+    if actor_id is not None and str(user_id) == str(actor_id):
+        raise UserAdminError(409, "Нельзя удалить самого себя")
+    async with async_session() as session:
+        row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if row is None:
+            raise UserAdminError(404, "Пользователь не найден")
+        before = user_to_dict(row)
+        if before["role"] == "admin" and before["is_active"] and not master_enabled():
+            if await _other_active_admins(session, user_id) == 0:
+                raise UserAdminError(409, "Это последний активный администратор")
+        await session.delete(row)
+        await session.commit()
+        return before
+
+
+async def change_own_password(user_id: int, current_password: str, new_password: str) -> None:
+    """Смена своего пароля: нужен текущий."""
+    _check_password(new_password)
+    async with async_session() as session:
+        row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if row is None or not row.is_active:
+            raise UserAdminError(401, "Учётная запись заблокирована или удалена")
+        if not verify_password(current_password, row.hashed_password or ""):
+            raise UserAdminError(403, "Текущий пароль указан неверно")
+        if verify_password(new_password, row.hashed_password or ""):
+            raise UserAdminError(422, "Новый пароль совпадает с текущим")
+        row.hashed_password = hash_password(new_password)
+        await session.commit()

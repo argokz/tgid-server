@@ -9,6 +9,8 @@ Roles (least → most privilege):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import time
@@ -94,6 +96,8 @@ class AuthUser:
     username: str
     # Предметные права пользователя-роли PostgreSQL (tgid_cap_*): network, network_struct, pts, …
     caps: frozenset = frozenset()
+    # Мастер-учётка: отпечаток мастер-пароля из токена (смена пароля на сервере закрывает старые сессии)
+    mv: str = ""
 
     def has_role(self, minimum: str) -> bool:
         return ROLE_ORDER.get(self.role, 0) >= ROLE_ORDER.get(minimum, 99)
@@ -116,6 +120,7 @@ def create_access_token(
     role: str = "viewer",
     subject: Optional[str] = None,
     expires_minutes: Optional[int] = None,
+    extra: Optional[dict] = None,
 ) -> str:
     if jwt is None:
         raise RuntimeError("PyJWT is required. Install PyJWT from requirements.txt")
@@ -128,6 +133,7 @@ def create_access_token(
         "role": role,
         "iat": now,
         "exp": now + timedelta(minutes=expires_minutes or jwt_expire_minutes()),
+        **(extra or {}),
     }
     return jwt.encode(payload, jwt_secret(), algorithm=jwt_algorithm())
 
@@ -157,7 +163,46 @@ def decode_access_token(token: str) -> AuthUser:
         raise HTTPException(status_code=401, detail="Token missing subject")
     if role not in ROLE_ORDER:
         role = "viewer"
-    return AuthUser(sub=str(payload.get("sub") or username), role=role, username=username)
+    return AuthUser(
+        sub=str(payload.get("sub") or username), role=role, username=username, mv=str(payload.get("mv") or "")
+    )
+
+
+# Мастер-учётка владельца: логин MASTER_LOGIN и bcrypt-хеш MASTER_PASSWORD_HASH в .env сервера
+# (задаёт H:\deploy\set-master-password.cmd). Не зависит от базы пользователей: администратор входит,
+# даже если пользователей ещё нет или все заблокированы. Удалить, заблокировать или сменить её из веба нельзя.
+MASTER_SUB = "master"
+
+
+def master_login() -> str:
+    return os.getenv("MASTER_LOGIN", "admin").strip() or "admin"
+
+
+def master_password_hash() -> str:
+    return os.getenv("MASTER_PASSWORD_HASH", "").strip()
+
+
+def master_enabled() -> bool:
+    return bool(master_password_hash())
+
+
+def master_fingerprint() -> str:
+    """Отпечаток хеша мастер-пароля (в токене): после смены пароля старые токены недействительны."""
+    return hashlib.sha256(master_password_hash().encode("utf-8")).hexdigest()[:16]
+
+
+def is_master_login(username: str) -> bool:
+    return master_enabled() and username.strip().casefold() == master_login().casefold()
+
+
+def verify_master_password(username: str, password: str) -> bool:
+    return is_master_login(username) and verify_password(password, master_password_hash())
+
+
+def master_token() -> str:
+    return create_access_token(
+        username=master_login(), role="admin", subject=MASTER_SUB, extra={"mv": master_fingerprint()}
+    )
 
 
 def resolve_user_role(role: Optional[str], is_admin: Optional[bool]) -> str:
@@ -231,6 +276,15 @@ async def apply_live_user_status(user: AuthUser) -> AuthUser:
     (sub = имя) не сверяются. Если БД недоступна — доверяем токену (подпись и срок уже
     проверены), в лог пишется предупреждение.
     """
+    if user.sub == MASTER_SUB:
+        # мастер-пароль сняли или сменили на сервере — сессия закрыта
+        if not master_enabled() or not hmac.compare_digest(user.mv, master_fingerprint()):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Мастер-пароль изменён — войдите снова",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return AuthUser(sub=MASTER_SUB, role="admin", username=master_login(), mv=user.mv)
     if not _env_bool("AUTH_LIVE_USER_CHECK", "true"):
         return user
     if user.sub.startswith(PG_USER_PREFIX):

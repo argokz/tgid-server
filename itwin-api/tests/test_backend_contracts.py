@@ -49,3 +49,18 @@ def test_auth_gate_covers_post_when_enabled(monkeypatch):
     r = client.options("/api/calc/orifice-plate", headers={
         "Origin": "http://localhost:3007", "Access-Control-Request-Method": "POST"})
     assert r.status_code != 401
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/node/nodes/1"),
+    ("get", "/line/linesobj/1"),
+    ("get", "/lookup"),
+    ("get", "/task/abc"),
+    ("post", "/run-sety-cmd"),
+])
+def test_auth_gate_covers_routes_outside_api(monkeypatch, method, path):
+    monkeypatch.setenv("AUTH_REQUIRED_GET", "true")
+    client = TestClient(main.app)
+    assert getattr(client, method)(path).status_code == 401
+    # вход и публичные флаги — без токена
+    assert client.get("/auth/config").status_code == 200

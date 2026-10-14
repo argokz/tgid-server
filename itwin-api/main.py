@@ -107,9 +107,8 @@ class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path in {"/api/v1/auth/login", "/auth/login"} or path.startswith("/auth/login"):
             return await call_next(request)
-        # Only gate /api* journal/data GETs — leave map tile proxies alone if any
-        if not (path.startswith("/api/") or path.startswith("/piezometer") or path.startswith("/reports/")):
-            return await call_next(request)
+        # Закрыто всё, кроме списка выше: карточки /node и /line, /lookup, /task, /run-sety-cmd
+        # и правки без /api/ тоже отдают данные сети
         auth_header = request.headers.get("authorization") or ""
         if not auth_header.lower().startswith("bearer "):
             return JSONResponse(

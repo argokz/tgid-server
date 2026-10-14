@@ -13,6 +13,8 @@ from auth import (
     AuthUser,
     auth_disabled,
     invalidate_user_status,
+    master_enabled,
+    master_login,
     pg_auth_enabled,
     require_roles,
 )
@@ -23,6 +25,7 @@ from database.db_role import default_db_role
 from database.users_admin import (
     UserAdminError,
     create_user,
+    delete_user,
     list_users,
     roles_catalog,
     set_password,
@@ -127,6 +130,8 @@ async def admin_users(user: Annotated[AuthUser, Depends(require_roles("admin"))]
         "items": items,
         "can_write": not auth_disabled(),
         "note": None if not auth_disabled() else "AUTH_DISABLED=true: изменения пользователей отключены",
+        # мастер-учётка владельца — вне списка, удалить и заблокировать её нельзя
+        "master_login": master_login() if master_enabled() else None,
     }
 
 
@@ -226,6 +231,27 @@ async def admin_set_password(
     except UserAdminError as exc:
         _raise_admin_error(exc)
     await _audit_users(user, "PASSWORD", uid, new={"username": result["username"]})
+    return {"success": True, "id": uid}
+
+
+@router.delete("/api/admin/users/{user_id}")
+@router.delete("/api/v1/admin/users/{user_id}")
+async def admin_delete_user(
+    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    user_id: str = Path(..., min_length=1, max_length=70),
+):
+    """Удалить пользователя UsersDB. Выданные ему токены перестают действовать сразу."""
+    _require_real_auth()
+    if pg_auth_enabled():
+        # роль PostgreSQL владеет историей правок и объектами — её блокируют, а не удаляют
+        raise HTTPException(status_code=409, detail="Пользователя PostgreSQL можно только заблокировать")
+    uid = _usersdb_id(user_id)
+    try:
+        before = await delete_user(uid, actor_id=user.sub)
+    except UserAdminError as exc:
+        _raise_admin_error(exc)
+    invalidate_user_status(uid)
+    await _audit_users(user, "DELETE", uid, old=before)
     return {"success": True, "id": uid}
 
 

@@ -22,6 +22,7 @@ class AuthConfigResponse(BaseModel):
     """Public auth/mutation flags for LoginDialog (no JWT required)."""
 
     auth_disabled: bool
+    auth_required_get: bool = False  # без входа данные карты не отдаются
     dev_login_enabled: bool
     strict_auth: bool
     mutations_enabled: bool
@@ -39,6 +40,7 @@ class MeResponse(BaseModel):
     strict_auth: bool = False
     # AUTH_BACKEND=pg: профиль из tgid_auth.me()
     auth_backend: str = "usersdb"
+    is_master: bool = False  # мастер-учётка владельца (MASTER_LOGIN)
     display_name: Optional[str] = None
     caps: list[str] = Field(default_factory=list)
     fragments: Optional[list[int]] = None  # None — правка во всей сети
