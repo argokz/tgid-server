@@ -123,3 +123,32 @@ async def test_delete_self_refused():
     with pytest.raises(users_admin.UserAdminError) as exc:
         await users_admin.delete_user(7, actor_id="7")
     assert exc.value.status_code == 409
+
+
+def test_geoserver_cookie_issued_by_me_and_checked(client, monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED_GET", "true")
+    token = _login(client, "Owner", MASTER_PASSWORD).json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}", "X-Forwarded-Proto": "https"})
+    cookie = me.headers["set-cookie"]
+    assert "tgid_gs=" in cookie and "Path=/geoserver" in cookie and "HttpOnly" in cookie and "Secure" in cookie
+    client.cookies.clear()
+    assert client.get("/auth/check").status_code == 401
+    assert client.get("/auth/check", cookies={"tgid_gs": token}).status_code == 200
+    assert client.get("/auth/check", cookies={"tgid_gs": token + "x"}).status_code == 401
+    # мастер-пароль сменили — старый cookie не пускает
+    monkeypatch.setenv("MASTER_PASSWORD_HASH", hash_password("другой-пароль-123"))
+    assert client.get("/auth/check", cookies={"tgid_gs": token}).status_code == 401
+
+
+def test_geoserver_open_while_login_not_required(client, monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED_GET", "false")
+    assert client.get("/auth/check").status_code == 200
+    monkeypatch.setenv("AUTH_REQUIRED_GET", "true")
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    assert client.get("/auth/check").status_code == 200
+
+
+def test_logout_clears_geoserver_cookie(client):
+    r = client.post("/auth/logout")
+    assert r.status_code == 200
+    assert "tgid_gs=" in r.headers["set-cookie"] and "Max-Age=0" in r.headers["set-cookie"]

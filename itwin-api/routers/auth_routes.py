@@ -1,13 +1,17 @@
 """Аутентификация: выдача JWT и информация о текущем пользователе."""
 
 import os
-from typing import Annotated
+import time
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials
 
 import login_guard
 from app_logging import get_logger
 from auth import (
+    GEOSERVER_COOKIE,
+    GEOSERVER_COOKIE_PATH,
     MASTER_SUB,
     PG_USER_PREFIX,
     AuthUser,
@@ -15,6 +19,8 @@ from auth import (
     auth_backend,
     auth_disabled,
     auth_required_get,
+    apply_live_user_status,
+    decode_access_token,
     create_access_token,
     dev_login_enabled,
     get_current_user,
@@ -25,6 +31,7 @@ from auth import (
     mutations_enabled,
     pg_auth_enabled,
     resolve_user_role,
+    security,
     strict_auth,
     verify_master_password,
     verify_password,
@@ -142,9 +149,45 @@ async def auth_config():
     )
 
 
+def _https(request: Request) -> bool:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    return proto.lower() == "https"
+
+
+def _set_geoserver_cookie(response: Response, request: Request, token: str) -> None:
+    """Cookie с тем же JWT для GeoServer (nginx auth_request) — живёт столько же, сколько токен."""
+    try:
+        exp = int(decode_access_token_payload_exp(token))
+    except Exception:  # noqa: BLE001
+        return
+    max_age = exp - int(time.time())
+    if max_age <= 0:
+        return
+    response.set_cookie(
+        GEOSERVER_COOKIE, token, max_age=max_age, path=GEOSERVER_COOKIE_PATH,
+        httponly=True, secure=_https(request), samesite="lax",
+    )
+
+
+def decode_access_token_payload_exp(token: str) -> int:
+    import jwt
+
+    from auth import jwt_algorithm, jwt_secret
+
+    return int(jwt.decode(token, jwt_secret(), algorithms=[jwt_algorithm()])["exp"])
+
+
 @router.get("/api/v1/auth/me", response_model=MeResponse)
 @router.get("/auth/me", response_model=MeResponse)
-async def auth_me(user: Annotated[AuthUser, Depends(get_current_user)]):
+async def auth_me(
+    user: Annotated[AuthUser, Depends(get_current_user)],
+    request: Request,
+    response: Response,
+    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(security)] = None,
+):
+    # веб вызывает /auth/me после входа и при каждом открытии страницы — тут же выдаём cookie для GeoServer
+    if credentials is not None and credentials.credentials and not auth_disabled():
+        _set_geoserver_cookie(response, request, credentials.credentials)
     extra: dict = {"auth_backend": auth_backend(), "is_master": user.sub == MASTER_SUB}
     if user.sub.startswith(PG_USER_PREFIX):
         from database import pg_users
@@ -199,3 +242,34 @@ async def auth_change_password(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     invalidate_user_status(user.sub)
     return {"success": True}
+
+
+@router.post("/api/v1/auth/logout")
+@router.post("/auth/logout")
+async def auth_logout(response: Response):
+    """Выход: убрать cookie GeoServer (сам JWT веб удаляет у себя)."""
+    response.delete_cookie(GEOSERVER_COOKIE, path=GEOSERVER_COOKIE_PATH)
+    return {"success": True}
+
+
+@router.get("/auth/check")
+async def auth_check(request: Request):
+    """Доступ к GeoServer для nginx auth_request: 200 — пропустить, 401 — нет.
+
+    Пока вход не обязателен (AUTH_DISABLED или AUTH_REQUIRED_GET=false), GeoServer открыт, как раньше —
+    выключение защиты скриптом открывает и тайлы. Иначе нужен действующий JWT в cookie tgid_gs
+    (или в заголовке Authorization): подпись, срок, блокировка и удаление пользователя.
+    """
+    if auth_disabled() or not auth_required_get():
+        return Response(status_code=200)
+    token = request.cookies.get(GEOSERVER_COOKIE) or ""
+    header = request.headers.get("authorization") or ""
+    if not token and header.lower().startswith("bearer "):
+        token = header.split(" ", 1)[1].strip()
+    if not token:
+        return Response(status_code=401)
+    try:
+        await apply_live_user_status(decode_access_token(token))
+    except HTTPException:
+        return Response(status_code=401)
+    return Response(status_code=200)

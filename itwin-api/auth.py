@@ -168,6 +168,13 @@ def decode_access_token(token: str) -> AuthUser:
     )
 
 
+# Cookie сессии для GeoServer: тайлы и WMS браузер запрашивает без заголовка Authorization,
+# поэтому nginx (auth_request -> /auth/check) проверяет тот же JWT в cookie. Путь /geoserver — в API
+# и веб cookie не уходит; HttpOnly — из JS не прочитать.
+GEOSERVER_COOKIE = "tgid_gs"
+GEOSERVER_COOKIE_PATH = "/geoserver"
+
+
 # Мастер-учётка владельца: логин MASTER_LOGIN и bcrypt-хеш MASTER_PASSWORD_HASH в .env сервера
 # (задаёт H:\deploy\set-master-password.cmd). Не зависит от базы пользователей: администратор входит,
 # даже если пользователей ещё нет или все заблокированы. Удалить, заблокировать или сменить её из веба нельзя.
@@ -528,4 +535,7 @@ PUBLIC_GET_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth/config",
     "/auth/login",
     "/api/v1/auth/login",
+    # проверка доступа к GeoServer (nginx auth_request) и выход: сами разбирают cookie
+    "/auth/check",
+    "/auth/logout",
 )
