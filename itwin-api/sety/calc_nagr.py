@@ -110,6 +110,12 @@ def get_from_item(result):
 
 
 def init_matrix_nagr(G, x, b101):
+    """Матрица распределения нагрузок по участкам и правая часть для вида нагрузки b101.
+
+    Матрица от вида нагрузки не зависит, меняется только правая часть: b101 может быть списком
+    видов — тогда возвращается {вид: правая часть} для одного разложения матрицы на все виды.
+    """
+    keys = (b101,) if isinstance(b101, str) else tuple(b101)
 
 #    nn = 100000
     n_nodes = G.number_of_nodes()
@@ -134,7 +140,8 @@ def init_matrix_nagr(G, x, b101):
 
     set_ist = set()
 
-    beta0 = np.zeros(n_lines + n_ist)
+    betas = {k: np.zeros(n_lines + n_ist) for k in keys}
+    beta0 = betas[keys[0]]
     matrix = sp.sparse.lil_array((n_lines + n_ist, n_lines + n_ist))
 
 #    print(f'{n_lines=} {n_nodes=} {n_ist=}')
@@ -142,15 +149,11 @@ def init_matrix_nagr(G, x, b101):
     ii = 0
 
     for n in G.nodes:
-        name = w_print.node_name(G, n, False)
-
         node = G.nodes[n]
         nn, po = n
 
         k_n = G.nodes[n]['num']
         typ = node['typ']
-
-        Q = getQ(G, n, b101)
 
         zn = False
         if node.get('p_zn', None):
@@ -164,7 +167,8 @@ def init_matrix_nagr(G, x, b101):
             break
 
 #        beta0[k_n] = Q
-        beta0[ii] = Q
+        for k in keys:
+            betas[k][ii] = getQ(G, n, k)
 
 #        print('(((((((((((((((((((((((((')
 
@@ -194,9 +198,6 @@ def init_matrix_nagr(G, x, b101):
             k_l = l['num']
             GG = x[k_l]
 
-            name1 = w_print.node_name(G, n1, False)
-            name2 = w_print.node_name(G, n2, False)
-
 #            print('.........', k, po, GG, name1, name2)
             if k == 2:
                 GG = -GG
@@ -208,8 +209,6 @@ def init_matrix_nagr(G, x, b101):
                 n0 = n1
 
 #            n0 = n2
-
-            name0 = w_print.node_name(G, n0, False)
 
             sign = 1 if GG > 0 else -1
 
@@ -327,72 +326,69 @@ def init_matrix_nagr(G, x, b101):
 #    print(ii, n_nodes)
 #    w_print.print_matrix(matrix, beta0)
 
-    return matrix, beta0
+    if isinstance(b101, str):
+        return matrix, beta0
+    return matrix, betas
 
 
 error345 = False
 
+NAGR_KEYS = ('b101', 'b102', 'b103', 'b104', 'b105', 'b106')
+
+
+def _nagr_error():
+    global error345
+    if not error345:
+        error345 = True
+        cprint('Ошибка при расчете нагрузок по участкам', color='red')
+
+
+def _set_nagr(G, t, b101):
+    """Нагрузка вида b101 на участки из решения t."""
+    for n in G.nodes:
+        for k, (n1, n2, key) in itertools.chain(
+                zip(itertools.repeat(1), G.in_edges(n, keys=True)),
+                zip(itertools.repeat(2), G.out_edges(n, keys=True))
+                ):
+            l = G.edges[n1, n2, key]
+            i1 = l.get('i1', -1)
+            if i1 >= 0 and abs(t[i1]) < 10000:
+                l[b101] = abs(t[i1])
+
 
 def calc_nagr1(G, x, b101):
-
-#        cprint(f'Расчет нагрузок по участкам {b101}', color='b')
-    
-
     try:
         matrix, beta = init_matrix_nagr(G, x, b101)
-
         t = sp.sparse.linalg.spsolve(matrix, beta)
-
-#        print(t)
-#        for tt in t:
-#            print(tt, end=',')
-
-        ii = 0
-        n_nodes = G.number_of_nodes()
-
-        for n in G.nodes:
-
-#            print(n, G.nodes[n].get('name'))
-            for k, (n1, n2, key) in itertools.chain(
-                    zip(itertools.repeat(1), G.in_edges(n, keys=True)),
-                    zip(itertools.repeat(2), G.out_edges(n, keys=True))
-                    ): 
-
-                l = G.edges[n1, n2, key]
+        _set_nagr(G, t, b101)
+    except Exception:
+        _nagr_error()
 
 
-                l_typ = l['typ']
+def calc_nagr_all(G, x, keys=NAGR_KEYS):
+    """Все виды нагрузки одним разложением матрицы (матрица у видов общая, различаются правые части).
 
-                k_l = l['num']
-                i1 = l.get('i1', -1)
-
-                name = w_print.line_name_n1_n2(G, n1, n2)
-#                   print(name, t[i1])
-#                name = w_print.line_name(G, lineID, nodeID1, nodeID2, externalSignLineID)
-    
-
-                if i1 >= 0 and abs(t[i1]) < 10000:
-#                    print(f't[i1] = {t[i1]}')
-                    l[b101] = abs(t[i1])
-                    
-            ii += 1
-#    except:
-    except Exception as e:
-        global error345
-        if not error345:
-            error345 = True
-            cprint('Ошибка при расчете нагрузок по участкам', color='red')
-#            cprint(f'{e}', color='red')
-#            print(traceback.format_exc())
-#            exit(1)
+    Тот же порядок столбцов COLAMD, что у spsolve, поэтому результат тот же, а разложение — одно
+    вместо шести (на сети в 20 тыс. узлов — минуты). Вырожденная матрица: spsolve по каждому виду,
+    как раньше (предупреждение и NaN вместо исключения).
+    """
+    try:
+        matrix, betas = init_matrix_nagr(G, x, keys)
+    except Exception:
+        _nagr_error()
+        return
+    try:
+        solve = sp.sparse.linalg.splu(matrix, permc_spec='COLAMD').solve
+    except RuntimeError:
+        solve = lambda beta: sp.sparse.linalg.spsolve(matrix, beta)
+    for key in keys:
+        try:
+            _set_nagr(G, solve(betas[key]), key)
+        except Exception:
+            _nagr_error()
 
 
 def calc_nagr(G, x):
 #    return
     if not config.args.g_is_avar:   # плановый расчет
-        calc_nagr1(G, x, 'b101')
-        calc_nagr1(G, x, 'b102')
-        calc_nagr1(G, x, 'b103')
-        calc_nagr1(G, x, 'b104')
-        calc_nagr1(G, x, 'b105')
-        calc_nagr1(G, x, 'b106')
+        calc_nagr_all(G, x)
