@@ -120,8 +120,8 @@ def test_all_cities_user_and_master(client, monkeypatch):
     assert master["all_cities"] is True and master["is_master"] is True
 
 
-def test_geoserver_check_ignores_city(client, monkeypatch):
-    # GeoServer общий: пользователь Алматы проходит проверку и через API Астаны
+def test_geoserver_check_ignores_api_city(client, monkeypatch):
+    # GeoServer общий: пользователь Алматы проходит проверку и через API Астаны (без адреса — без города)
     monkeypatch.setenv("AUTH_REQUIRED_GET", "true")
     _status(monkeypatch, ["almaty"])
     token = create_access_token(username="ivanov", role="editor", subject="5")
@@ -191,3 +191,47 @@ async def test_create_user_unknown_city_rejected_before_db():
     with pytest.raises(users_admin.UserAdminError) as exc:
         await users_admin.create_user("ivanov", "password-123", "viewer", cities=["moscow"])
     assert exc.value.status_code == 422
+
+
+@pytest.mark.parametrize("uri, expected, is_global", [
+    ("/geoserver/AlmatyGIS/gwc/service/wmts?SERVICE=WMTS&LAYER=AlmatyGIS:heatpipesections&TileCol=1", {"almaty"}, False),
+    ("/geoserver/Astana2/ows?service=WFS&typeName=Astana2:fragments", {"astana"}, False),
+    ("/geoserver/wms?REQUEST=GetFeatureInfo&LAYERS=AlmatyGIS:uzel,AstanaGIS:uzel&QUERY_LAYERS=AlmatyGIS:uzel",
+     {"almaty", "astana"}, True),
+    ("/geoserver/gwc/service/tms/1.0.0/Astana1%3Aheatpipesections@EPSG%3A900913@pbf/10/1/2.pbf", {"astana"}, True),
+    ("/geoserver/gwc/service/wmts?REQUEST=GetCapabilities", set(), True),
+    ("/geoserver/OtherProject/wms?layers=OtherProject:roads", set(), False),
+])
+def test_geoserver_city_detection(uri, expected, is_global):
+    assert cities.geoserver_request_cities(uri) == (expected, is_global)
+
+
+def test_geoserver_denied_rules():
+    tile_astana = "/geoserver/AstanaGIS/gwc/service/wmts?LAYER=AstanaGIS:uzel"
+    assert cities.geoserver_denied(None, tile_astana) is None
+    assert "Астана" in cities.geoserver_denied(["almaty"], tile_astana)
+    assert cities.geoserver_denied(["astana"], tile_astana) is None
+    # слой чужого города в параметрах виртуального сервиса своего города
+    assert cities.geoserver_denied(["almaty"], "/geoserver/AlmatyGIS/wms?layers=AstanaGIS:uzel")
+    # тело POST к общему сервису не видно — только при доступе ко всем городам
+    assert cities.geoserver_denied(["almaty"], "/geoserver/wfs", "POST")
+    assert cities.geoserver_denied(["almaty"], "/geoserver/AlmatyGIS/wfs", "POST") is None
+    assert cities.geoserver_denied(None, "/geoserver/wfs", "POST") is None
+
+
+def test_geoserver_check_by_city(client, monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED_GET", "true")
+    _status(monkeypatch, ["almaty"])
+    token = create_access_token(username="ivanov", role="editor", subject="5")
+    client.cookies.set("tgid_gs", token)
+    own = {"X-Original-URI": "/geoserver/AlmatyGIS/gwc/service/wmts?LAYER=AlmatyGIS:uzel"}
+    other = {"X-Original-URI": "/geoserver/Astana1/wms?layers=Astana1:uzel"}
+    assert client.get("/auth/check", headers=own).status_code == 200
+    r = client.get("/auth/check", headers=other)
+    assert r.status_code == 403 and "Астана" in r.text
+    post = {"X-Original-URI": "/geoserver/wfs", "X-Original-Method": "POST"}
+    assert client.get("/auth/check", headers=post).status_code == 403
+    # мастер-учётке — все города
+    client.cookies.set("tgid_gs", master_token())
+    assert client.get("/auth/check", headers=other).status_code == 200
+    client.cookies.clear()

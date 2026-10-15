@@ -196,15 +196,7 @@ async def auth_me(
         _set_geoserver_cookie(response, request, credentials.credentials)
     extra: dict = {"auth_backend": auth_backend(), "is_master": user.sub == MASTER_SUB}
     # города, куда пользователь может перейти: UsersDB — по users.cities, остальным — все
-    user_cities = None
-    if user.sub.isdigit() and not auth_disabled():
-        from auth import _load_user_status
-
-        try:
-            status_row = await _load_user_status(int(user.sub))
-            user_cities = status_row[3] if status_row and len(status_row) > 3 else None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Города пользователя не прочитаны: %s", exc)
+    user_cities = list(user.cities) if user.cities is not None else None
     extra.update(
         city=city_access.current_city(),
         city_label=city_access.city_label(),
@@ -281,6 +273,7 @@ async def auth_check(request: Request):
     Пока вход не обязателен (AUTH_DISABLED или AUTH_REQUIRED_GET=false), GeoServer открыт, как раньше —
     выключение защиты скриптом открывает и тайлы. Иначе нужен действующий JWT в cookie tgid_gs
     (или в заголовке Authorization): подпись, срок, блокировка и удаление пользователя.
+    Пользователю с ограничением по городам (users.cities) — только рабочие области своих городов: 403.
     """
     if auth_disabled() or not auth_required_get():
         return Response(status_code=200)
@@ -291,8 +284,16 @@ async def auth_check(request: Request):
     if not token:
         return Response(status_code=401)
     try:
-        # GeoServer общий для всех городов: город пользователя тут не проверяем
-        await apply_live_user_status(decode_access_token(token), check_city=False)
+        # GeoServer общий для всех городов: город API тут ни при чём — проверяем город данных запроса
+        user = await apply_live_user_status(decode_access_token(token), check_city=False)
     except HTTPException:
         return Response(status_code=401)
+    # исходный запрос передаёт nginx (X-Original-URI, X-Original-Method): рабочая область → город
+    denied = city_access.geoserver_denied(
+        user.cities,
+        request.headers.get("x-original-uri") or "",
+        request.headers.get("x-original-method") or "GET",
+    )
+    if denied:
+        return Response(status_code=403, content=denied, media_type="text/plain; charset=utf-8")
     return Response(status_code=200)

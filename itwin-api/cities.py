@@ -107,3 +107,65 @@ def visible_catalog(cities: Optional[list[str]]) -> list[dict[str, str]]:
 
 def denied_detail(city: Optional[str] = None) -> str:
     return f"Нет доступа к городу «{city_label(city)}». Доступ выдаёт администратор"
+
+
+# --- GeoServer: город по рабочей области ---
+# GeoServer общий для всех городов; рабочая область города начинается с его кода
+# (AlmatyGIS, Almaty1, Almaty2 → almaty; AstanaGIS, Astana1, Astana2 → astana). Рабочие области других
+# проектов (не начинаются с кода города) городом не ограничиваются — нужен только вход.
+# Сервисы без рабочей области в пути (/geoserver/wms, /geoserver/gwc/...): город — по слоям в параметрах.
+GEOSERVER_GLOBAL_SEGMENTS = frozenset({
+    "gwc", "wms", "wfs", "wcs", "wps", "ows", "wmts", "tms", "kml", "styles", "schemas", "i18n",
+    "openlayers", "openlayers3", "pdf", "www", "web", "rest", "index.html",
+})
+_LAYER_PARAMS = frozenset({"layer", "layers", "typename", "typenames", "query_layers", "coverageid", "identifier"})
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def workspace_city(workspace: str) -> Optional[str]:
+    """Город рабочей области GeoServer по префиксу имени; None — не город (другой проект)."""
+    ws = (workspace or "").strip().lower()
+    for code in sorted(city_codes(), key=len, reverse=True):
+        if ws.startswith(code):
+            return code
+    return None
+
+
+def geoserver_request_cities(uri: str) -> tuple[set[str], bool]:
+    """Города, данные которых затрагивает запрос к GeoServer, и признак общего сервиса (без рабочей области)."""
+    from urllib.parse import parse_qsl, unquote, urlsplit
+
+    parts = urlsplit(uri or "")
+    segments = [unquote(s) for s in parts.path.split("/") if s]
+    if segments and segments[0].lower() == "geoserver":
+        segments = segments[1:]
+    found: set[str] = set()
+    is_global = not segments or segments[0].lower() in GEOSERVER_GLOBAL_SEGMENTS
+    if not is_global:
+        found.add(segments[0])
+    # слой в пути: TMS /gwc/service/tms/1.0.0/AlmatyGIS:heatpipesections@EPSG:900913@pbf/...
+    for seg in segments:
+        if ":" in seg:
+            found.add(seg.split(":", 1)[0])
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if key.lower() in _LAYER_PARAMS:
+            for item in value.split(","):
+                if ":" in item:
+                    found.add(item.split(":", 1)[0])
+    cities = {c for c in (workspace_city(ws) for ws in found) if c}
+    return cities, is_global
+
+
+def geoserver_denied(user_cities: Optional[Iterable[str]], uri: str, method: str = "GET") -> Optional[str]:
+    """Причина отказа в запросе к GeoServer (None — можно). user_cities None — все города."""
+    if user_cities is None:
+        return None
+    allowed_set = set(user_cities)
+    needed, is_global = geoserver_request_cities(uri)
+    missing = sorted(needed - allowed_set)
+    if missing:
+        return f"Нет доступа к данным города «{city_label(missing[0])}»"
+    # тело POST (WFS-запрос с typeName внутри XML) nginx не видит: общим сервисам — только чтение по адресу
+    if is_global and (method or "GET").upper() not in _READ_METHODS:
+        return "Запросы с телом к общим сервисам GeoServer — только при доступе ко всем городам"
+    return None

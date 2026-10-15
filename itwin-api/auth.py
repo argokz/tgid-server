@@ -98,6 +98,8 @@ class AuthUser:
     caps: frozenset = frozenset()
     # Мастер-учётка: отпечаток мастер-пароля из токена (смена пароля на сервере закрывает старые сессии)
     mv: str = ""
+    # Города пользователя UsersDB (живая проверка, users.cities); None — все города
+    cities: Optional[tuple] = None
 
     def has_role(self, minimum: str) -> bool:
         return ROLE_ORDER.get(self.role, 0) >= ROLE_ORDER.get(minimum, 99)
@@ -334,8 +336,9 @@ async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> 
                 headers={"WWW-Authenticate": "Bearer"},
             )
     caps = frozenset(status_row[2]) if len(status_row) > 2 else user.caps
-    if status_row[1] != user.role or caps != user.caps:
-        return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps)
+    cities = tuple(status_row[3]) if len(status_row) > 3 and status_row[3] is not None else None
+    if status_row[1] != user.role or caps != user.caps or cities != user.cities:
+        return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps, cities=cities)
     return user
 
 
