@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -12,6 +12,8 @@ class User(Base):
     is_admin = Column(Boolean, default=False)
     # P0 RBAC: viewer | calculator | editor | admin
     role = Column(String, nullable=False, default="viewer")
+    # Города, к которым есть доступ (коды через запятую, cities.py); NULL — все
+    cities = Column(Text, nullable=True)
 
 class UserPermission(Base):
     __tablename__ = "user_permissions"

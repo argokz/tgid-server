@@ -27,6 +27,14 @@ class AuthConfigResponse(BaseModel):
     strict_auth: bool
     mutations_enabled: bool
     topology_mutations_enabled: bool
+    city: str = ""  # код города этого API (cities.py)
+    city_label: str = ""
+
+
+class CityItem(BaseModel):
+    code: str
+    label: str
+    path: str  # путь веба города, напр. /tgid/astana/
 
 
 class MeResponse(BaseModel):
@@ -45,6 +53,10 @@ class MeResponse(BaseModel):
     caps: list[str] = Field(default_factory=list)
     fragments: Optional[list[int]] = None  # None — правка во всей сети
     must_change_password: bool = False
+    city: str = ""
+    city_label: str = ""
+    cities: list[CityItem] = Field(default_factory=list)  # города, доступные пользователю
+    all_cities: bool = True  # доступ ко всем городам (и будущим)
 
 
 class ChangePasswordRequest(BaseModel):

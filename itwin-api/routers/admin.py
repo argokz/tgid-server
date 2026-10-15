@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
+import cities as city_access
 from app_logging import get_logger
 from audit import write_audit_log
 from auth import (
@@ -55,6 +56,8 @@ class CreateUserBody(BaseModel):
     display_name: Optional[str] = Field(None, max_length=200)
     full_name: Optional[str] = Field(None, max_length=200)
     web_access: bool = True
+    # UsersDB: коды городов (cities.py); None — все города
+    cities: Optional[list[str]] = Field(None, max_length=50)
 
 
 class UpdateUserBody(BaseModel):
@@ -65,6 +68,8 @@ class UpdateUserBody(BaseModel):
     display_name: Optional[str] = Field(None, max_length=200)
     full_name: Optional[str] = Field(None, max_length=200)
     web_access: Optional[bool] = None
+    # UsersDB: передан null — все города; не передан — не менять
+    cities: Optional[list[str]] = Field(None, max_length=50)
 
 
 class PasswordBody(BaseModel):
@@ -132,6 +137,9 @@ async def admin_users(user: Annotated[AuthUser, Depends(require_roles("admin"))]
         "note": None if not auth_disabled() else "AUTH_DISABLED=true: изменения пользователей отключены",
         # мастер-учётка владельца — вне списка, удалить и заблокировать её нельзя
         "master_login": master_login() if master_enabled() else None,
+        # доступ к городам (UsersDB): справочник и город этого API
+        "cities_catalog": city_access.cities_catalog(),
+        "current_city": city_access.current_city(),
     }
 
 
@@ -153,7 +161,7 @@ async def admin_create_user(
         except pg_users.PgUserError as exc:
             _pg_error(exc)
     try:
-        created = await create_user(body.username, body.password, body.role)
+        created = await create_user(body.username, body.password, body.role, cities=body.cities)
     except UserAdminError as exc:
         _raise_admin_error(exc)
     await _audit_users(user, "INSERT", created["id"], new=created)
@@ -195,11 +203,13 @@ async def admin_update_user(
         invalidate_user_status(user_id)
         return after
     uid = _usersdb_id(user_id)
-    if body.role is None and body.is_active is None:
-        raise HTTPException(status_code=422, detail="Нужно указать role и/или is_active")
+    cities_given = "cities" in body.model_fields_set
+    if body.role is None and body.is_active is None and not cities_given:
+        raise HTTPException(status_code=422, detail="Нужно указать role, is_active и/или cities")
+    extra = {"cities": body.cities} if cities_given else {}
     try:
         before, after = await update_user(
-            uid, actor_id=user.sub, role=body.role, is_active=body.is_active
+            uid, actor_id=user.sub, role=body.role, is_active=body.is_active, **extra
         )
     except UserAdminError as exc:
         _raise_admin_error(exc)

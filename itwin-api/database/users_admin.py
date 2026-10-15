@@ -5,6 +5,8 @@
 включая топологию и управление пользователями. Блокировка — users.is_active=false.
 Пароли — только bcrypt (auth.hash_password), в ответы и журналы не попадают.
 
+Доступ к городам — users.cities (cities.py): NULL — все города, иначе список кодов.
+
 Мастер-учётка (auth.MASTER_LOGIN) живёт вне UsersDB: её логин занят, а пока она настроена,
 последнего администратора UsersDB можно снять — управлять пользователями всё равно есть кому.
 """
@@ -15,6 +17,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func, select
 
+import cities as city_access
 from auth import ROLE_ORDER, hash_password, is_master_login, master_enabled, resolve_user_role, verify_password
 from database.connect import async_session
 from database.models import User
@@ -47,7 +50,18 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "role": resolve_user_role(row.role, row.is_admin),
         "is_active": bool(row.is_active),
         "is_admin": bool(row.is_admin),
+        "cities": city_access.parse_stored(getattr(row, "cities", None)),
     }
+
+
+_UNSET: Any = object()
+
+
+def _cities_value(codes: Optional[list[str]]) -> Optional[str]:
+    try:
+        return city_access.to_stored(city_access.normalize(codes))
+    except city_access.CityError as exc:
+        raise UserAdminError(422, str(exc)) from exc
 
 
 def roles_catalog() -> list[dict[str, Any]]:
@@ -72,12 +86,16 @@ async def _other_active_admins(session, exclude_id: int) -> int:
     return int((await session.execute(stmt)).scalar_one())
 
 
-async def create_user(username: str, password: str, role: str) -> dict[str, Any]:
+async def create_user(
+    username: str, password: str, role: str, cities: Optional[list[str]] = None
+) -> dict[str, Any]:
+    """Новый пользователь; cities=None — доступ ко всем городам."""
     if role not in ROLE_ORDER:
         raise UserAdminError(422, f"Неизвестная роль: {role}")
     if is_master_login(username):
         raise UserAdminError(409, f"Логин «{username}» занят мастер-учёткой")
     _check_password(password)
+    stored_cities = _cities_value(cities)
     async with async_session() as session:
         exists = (
             await session.execute(select(User.id).where(func.lower(User.username) == username.lower()))
@@ -90,6 +108,7 @@ async def create_user(username: str, password: str, role: str) -> dict[str, Any]
             is_active=True,
             is_admin=role == "admin",
             role=role,
+            cities=stored_cities,
         )
         session.add(row)
         await session.commit()
@@ -103,14 +122,16 @@ async def update_user(
     actor_id: Optional[str],
     role: Optional[str] = None,
     is_active: Optional[bool] = None,
+    cities: Any = _UNSET,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Смена роли и/или блокировка. Возвращает (было, стало).
+    """Смена роли, блокировка и/или города (cities=None — все города). Возвращает (было, стало).
 
     Нельзя понизить или заблокировать себя и последнего активного администратора —
     иначе управлять пользователями станет некому.
     """
     if role is not None and role not in ROLE_ORDER:
         raise UserAdminError(422, f"Неизвестная роль: {role}")
+    stored_cities = _UNSET if cities is _UNSET else _cities_value(cities)
     async with async_session() as session:
         row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
         if row is None:
@@ -129,6 +150,11 @@ async def update_user(
         row.role = new_role
         row.is_admin = new_role == "admin"
         row.is_active = new_active
+        if stored_cities is not _UNSET:
+            is_self = actor_id is not None and str(user_id) == str(actor_id)
+            if is_self and not city_access.allowed(city_access.parse_stored(stored_cities)):
+                raise UserAdminError(409, "Нельзя закрыть себе доступ к городу, в котором вы работаете")
+            row.cities = stored_cities
         await session.commit()
         await session.refresh(row)
         return before, user_to_dict(row)

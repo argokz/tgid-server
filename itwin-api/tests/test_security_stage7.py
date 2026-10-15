@@ -221,7 +221,7 @@ def test_admin_create_user_validates_and_audits(monkeypatch):
 
     created, audited = [], []
 
-    async def fake_create(username, password, role):
+    async def fake_create(username, password, role, cities=None):
         created.append((username, role))
         return {"id": 7, "username": username, "role": role, "is_active": True, "is_admin": False}
 

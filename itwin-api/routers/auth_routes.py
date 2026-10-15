@@ -7,6 +7,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 
+import cities as city_access
 import login_guard
 from app_logging import get_logger
 from auth import (
@@ -107,6 +108,9 @@ async def _verify_login(body: LoginRequest) -> TokenResponse:
             stored = user_row.hashed_password or ""
             if not verify_password(body.password, stored):
                 raise HTTPException(status_code=401, detail="Invalid credentials")
+            # пароль верный, но город этого API пользователю не открыт (users.cities)
+            if not city_access.allowed(city_access.parse_stored(user_row.cities)):
+                raise HTTPException(status_code=403, detail=city_access.denied_detail())
             resolved_role = resolve_user_role(user_row.role, user_row.is_admin)
             # Client cannot escalate role when auth is on
             token = create_access_token(
@@ -146,6 +150,8 @@ async def auth_config():
         strict_auth=strict_auth(),
         mutations_enabled=mutations_enabled(),
         topology_mutations_enabled=_topology_mutations_enabled(),
+        city=city_access.current_city(),
+        city_label=city_access.city_label(),
     )
 
 
@@ -189,6 +195,22 @@ async def auth_me(
     if credentials is not None and credentials.credentials and not auth_disabled():
         _set_geoserver_cookie(response, request, credentials.credentials)
     extra: dict = {"auth_backend": auth_backend(), "is_master": user.sub == MASTER_SUB}
+    # города, куда пользователь может перейти: UsersDB — по users.cities, остальным — все
+    user_cities = None
+    if user.sub.isdigit() and not auth_disabled():
+        from auth import _load_user_status
+
+        try:
+            status_row = await _load_user_status(int(user.sub))
+            user_cities = status_row[3] if status_row and len(status_row) > 3 else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Города пользователя не прочитаны: %s", exc)
+    extra.update(
+        city=city_access.current_city(),
+        city_label=city_access.city_label(),
+        cities=city_access.visible_catalog(user_cities),
+        all_cities=user_cities is None,
+    )
     if user.sub.startswith(PG_USER_PREFIX):
         from database import pg_users
 
@@ -269,7 +291,8 @@ async def auth_check(request: Request):
     if not token:
         return Response(status_code=401)
     try:
-        await apply_live_user_status(decode_access_token(token))
+        # GeoServer общий для всех городов: город пользователя тут не проверяем
+        await apply_live_user_status(decode_access_token(token), check_city=False)
     except HTTPException:
         return Response(status_code=401)
     return Response(status_code=200)

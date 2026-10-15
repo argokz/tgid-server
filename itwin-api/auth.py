@@ -239,8 +239,8 @@ def invalidate_user_status(user_id: Optional[object] = None) -> None:
         _user_status_cache.pop(user_id, None)
 
 
-async def _load_user_status(user_id: int) -> Optional[tuple[bool, str]]:
-    """(is_active, role) из UsersDB; None — пользователя нет."""
+async def _load_user_status(user_id: int) -> Optional[tuple]:
+    """(is_active, role, (), cities) из UsersDB; cities None — все города; None — пользователя нет."""
     from sqlalchemy import select
 
     from database.connect import async_session
@@ -250,7 +250,9 @@ async def _load_user_status(user_id: int) -> Optional[tuple[bool, str]]:
         row = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
         if row is None:
             return None
-        return bool(row.is_active), resolve_user_role(row.role, row.is_admin)
+        from cities import parse_stored
+
+        return bool(row.is_active), resolve_user_role(row.role, row.is_admin), (), parse_stored(row.cities)
 
 
 async def _load_pg_user_status(role_name: str) -> Optional[tuple]:
@@ -276,8 +278,11 @@ async def _load_pg_user_status(role_name: str) -> Optional[tuple]:
     return bool(row["is_active"]), row["base_role"], tuple(row["caps"] or ())
 
 
-async def apply_live_user_status(user: AuthUser) -> AuthUser:
+async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> AuthUser:
     """Живая сверка учётной записи: заблокированный → 401, роль — текущая из БД.
+
+    check_city: пользователю UsersDB без доступа к городу этого API — 401 (администратор убрал город —
+    сессия закрывается). /auth/check (GeoServer общий для городов) город не проверяет.
 
     Токен UsersDB — sub числовой id; токен PostgreSQL — sub = роль tgid_u_*. Токены dev-login
     (sub = имя) не сверяются. Если БД недоступна — доверяем токену (подпись и срок уже
@@ -319,6 +324,15 @@ async def apply_live_user_status(user: AuthUser) -> AuthUser:
             detail="Учётная запись заблокирована или удалена",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if check_city and len(status_row) > 3:
+        from cities import allowed, denied_detail
+
+        if not allowed(status_row[3]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=denied_detail(),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     caps = frozenset(status_row[2]) if len(status_row) > 2 else user.caps
     if status_row[1] != user.role or caps != user.caps:
         return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps)
