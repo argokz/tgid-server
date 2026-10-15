@@ -57,7 +57,7 @@ def _bearer(token):
 
 
 def test_catalog_default_and_custom(monkeypatch):
-    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana"]
+    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana", "shatura"]
     assert cities.cities_catalog()[1] == {"code": "astana", "label": "Астана", "path": "/tgid/astana/"}
     monkeypatch.setenv("TGID_CITIES", "almaty:Алматы, shymkent:Шымкент:/shym/, bad code:x, almaty:дубль")
     assert cities.cities_catalog() == [
@@ -115,7 +115,7 @@ def test_all_cities_user_and_master(client, monkeypatch):
     _status(monkeypatch, None)
     token = create_access_token(username="ivanov", role="editor", subject="5")
     me = client.get("/auth/me", headers=_bearer(token)).json()
-    assert me["all_cities"] is True and len(me["cities"]) == 2
+    assert me["all_cities"] is True and len(me["cities"]) == 3
     master = client.get("/auth/me", headers=_bearer(master_token())).json()
     assert master["all_cities"] is True and master["is_master"] is True
 
@@ -183,7 +183,7 @@ def test_admin_list_has_catalog(client, monkeypatch):
 
     monkeypatch.setattr(admin, "list_users", fake_list)
     body = client.get("/api/v1/admin/users", headers=_bearer(master_token())).json()
-    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana"]
+    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana", "shatura"]
 
 
 @pytest.mark.asyncio
@@ -235,3 +235,11 @@ def test_geoserver_check_by_city(client, monkeypatch):
     client.cookies.set("tgid_gs", master_token())
     assert client.get("/auth/check", headers=other).status_code == 200
     client.cookies.clear()
+
+
+def test_shatura_city_and_workspace(monkeypatch):
+    monkeypatch.delenv("TGID_CITY", raising=False)
+    monkeypatch.setenv("DB_NAME", "shatura")
+    assert cities.current_city() == "shatura" and cities.city_label() == "Шатура"
+    assert cities.workspace_city("ShaturaGIS") == "shatura"
+    assert "Шатура" in cities.geoserver_denied(["almaty"], "/geoserver/ShaturaGIS/wms?layers=ShaturaGIS:uzel")
