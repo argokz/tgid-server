@@ -238,15 +238,18 @@ WHERE n.fileID IN ({s_fileID}) and n.removed=0'''
             if kod_m is None: kod_m = ''
                            
             if config.args.is_mag_fragment:
+                # ссылка на узел с ЗН для протокола (w_print импортирует read_gid — импорт здесь)
+                from sety import w_print
+                zn_link = w_print.make_link(f'[{kod} {name}]', 'node', id)
                 if fr_name is None:
-                    cprint(f'Для узла с заданным напором [{kod} {name}] не задан фрагмент присоединения')
+                    cprint(f'Для узла с заданным напором {zn_link} не задан фрагмент присоединения')
                     cprint('    Расчет режима производится через заданный располагаемый напор')
                 elif id_m is None:
                     if (kod_m is None and uzel_m is None) or (kod_m == '' and uzel_m == ''):
-                        cprint(f'Для узла с заданным напором [{kod} {name}] не задан узел во фрагменте [{fr_name}]', color='red')
+                        cprint(f'Для узла с заданным напором {zn_link} не задан узел во фрагменте [{fr_name}]', color='red')
                         cprint('    Расчет режима производится через заданный располагаемый напор', color='red')
                     else:
-                        cprint(f'В узле с заданным напором [{kod} {name}] указан несуществующий узел [{kod_m} {uzel_m}] на магистральном фрагменте [{fr_name}]: Уточните', color='red')
+                        cprint(f'В узле с заданным напором {zn_link} указан несуществующий узел [{kod_m} {uzel_m}] на магистральном фрагменте [{fr_name}]: Уточните', color='red')
 #                        cprint(f'Для узла с заданным напором [{kod} {name}] не могу найти узел [{kod_m} {uzel_m}] во фрагменте [{fr_name}]', color='red')
                         cprint('    Расчет режима производится через заданный располагаемый напор', color='red')
                 else:

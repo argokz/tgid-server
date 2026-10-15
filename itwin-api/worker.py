@@ -273,6 +273,92 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
             logger.error(f"Ошибка при удалении временных файлов: {str(e)}")
 
 
+_PROTOCOL_SQL = os.path.join(_APP_DIR, "sql", "migrations", "20261015_calculation_protocol.sql")
+_protocol_table_ready = False
+PROTOCOL_KEEP_DAYS = int(os.getenv("CALC_PROTOCOL_KEEP_DAYS", "365") or 365)
+
+
+def _token_value(tokens: list[str], flag: str) -> str | None:
+    for i, t in enumerate(tokens[:-1]):
+        if t == flag:
+            return tokens[i + 1]
+    return None
+
+
+def _max_calculation_id() -> int | None:
+    try:
+        conn = _po_db_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT max(id) FROM calculation")
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as e:  # протокол — вспомогательный: расчёт от этого не зависит
+        logger.warning(f"Протокол расчёта: не удалось прочитать calculation: {e}")
+        return None
+
+
+def _save_protocol(*, request_id: str, task_id: str | None, run: dict, file_id: int | None,
+                   author: str | None, mode: str, params: str, calc_before: int | None) -> int | None:
+    """Разбирает вывод sety (utils/calc_protocol.py) и пишет строку calculation_protocol.
+
+    Таблицы нет — создаёт её (sql/migrations/20261015_calculation_protocol.sql); любая ошибка —
+    предупреждение в лог, расчёт не ломается. Возвращает id протокола.
+    """
+    global _protocol_table_ready
+    import json
+    from utils.calc_protocol import parse_protocol
+
+    text = run.get("output") or ""
+    try:
+        parsed = parse_protocol(text)
+        if run.get("status") != "success" and run.get("error") and not parsed["summary"]["errors"]:
+            # в stdout причины нет — последние строки stderr (там же служебный шум чтения таблиц)
+            import html as _html
+            tail = [ln.strip() for ln in str(run["error"]).splitlines() if ln.strip()][-3:]
+            text += "\n" + "".join(f'<span style="color:red">{_html.escape(ln)}</span>\n' for ln in tail)
+            parsed = parse_protocol(text)
+        conn = _po_db_connect()
+        try:
+            with conn.cursor() as cur:
+                if not _protocol_table_ready:
+                    cur.execute("SELECT to_regclass('public.calculation_protocol') IS NOT NULL")
+                    if not cur.fetchone()[0]:
+                        with open(_PROTOCOL_SQL, encoding="utf-8") as fh:
+                            cur.execute(fh.read())
+                    _protocol_table_ready = True
+                calc_id = None
+                if file_id is not None:
+                    cur.execute("SELECT max(id) FROM calculation WHERE fileid = %s AND id > %s",
+                                (file_id, calc_before if calc_before is not None else 0))
+                    calc_id = cur.fetchone()[0]
+                summary = parsed["summary"]
+                cur.execute(
+                    """INSERT INTO calculation_protocol (request_id, task_id, calculationid, fileid, author, mode,
+                           params, status, errors, warnings, summary, entries, output)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s) RETURNING id""",
+                    (request_id, task_id, calc_id, file_id, author, mode, params,
+                     run.get("status") or "error", summary["errors"], summary["warnings"],
+                     json.dumps(summary, ensure_ascii=False), json.dumps(parsed["entries"], ensure_ascii=False),
+                     text),
+                )
+                protocol_id = cur.fetchone()[0]
+                if PROTOCOL_KEEP_DAYS > 0:
+                    cur.execute("DELETE FROM calculation_protocol WHERE created_at < now() - %s * interval '1 day'",
+                                (PROTOCOL_KEEP_DAYS,))
+            conn.commit()
+            return protocol_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Протокол расчёта не сохранён: {e}")
+        return None
+
+
 @celery_app.task(bind=True, name="run_sety_calculation")
 def run_sety_calculation(self, params: str, request_id: str = None, dross: bool = True,
                          file_ids: list[int] | None = None):
@@ -298,6 +384,9 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
         targets = [None]
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    author = _token_value(user_tokens, "-user_gid")
+    mode = "plan" if dross else "emergency"
+    single_file = _token_value(user_tokens, "-fileID")
     runs = []
     for idx, file_id in enumerate(targets, start=1):
         label = str(file_id) if file_id is not None else "0"
@@ -312,8 +401,16 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
             'current': idx,
             'total': len(targets),
         })
+        calc_before = _max_calculation_id()
         run = _run_one(cmd, request_id, label)
         run["file_id"] = file_id
+        protocol_file = file_id
+        if protocol_file is None and single_file is not None and single_file.lstrip("-").isdigit():
+            protocol_file = int(single_file)
+        run["protocol_id"] = _save_protocol(
+            request_id=request_id, task_id=getattr(self.request, "id", None), run=run, file_id=protocol_file,
+            author=author, mode=mode, params=params, calc_before=calc_before,
+        )
         runs.append(run)
 
     if file_ids is None:
@@ -323,6 +420,7 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
             "message": "Расчет окончен" if run["status"] == "success" else "Ошибка при выполнении расчета",
             "output": run.get("output"),
             "request_id": request_id,
+            "protocol_id": run.get("protocol_id"),
         }
         if run["status"] != "success":
             response["error"] = run.get("error")
@@ -340,6 +438,7 @@ def run_sety_calculation(self, params: str, request_id: str = None, dross: bool 
         "output": output,
         "request_id": request_id,
         "runs": runs,
+        "protocol_ids": [r["protocol_id"] for r in runs if r.get("protocol_id")],
     }
     errors = [f"Фрагмент {r['file_id']}: {r.get('error')}" for r in runs if r["status"] != "success"]
     if errors:

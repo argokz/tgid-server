@@ -43,6 +43,11 @@ def get_pt_name(pr):
 
     pt_name = f'{rs_name} {externalNodeName}'
 
+    # ссылка на узел потребителя — веб по ней переходит к объекту из протокола
+    nodeID = pr.get('nodeID', None)
+    if nodeID is not None and nodeID != -1:
+        pt_name = w_print.make_link(pt_name, 'node', nodeID)
+
     return pt_name
 
 
@@ -348,7 +353,7 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
     if not ist:
 #        print(read_gid.map_ist)
-        cprint(f'Нет Источника тепла в расчетной схеме {rs_name}! Расчет теплогидравлического режима невозможен', color='red')
+        cprint(f'Нет Источника тепла в расчетной схеме {rs_name}! Расчет теплогидравлического режима невозможен (потребитель [{get_pt_name(pr)}])', color='red')
 #        cprint(f'Нет Источника тепла в расчетной схеме {rs_name} с номером {heatSourceID}! Считать по температурному графику невозможно', color='red')
         exit(1)
 
@@ -378,6 +383,8 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
     t1_1 = t1
 
     pt_name = f'{rs_name} {externalNodeName}'
+    if pr.get('nodeID', -1) != -1:
+        pt_name = w_print.make_link(pt_name, 'node', pr['nodeID'])
 
     tr = get_tr(pr)
 

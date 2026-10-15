@@ -20,6 +20,7 @@ from database.calculation_admin import (
     get_calculation,
     list_calculations,
 )
+from database.calc_protocols import get_protocols, list_protocols, locate_objects
 from database.calculations import (
     get_calculation_results_excel,
     get_calculation_results_geojson,
@@ -422,3 +423,71 @@ async def api_calc_throttling_sheet(req: ThrottlingSheetRequest):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=throttling_calculation_sheet.xlsx"},
     )
+
+
+# --- Протоколы расчётов (calculation_protocol, пишет воркер) ---
+
+class ProtocolLocateBody(BaseModel):
+    objects: list[dict] = Field(..., max_length=500)
+
+
+@router.get("/api/v1/calculations/protocols")
+async def api_calc_protocols(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    file_id: Optional[int] = Query(None, ge=1, description="Фрагмент"),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Последние протоколы расчётов: дата, фрагмент, автор, режим, число ошибок и предупреждений."""
+    async with acquire_conn() as conn:
+        return {"items": await list_protocols(conn, file_id=file_id, limit=limit)}
+
+
+@router.get("/api/v1/calculations/protocols/by-request/{request_id}")
+async def api_calc_protocols_by_request(
+    request_id: str,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    output: bool = Query(False, description="Добавить исходный вывод sety"),
+):
+    """Протоколы одного запроса расчёта (при расчёте по списку — по фрагменту)."""
+    async with acquire_conn() as conn:
+        items = await get_protocols(conn, request_id=request_id, with_output=output)
+    if not items:
+        raise HTTPException(status_code=404, detail="Протокол расчёта не найден")
+    return {"items": items}
+
+
+@router.get("/api/v1/calculations/protocols/{protocol_id}")
+async def api_calc_protocol(
+    protocol_id: int,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    output: bool = Query(False, description="Добавить исходный вывод sety"),
+):
+    async with acquire_conn() as conn:
+        items = await get_protocols(conn, protocol_id=protocol_id, with_output=output)
+    if not items:
+        raise HTTPException(status_code=404, detail="Протокол расчёта не найден")
+    return items[0]
+
+
+@router.get("/api/v1/calculations/{calculation_id}/protocol")
+async def api_calculation_protocol(
+    calculation_id: int,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    output: bool = Query(False),
+):
+    """Протокол, которым создан расчёт calculation_id (если расчёт запускали из веба)."""
+    async with acquire_conn() as conn:
+        items = await get_protocols(conn, calculation_id=calculation_id, with_output=output)
+    if not items:
+        raise HTTPException(status_code=404, detail="Протокол этого расчёта не сохранён")
+    return items[-1]
+
+
+@router.post("/api/v1/calculations/protocols/locate")
+async def api_calc_protocol_locate(
+    body: ProtocolLocateBody,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Геометрия (WGS84) объектов протокола: узлы, участки, участки между парой узлов."""
+    async with acquire_conn() as conn:
+        return await locate_objects(conn, body.objects)

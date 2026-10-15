@@ -71,14 +71,14 @@ def out_IS_OUT(G, conn, calculationid):
             GG_O, Gin_O, Gout_O, Gp_O, Gout_O =  n_ras(G, (id, 2), False) 
 
             if abs(Gin_P) < 0.000001:
-                cprint(f'Источник {name} отключен', color='red')
+                cprint(f'Источник {w_print.node_name(G, n, False, True)} отключен', color='red')
 
 #                print(f'{GG_P=}, {Gin_P=}, {Gout_P=}, {Gp_P=}, {Gout_P=}')
 #                print(f'{GG_O=}, {Gin_O=}, {Gout_O=}, {Gp_O=}, {Gout_O=}')
                 continue
 
             if abs(Gin_O) < 0.000001:
-                cprint(f'В источник {name} не идет вода!!!!', color='red')
+                cprint(f'В источник {w_print.node_name(G, n, False, True)} не идет вода!!!!', color='red')
 #                print(GG_P, Gin_P, Gout_P, Gp_P, Gout_P)
 #                print(GG_O, Gin_O, Gout_O, Gp_O, Gout_O)
 

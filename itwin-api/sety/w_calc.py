@@ -29,6 +29,8 @@ from sety.ct import get_ct
 from sety import consumption
 
 from sety.out.pt_out import n_ras
+
+NO_ZN_LIST_MAX = 50   # сколько подсетей без узла с заданным напором перечислять в протоколе
 from sety.sopr_ut import reset_sopr
 
 from sety.check_ist3 import check_ist3
@@ -1029,6 +1031,9 @@ def w_calc2(G, param_sum):
 
         if root is None:
             print(f'Ошибка расчета', file=sys.stderr, flush=True)
+            # в протокол (stdout): подсеть не рассчитана — веб покажет её среди ошибок
+            cprint('Расчет подсети не выполнен: система уравнений не решена (проверьте сопротивления, '
+                   'регуляторы и узлы с заданным напором)', color='red')
             return
 
 
@@ -1117,6 +1122,7 @@ def w_calc(G):
     print(f'{nn} фрагментов')
 
     ii = 0
+    no_zn = []
     for i in nx.weakly_connected_components(G):
         if len(i) > 1:
 #            if ii in (4,):
@@ -1162,6 +1168,25 @@ def w_calc(G):
                     w_calc2(GG, param_sum)
 
                     ii += 1
+                else:
+                    no_zn.append(i)
+
+    # Подсети без узла с заданным напором не считаются — раньше молча
+    if no_zn:
+        # подача и обратка одной подсети — разные компоненты графа с теми же узлами: считаем один раз
+        uniq = {}
+        for c in no_zn:
+            uniq.setdefault(frozenset(n[0] if isinstance(n, tuple) else n for n in c), c)
+        no_zn = list(uniq.values())
+        no_zn.sort(key=len, reverse=True)
+        total = sum(len(c) for c in no_zn)
+        print('-----------------', flush=True)
+        cprint(f'Не рассчитано подсетей без узла с заданным напором: {len(no_zn)} (узлов {total})', color='brown')
+        for c in no_zn[:NO_ZN_LIST_MAX]:
+            n_show = min(c, key=lambda n: (G.nodes[n].get('name', '') in ('', 'ATMOSPHERE'), str(n)))
+            cprint(f'    Подсеть из {len(c)} узлов: {w_print.node_name(G, n_show, True)}', color='brown')
+        if len(no_zn) > NO_ZN_LIST_MAX:
+            cprint(f'    … и ещё {len(no_zn) - NO_ZN_LIST_MAX}', color='brown')
 
     if config.args.is_save_po:
         g2.write_po(G, param_sum, config.args.out_file)

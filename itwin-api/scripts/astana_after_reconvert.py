@@ -34,6 +34,7 @@ SQL_FILES = [
     ROOT / 'sql' / 'astana' / '03_nodes_internalnodeid_idx.sql',
     ROOT / 'sql' / 'migrations' / '20260927_topology_undo_log.sql',
     ROOT / 'sql' / 'migrations' / '20260928_heat_losses_report_out.sql',
+    ROOT / 'sql' / 'migrations' / '20261015_calculation_protocol.sql',
 ]
 
 # что должно быть в базе: название → запрос, возвращающий true
@@ -45,6 +46,7 @@ CHECKS = {
     'индекс nodes_internalnodeid_idx': "select to_regclass('public.nodes_internalnodeid_idx') is not null",
     'таблица topology_undo_log': "select to_regclass('public.topology_undo_log') is not null",
     'таблица heatlosses_report_out': "select to_regclass('public.heatlosses_report_out') is not null",
+    'таблица calculation_protocol': "select to_regclass('public.calculation_protocol') is not null",
 }
 
 # база готова: конвертер создал таблицы сети и систему координат Астаны
