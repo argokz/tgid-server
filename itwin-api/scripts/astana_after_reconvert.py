@@ -1,4 +1,4 @@
-"""База Астаны после переконвертации из десктопа: вернуть то, что нужно вебу.
+"""База города (Астана, Шатура) после конвертации из десктопа: вернуть то, что нужно вебу.
 
 Конвертер пересоздаёт базу, и пропадают правки, без которых карта и API Астаны не работают:
   - SRID 9998 описан как Алматы (ST_Transform уводит объекты под Алматы);
@@ -12,6 +12,7 @@
   python scripts/astana_after_reconvert.py --db astanagid_2026_09_22            проверить и применить
   python scripts/astana_after_reconvert.py --db astanagid_2026_09_22 --check    только проверить
   python scripts/astana_after_reconvert.py --db astanagid_2026_09_22 --dry-run  применить и откатить
+  python scripts/astana_after_reconvert.py --city shatura --db shatura            база Шатуры (SRID 9998 = 3857)
 
 Коды выхода: 0 — всё на месте (или применено, или база ещё не готова), 1 — --check нашёл
 недостающее, 2 — ошибка применения. Подключение — DB_HOST/DB_PORT/DB_USER/DB_PASSWORD из .env.
@@ -28,8 +29,17 @@ import psycopg2
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-SQL_FILES = [
-    ROOT / 'sql' / 'astana' / '01_srid_9998.sql',
+# SRID 9998 по городам: (скрипт, проверка «описан правильно», система, без которой база не готова)
+SRID_9998 = {
+    'astana': (ROOT / 'sql' / 'astana' / '01_srid_9998.sql',
+               "select coalesce((select proj4text like '%+lon_0=72 %' from spatial_ref_sys where srid = 9998), false)",
+               9995),
+    'shatura': (ROOT / 'sql' / 'shatura' / '01_srid_9998.sql',
+                "select coalesce((select proj4text like '+proj=merc %' and srtext like '%Shatura%'"
+                " from spatial_ref_sys where srid = 9998), false)",
+                3857),
+}
+COMMON_SQL = [
     ROOT / 'sql' / 'astana' / '02_tg_format_functions.sql',
     ROOT / 'sql' / 'astana' / '03_nodes_internalnodeid_idx.sql',
     ROOT / 'sql' / 'migrations' / '20260927_topology_undo_log.sql',
@@ -38,9 +48,7 @@ SQL_FILES = [
 ]
 
 # что должно быть в базе: название → запрос, возвращающий true
-CHECKS = {
-    'SRID 9998 = Астана': (
-        "select coalesce((select proj4text like '%+lon_0=72 %' from spatial_ref_sys where srid = 9998), false)"),
+COMMON_CHECKS = {
     'функции tg_format*': (
         "select count(*) >= 8 from pg_proc where pronamespace = 'public'::regnamespace and proname like 'tg\\_format%'"),
     'индекс nodes_internalnodeid_idx': "select to_regclass('public.nodes_internalnodeid_idx') is not null",
@@ -53,8 +61,21 @@ CHECKS = {
 READY = (
     "select to_regclass('public.nodes') is not null and to_regclass('public.linesobj') is not null"
     " and to_regclass('public.heatpipesections') is not null and to_regclass('public.externalcodes') is not null"
-    " and exists (select 1 from spatial_ref_sys where srid = 9995)"
+    " and exists (select 1 from spatial_ref_sys where srid = {base})"
     " and exists (select 1 from spatial_ref_sys where srid = 9998)")
+
+SQL_FILES: list[Path] = []
+CHECKS: dict[str, str] = {}
+
+
+def use_city(city: str) -> int:
+    """Скрипты и проверки города; → SRID, который должен быть в базе (основа описания 9998)"""
+    script, check, base = SRID_9998[city]
+    SQL_FILES[:] = [script, *COMMON_SQL]
+    CHECKS.clear()
+    CHECKS[f'SRID 9998 ({city})'] = check
+    CHECKS.update(COMMON_CHECKS)
+    return base
 
 # в базе идёт запись (конвертер ещё работает)
 BUSY = r"""
@@ -87,7 +108,7 @@ def missing(cur) -> list[str]:
     return out
 
 
-def run(db: str, check_only: bool, dry_run: bool, quiet: bool) -> int:
+def run(db: str, check_only: bool, dry_run: bool, quiet: bool, base: int = 9995) -> int:
     try:
         conn = connect(db)
     except (psycopg2.OperationalError, UnicodeDecodeError) as e:
@@ -98,9 +119,9 @@ def run(db: str, check_only: bool, dry_run: bool, quiet: bool) -> int:
     try:
         conn.autocommit = True
         cur = conn.cursor()
-        cur.execute(READY)
+        cur.execute(READY.format(base=base))
         if not cur.fetchone()[0]:
-            log(f'{db}: нет таблиц сети или SRID 9995/9998 — конвертация не закончена, повторю позже')
+            log(f'{db}: нет таблиц сети или SRID {base}/9998 — конвертация не закончена, повторю позже')
             return 0
         todo = missing(cur)
         if not todo:
@@ -154,9 +175,11 @@ def main() -> int:
     ap.add_argument('--check', action='store_true', help='только проверить, код 1 — чего-то нет')
     ap.add_argument('--dry-run', action='store_true', help='применить и откатить')
     ap.add_argument('--quiet', action='store_true', help='не писать «всё на месте» (для планировщика)')
+    ap.add_argument('--city', choices=sorted(SRID_9998), default='astana', help='город базы (система координат)')
     args = ap.parse_args()
     load_dotenv(ROOT / '.env')
-    return max(run(db, args.check, args.dry_run, args.quiet) for db in args.db)
+    base = use_city(args.city)
+    return max(run(db, args.check, args.dry_run, args.quiet, base) for db in args.db)
 
 
 if __name__ == '__main__':
