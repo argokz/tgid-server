@@ -195,6 +195,29 @@ async def get_fragments_extent(
     return {"fragments": ids, "bbox": bbox}
 
 
+# Версия данных карты: сумма счётчиков вставок/изменений/удалений строк по таблицам базы города.
+# Меняется при любой записи — правка сети в вебе, в десктопе (он пишет прямо в базу), расчёт, импорт.
+# Веб подставляет её в адрес тайлов (rev в VIEWPARAMS): новая версия — новые адреса мимо кешей
+# GWC/nginx/браузера, одна версия — общие закешированные тайлы у всех пользователей.
+DATA_VERSION_SQL = """
+SELECT COALESCE(SUM(n_tup_ins + n_tup_upd + n_tup_del), 0)::bigint
+FROM pg_stat_user_tables WHERE schemaname = 'public'
+"""
+DATA_VERSION_TTL_S = 10.0
+_data_version_cache: dict = {"value": None, "at": 0.0}
+
+
+@router.get("/api/v1/map/data-version")
+async def get_map_data_version():
+    """Версия данных для сброса кеша тайлов: {"version": "<число>"}; опрос раз в 30–60 с."""
+    now = time.monotonic()
+    if _data_version_cache["value"] is None or now - _data_version_cache["at"] >= DATA_VERSION_TTL_S:
+        async with acquire_conn() as conn:
+            _data_version_cache["value"] = str(await conn.fetchval(DATA_VERSION_SQL))
+        _data_version_cache["at"] = now
+    return {"version": _data_version_cache["value"]}
+
+
 @router.get("/russian-names")
 async def get_russian_names():
     """Получить все русские названия колонок."""
