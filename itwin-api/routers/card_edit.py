@@ -19,6 +19,7 @@ from app_logging import get_logger
 from auth import AuthUser, require_mutations_enabled, require_roles
 from database import card_batch as cb
 from database import card_edit as ce
+from database import card_template as ct
 from database import typed_edit as te
 from database.connect import acquire_conn
 from database.db import create_select_line, create_select_node
@@ -50,6 +51,24 @@ class BatchBody(BaseModel):
     changes: list[Change] = Field(default_factory=list, max_length=2000,
                                   description="id — колонка карточки выбора: 1 подача/одиночные, 2 обратка")
     expected_changes: Optional[int] = Field(None, ge=0, description="Число строк из предпросмотра")
+
+
+class TemplateBody(BaseModel):
+    kind: Literal["line"] = "line"
+    name: str = Field(..., min_length=1, max_length=ct.NAME_MAX)
+    values: dict[str, dict[str, Any]] = Field(..., description="{таблица: {поле: значение}}")
+    shared: bool = False
+
+
+class TemplatePatch(BaseModel):
+    name: Optional[str] = Field(None, max_length=ct.NAME_MAX)
+    values: Optional[dict[str, dict[str, Any]]] = None
+    shared: Optional[bool] = None
+
+
+class TemplateApplyBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES, description="linesobj.id")
+    expected_changes: Optional[int] = Field(None, ge=0)
 
 
 class BatchCardBody(BaseModel):
@@ -155,6 +174,90 @@ async def card_edit_batch_apply(body: BatchBody, user: Editor):
         except Exception:  # noqa: BLE001 — кэш не критичен
             pass
     return result
+
+
+@router.get(PREFIX + "/neighbor/line/{line_id}")
+async def card_edit_neighbor(line_id: int = Path(..., ge=1)):
+    """«Как у соседнего»: значения конструктива смежного участка по колонкам карточки."""
+    async with acquire_conn() as conn:
+        try:
+            return await ct.neighbor_values(conn, line_id)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+# --- шаблоны -----------------------------------------------------------------------------------
+
+TPL = "/api/v1/card-templates"
+
+
+@router.get(TPL)
+async def card_templates_list(user: Editor, kind: Literal["line"] = Query("line")):
+    """Шаблоны вида объектов: свои и общие."""
+    async with acquire_conn() as conn:
+        return {"items": await ct.list_templates(conn, kind, user.username)}
+
+
+@router.post(TPL)
+async def card_template_create(body: TemplateBody, user: Editor):
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        try:
+            return await ct.create_template(conn, kind=body.kind, name=body.name, values=body.values,
+                                            shared=body.shared, user=user.username)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.put(TPL + "/{template_id}")
+async def card_template_update(body: TemplatePatch, user: Editor, template_id: int = Path(..., ge=1)):
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        try:
+            return await ct.update_template(conn, template_id, name=body.name, values=body.values,
+                                            shared=body.shared, user=user.username,
+                                            is_admin=user.has_role("admin"))
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.delete(TPL + "/{template_id}")
+async def card_template_delete(user: Editor, template_id: int = Path(..., ge=1)):
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        try:
+            await ct.delete_template(conn, template_id, user=user.username, is_admin=user.has_role("admin"))
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+    return {"deleted": template_id}
+
+
+@router.post(TPL + "/{template_id}/preview")
+async def card_template_preview(body: TemplateApplyBody, user: Editor, template_id: int = Path(..., ge=1)):
+    """Предпросмотр шаблона на участках: как правка нескольких объектов."""
+    async with acquire_conn() as conn:
+        try:
+            tpl = await ct.get_template(conn, template_id, user.username)
+            changes = await ct.template_changes(conn, tpl, body.ids)
+            return await cb.preview(conn, body.ids, changes)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.post(TPL + "/{template_id}/apply")
+async def card_template_apply(body: TemplateApplyBody, user: Editor, template_id: int = Path(..., ge=1)):
+    """Применить шаблон к участкам (новым или выбранным): одна группа, отмена — group-setters/undo."""
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        try:
+            async with conn.transaction():
+                tpl = await ct.get_template(conn, template_id, user.username)
+                changes = await ct.template_changes(conn, tpl, body.ids)
+                result = await cb.apply(conn, body.ids, changes, audit_row=_audit_writer(user),
+                                        expected_changes=body.expected_changes)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+    return {**result, "template": {"id": tpl["id"], "name": tpl["name"]}}
 
 
 @router.get(PREFIX + "/{kind}/{table}/{obj_id}")

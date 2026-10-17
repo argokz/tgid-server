@@ -45,6 +45,7 @@ COMMON_SQL = [
     ROOT / 'sql' / 'migrations' / '20260927_topology_undo_log.sql',
     ROOT / 'sql' / 'migrations' / '20260928_heat_losses_report_out.sql',
     ROOT / 'sql' / 'migrations' / '20261015_calculation_protocol.sql',
+    ROOT / 'sql' / 'migrations' / '20261017_card_template.sql',
 ]
 
 # что должно быть в базе: название → запрос, возвращающий true
@@ -55,6 +56,7 @@ COMMON_CHECKS = {
     'таблица topology_undo_log': "select to_regclass('public.topology_undo_log') is not null",
     'таблица heatlosses_report_out': "select to_regclass('public.heatlosses_report_out') is not null",
     'таблица calculation_protocol': "select to_regclass('public.calculation_protocol') is not null",
+    'таблица card_template': "select to_regclass('public.card_template') is not null",
 }
 
 # база готова: конвертер создал таблицы сети и систему координат Астаны

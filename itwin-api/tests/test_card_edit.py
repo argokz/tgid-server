@@ -150,3 +150,28 @@ def test_batch_routes_require_editor(monkeypatch):
     assert client.post('/api/v1/card-edit/batch/apply', json=body, headers=viewer).status_code == 403
     editor = {"Authorization": "Bearer " + create_access_token(username="t-editor", role="editor")}
     assert client.post('/api/v1/card-edit/batch/apply', json={"ids": [1], "changes": []}, headers=editor).status_code == 422
+
+
+def test_template_values_validated_like_card():
+    from database import card_template as ct
+
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.clean_values(None, 'node', {'nodes': {'x': 1}}))
+    assert exc.value.detail["code"] == "bad_kind"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.clean_values(None, 'line', {'users': {'role': 'admin'}}))
+    assert exc.value.status == 422 and exc.value.detail["code"] == "table_not_editable"
+
+
+def test_template_routes_require_editor(monkeypatch):
+    import main
+    from auth import create_access_token
+
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    client = TestClient(main.app)
+    viewer = {"Authorization": "Bearer " + create_access_token(username="t-viewer", role="viewer")}
+    assert client.get('/api/v1/card-templates', headers=viewer).status_code == 403
+    body = {"kind": "line", "name": "t", "values": {"linesobj": {"hydroRes": 1}}}
+    assert client.post('/api/v1/card-templates', json=body, headers=viewer).status_code == 403
+    assert client.post('/api/v1/card-templates/1/apply', json={"ids": [1]}, headers=viewer).status_code == 403
