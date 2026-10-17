@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from auth import AuthUser, require_mutations_enabled, require_roles
+from database import card_batch as cb
 from database import card_edit as ce
 from database import typed_edit as te
 from database.connect import acquire_conn
@@ -42,6 +43,17 @@ class SaveBody(BaseModel):
     changes: list[Change] = Field(default_factory=list, max_length=2000)
     versions: dict[str, str] = Field(default_factory=dict, description='"table:id" → версия из GET')
     dry_run: bool = False
+
+
+class BatchBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES, description="linesobj.id выбранных участков")
+    changes: list[Change] = Field(default_factory=list, max_length=2000,
+                                  description="id — колонка карточки выбора: 1 подача/одиночные, 2 обратка")
+    expected_changes: Optional[int] = Field(None, ge=0, description="Число строк из предпросмотра")
+
+
+class BatchCardBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES)
 
 
 def _http(exc: Exception) -> HTTPException:
@@ -98,6 +110,51 @@ async def card_edit_after(
             return await ce.after_change(conn, table, field, value)
         except ValueError:
             raise HTTPException(status_code=422, detail={"code": "bad_value", "message": "Ожидается код"})
+
+
+@router.post(PREFIX + "/batch/card")
+async def card_edit_batch_card(body: BatchCardBody):
+    """Карточка нескольких участков: поля как у одного, значения сведены по колонкам («разные»)."""
+    async with acquire_conn() as conn:
+        try:
+            return await cb.batch_card(conn, body.ids)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.post(PREFIX + "/batch/preview")
+async def card_edit_batch_preview(body: BatchBody, user: Editor):
+    """Предпросмотр правки нескольких участков: сколько строк изменится, какие значения были."""
+    if not body.changes:
+        raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
+    async with acquire_conn() as conn:
+        try:
+            return await cb.preview(conn, body.ids, [c.model_dump() for c in body.changes])
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.post(PREFIX + "/batch/apply")
+async def card_edit_batch_apply(body: BatchBody, user: Editor):
+    """Применить правку нескольких участков одной группой (отмена — /api/v1/group-setters/undo)."""
+    if not body.changes:
+        raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
+    require_mutations_enabled()
+    async with acquire_conn() as conn:
+        try:
+            async with conn.transaction():
+                result = await cb.apply(conn, body.ids, [c.model_dump() for c in body.changes],
+                                        audit_row=_audit_writer(user), expected_changes=body.expected_changes)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+    if result.get("changed"):
+        try:
+            from database.outage_simulation import invalidate_outage_cache
+
+            invalidate_outage_cache()
+        except Exception:  # noqa: BLE001 — кэш не критичен
+            pass
+    return result
 
 
 @router.get(PREFIX + "/{kind}/{table}/{obj_id}")

@@ -900,6 +900,11 @@ async def undo(conn, change_group_id: str, *, actor: str, dry_run: bool = True, 
     if summary_row is None:
         raise GroupSetterError(404, {"code": "not_found", "message": "Групповая операция не найдена"})
     summary = _as_dict(summary_row["new_data"])
+    if summary.get("setter") == "card_edit":
+        # правка нескольких объектов окном свойств: свои колонки у каждой строки
+        from database import card_batch
+
+        return await card_batch.undo(conn, group, summary, dry_run=dry_run, audit_row=audit_row)
     spec = get_spec(str(summary.get("setter")))
     undone_already = await conn.fetchval(
         "SELECT EXISTS (SELECT 1 FROM audit_log WHERE operation = 'GROUP_UNDO' "

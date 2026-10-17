@@ -124,3 +124,29 @@ def test_helpers_flagged_and_unknown_helper_is_404():
     assert set(res['set']) == {'magistral', 'magistralSite'}
     assert _run(ce.after_change(None, 'heatPipeSections', 'magistral', '5'))['set'] == \
         {'distSite': {'value': None, 'title': None}}
+
+
+def test_batch_selection_limits():
+    from database import card_batch as cb
+
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.line_columns(None, []))
+    assert exc.value.status == 422
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.line_columns(None, list(range(1, cb.MAX_LINES + 2))))
+    assert exc.value.detail["code"] == "too_many"
+
+
+def test_batch_routes_require_editor(monkeypatch):
+    import main
+    from auth import create_access_token
+
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    client = TestClient(main.app)
+    viewer = {"Authorization": "Bearer " + create_access_token(username="t-viewer", role="viewer")}
+    body = {"ids": [1], "changes": [{"table": "linesobj", "id": 1, "field": "hydroRes", "value": 1}]}
+    assert client.post('/api/v1/card-edit/batch/preview', json=body, headers=viewer).status_code == 403
+    assert client.post('/api/v1/card-edit/batch/apply', json=body, headers=viewer).status_code == 403
+    editor = {"Authorization": "Bearer " + create_access_token(username="t-editor", role="editor")}
+    assert client.post('/api/v1/card-edit/batch/apply', json={"ids": [1], "changes": []}, headers=editor).status_code == 422

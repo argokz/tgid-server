@@ -416,6 +416,40 @@ def _row_key(table: str, row_id: int) -> str:
     return f"{table.lower()}:{int(row_id)}"
 
 
+async def writable_specs(conn, table: str) -> list[te.FieldSpec]:
+    """Колонки таблицы карточки, которые можно записать: без ReadOnly (.fun) и ALWAYS_READONLY."""
+    t = table.lower()
+    specs = await column_specs(conn, t)
+    for col, fun in (await storage.read_fun(t)).items():
+        if fun_name(fun) == "ReadOnly":
+            specs.pop(col, None)
+    for (rt, rc) in ALWAYS_READONLY:
+        if rt == t:
+            specs.pop(rc, None)
+    return list(specs.values())
+
+
+def check_inline_codes(table: str, fields: list[te.FieldSpec], raw: dict[str, Any]) -> list[te.FieldSpec]:
+    """Коды встроенных списков (gid.lookup2) — только из списка. → поля без проверки ссылки
+    на таблицу у встроенных списков (таблицы справочника может и не быть)."""
+    by_key = {f.name.lower(): f for f in fields}
+    for name, value in raw.items():
+        spec = by_key.get(str(name).lower())
+        lookup = storage.get_lookup(table, name) if spec else None
+        allowed = storage.get_lookup2(lookup[2]) if lookup else None
+        if not allowed:
+            continue
+        try:
+            code = None if value in (None, "") else str(int(float(value)))
+        except (TypeError, ValueError):
+            code = "?"
+        if code is not None and code not in allowed:
+            raise te.TypedEditError(422, {"code": "bad_ref", "field": name,
+                                          "message": f"«{spec.label}»: значения {value} нет в списке"})
+    return [te.FieldSpec(**{**f.__dict__, "ref_table": None})
+            if f.ref_table and storage.get_lookup2(f.ref_table) else f for f in fields]
+
+
 async def save_card(conn, changes: list[dict[str, Any]], versions: dict[str, str], *,
                     audit_row, dry_run: bool = False) -> dict:
     """Изменения карточки [{table, id, field, value}] → по строке update_record в транзакции
@@ -432,35 +466,11 @@ async def save_card(conn, changes: list[dict[str, Any]], versions: dict[str, str
             raise te.TypedEditError(422, {"code": "bad_row", "message": "Нет id строки"})
         by_row.setdefault((t, row_id), {})[str(ch.get("field", ""))] = ch.get("value")
     results = []
-    specs_cache: dict[str, dict[str, te.FieldSpec]] = {}
+    specs_cache: dict[str, list[te.FieldSpec]] = {}
     for (t, row_id), raw in by_row.items():
         if t not in specs_cache:
-            specs = await column_specs(conn, t)
-            funs = await storage.read_fun(t)
-            for col, fun in funs.items():
-                if fun_name(fun) == "ReadOnly":
-                    specs.pop(col, None)
-            for (rt, rc) in ALWAYS_READONLY:
-                if rt == t:
-                    specs.pop(rc, None)
-            specs_cache[t] = specs
-        fields = list(specs_cache[t].values())
-        for name in raw:
-            spec = specs_cache[t].get(name.lower())
-            lookup = storage.get_lookup(t, name) if spec else None
-            if lookup and storage.get_lookup2(lookup[2]):
-                value = raw[name]
-                allowed = storage.get_lookup2(lookup[2]) or {}
-                try:
-                    code = None if value in (None, "") else str(int(float(value)))
-                except (TypeError, ValueError):
-                    code = "?"
-                if code is not None and code not in allowed:
-                    raise te.TypedEditError(422, {"code": "bad_ref", "field": name,
-                                                  "message": f"«{spec.label}»: значения {value} нет в списке"})
-        # встроенные списки (gid.lookup2) проверены выше — ссылку на таблицу не проверяем
-        fields = [te.FieldSpec(**{**f.__dict__, "ref_table": None})
-                  if f.ref_table and storage.get_lookup2(f.ref_table) else f for f in fields]
+            specs_cache[t] = await writable_specs(conn, t)
+        fields = check_inline_codes(t, specs_cache[t], raw)
         result = await te.update_record(conn, t, "id", row_id, fields, raw,
                                         expected_version=versions.get(_row_key(t, row_id)),
                                         audit_row=audit_row, dry_run=dry_run)
