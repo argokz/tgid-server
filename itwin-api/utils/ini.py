@@ -36,6 +36,8 @@ if not os.path.isdir(ARG_PATH):
 class LookupStorage:
     def __init__(self):
         self.map_lookup: Dict[Tuple[str, str], Tuple[str, str, str, str, str, int]] = {}
+        # собственный SQL справочника (7-е поле gid.lookup, десктоп ForeignTable.q): $fragments$, $id$
+        self.map_lookup_q: Dict[Tuple[str, str], str] = {}
         self.map_lookup2: Dict[str, Dict[str, str]] = {}
         self.map_help: Dict[Tuple[str, str], Tuple[str, str, str, Optional[str]]] = {}
 
@@ -44,10 +46,14 @@ class LookupStorage:
         async with aiofiles.open(path, mode="r", encoding="cp1251") as f:
             count = 0
             async for line in f:
-                m = re.match(r'^"(.+?)","(.+?)","(.+?)","(.+?)","(.+?)",([0-9]+)', line)
+                if line.startswith("-"):
+                    continue
+                m = re.match(r'^"(.+?)","(.+?)","(.+?)","(.+?)","(.+?)",([0-9]+)(,"(.+)")?', line)
                 if m:
-                    tn1, fn1, tn2, id2, fn2, srt = m.groups()
+                    tn1, fn1, tn2, id2, fn2, srt = m.groups()[:6]
                     self.map_lookup[(tn1.lower(), fn1.lower())] = (tn1, fn1, tn2, id2, fn2, int(srt))
+                    if m.group(8):
+                        self.map_lookup_q[(tn1.lower(), fn1.lower())] = m.group(8)
                     count += 1
             logger.info(f"[read_lookup] Loaded {count} lookup entries from {fn}")
 
@@ -142,9 +148,17 @@ class LookupStorage:
         Уровни по отступу: ключ (поле или признак схемы) → значение → поля, видимые при этом значении.
         Поля, упомянутые у ключа, при другом значении скрываются. Строки с «-» в начале пропускаются.
         """
+        return await self.read_levels(fn, "vis")
+
+    async def read_disable(self, fn: str) -> Dict[str, Dict[str, List[str]]]:
+        """Правила доступности полей tab/<table>.disable (тот же формат, что .vis): поля ключа
+        недоступны для правки, кроме полей ветки текущего значения ключа (десктоп: setDisableAll)."""
+        return await self.read_levels(fn, "disable")
+
+    async def read_levels(self, fn: str, ext: str) -> Dict[str, Dict[str, List[str]]]:
         rules: Dict[str, Dict[str, List[str]]] = {}
         try:
-            path = await open_tab(f"{fn}.vis")
+            path = await open_tab(f"{fn}.{ext}")
         except FileNotFoundError:
             return rules
         level, nn_old, level_n = 0, 0, [0] * 12
@@ -175,11 +189,33 @@ class LookupStorage:
                     rules.setdefault(key, {}).setdefault(val, []).append(token)
         return rules
 
+    async def read_fun(self, fn: str, ext: str = "fun") -> Dict[str, str]:
+        """Функции полей карточки tab/<table>.fun (а также .validate/.after/.before), как read_fun
+        десктопа: строка «колонка функция параметры»; строки с «-» в начале пропускаются.
+        → lower-колонка → «функция параметры»."""
+        funs: Dict[str, str] = {}
+        try:
+            path = await open_tab(f"{fn}.{ext}")
+        except FileNotFoundError:
+            return funs
+        async with aiofiles.open(path, mode="r", encoding="cp1251") as f:
+            async for line in f:
+                line = line.rstrip("\r\n")
+                if line.startswith("-"):
+                    continue
+                m = re.match(r'^([^ ]+)\s+([^\s].*?)\s*$', line)
+                if m:
+                    funs[m.group(1).lower()] = m.group(2)
+        return funs
+
     def get_lookup(self, tn1: str, fn1: str) -> Optional[Tuple[str, str, str, str, str, int]]:
         key = (tn1.lower(), fn1.lower())
         if key not in self.map_lookup:
             logger.debug(f"[get_lookup] Missing: {key}")
         return self.map_lookup.get(key)
+
+    def get_lookup_q(self, tn1: str, fn1: str) -> Optional[str]:
+        return self.map_lookup_q.get((tn1.lower(), fn1.lower()))
 
     def get_lookup2(self, tn1: str) -> Optional[Dict[str, str]]:
         key = tn1.lower()

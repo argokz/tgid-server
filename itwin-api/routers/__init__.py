@@ -14,6 +14,7 @@ from routers.crud import router as crud_router
 from routers.equipment import router as equipment_router
 from routers.alseko_binding import router as alseko_binding_router
 from routers.electrical_binding import router as electrical_binding_router
+from routers.card_edit import router as card_edit_router
 from routers.equipment_edit import router as equipment_edit_router
 from routers.exports_p4 import router as exports_p4_router
 from routers.group_setters import router as group_setters_router
@@ -38,6 +39,7 @@ all_routers = [
     heat_router,
     equipment_router,
     equipment_edit_router,
+    card_edit_router,
     registries_router,
     alseko_binding_router,
     electrical_binding_router,

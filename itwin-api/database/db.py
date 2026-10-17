@@ -135,7 +135,7 @@ async def get_3_param(tn: str, prefix: str, i: int, par1: str, par2: str, joins:
 
         return (i, par1, par2, joins)
 
-async def create_select_line(tn: str, id: int) -> str:
+async def create_select_line(tn: str, id: int, include_hidden: bool = False) -> str:
     logger.info(f"Creating select for line: table={tn!r}, id={id}")
     async with acquire_conn() as conn:
         # Имя таблицы — из URL: allow-list карточек + сверка с каталогом (UnknownIdentifierError)
@@ -155,7 +155,7 @@ async def create_select_line(tn: str, id: int) -> str:
         q = (f'SELECT \nT.id,L.id as L_id,N1.id AS N1_id,N2.id AS N2_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\n'
              'WHERE L.id = ANY($1::int[]) ORDER BY array_position($1::int[], L.id)')
         logger.debug(f"Generated query: {q[:100]}...")
-        data = await card_data(conn, 'L', tn, q, ids, filtr)
+        data = await card_data(conn, 'L', tn, q, ids, filtr, include_hidden=include_hidden)
         if data['tabs']:
             data['tabs'] += await out_tabs(conn, actual, 'L', ids)
         return json.dumps(data, ensure_ascii=False, indent=4, default=str)
@@ -277,10 +277,10 @@ def hidden_fields(tn: str, rules: Dict[str, Dict[str, List[str]]], row: Dict[str
     return {c for c, h in hidden.items() if h}
 
 
-async def create_select_node(tn: str, id: int) -> str:
+async def create_select_node(tn: str, id: int, include_hidden: bool = False) -> str:
     logger.info(f"Creating select for node: table={tn!r}, id={id}")
     if tn == 'nodes':
-        data = json.loads(await create_select(tn, id))
+        data = json.loads(await create_select(tn, id, include_hidden=include_hidden))
         if data['tabs']:
             async with acquire_conn() as conn:
                 data['tabs'] += await out_tabs(conn, 'nodes', 'N', [id])
@@ -297,7 +297,7 @@ async def create_select_node(tn: str, id: int) -> str:
 
         q = f'SELECT \nT.id,N.id as N_id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE N.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
-        data = await card_data(conn, 'N', tn, q, id, filtr)
+        data = await card_data(conn, 'N', tn, q, id, filtr, include_hidden=include_hidden)
         if data['tabs']:
             data['tabs'] += await out_tabs(conn, actual, 'N', [id])
         return json.dumps(data, ensure_ascii=False, indent=4, default=str)
@@ -415,7 +415,7 @@ async def create_select_geoline(tn: str) -> str:
         logger.debug(f"Generated query: {q[:100]}...")
         return q
 
-async def create_select(tn: str, id: int) -> str:
+async def create_select(tn: str, id: int, include_hidden: bool = False) -> str:
     logger.info(f"Creating select: table={tn!r}, id={id}")
     async with acquire_conn() as conn:
         actual = await resolve_table(conn, tn, card_tables())
@@ -425,15 +425,21 @@ async def create_select(tn: str, id: int) -> str:
 
         q = f'SELECT\nT.id,\n{par1}{par2}\nFROM {quote_ident(actual)} T\n{joins}\nWHERE T.id=$1'
         logger.debug(f"Generated query: {q[:100]}...")
-        return await print_q(conn, '?', tn, q, id, filtr)
+        return await print_q(conn, '?', tn, q, id, filtr, include_hidden=include_hidden)
 
-async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[str]] = None) -> str:
-    data = await card_data(conn, typ, tn, q, id, cols)
+async def print_q(conn, typ: str, tn: str, q: str, id: int, cols: Optional[List[str]] = None,
+                  include_hidden: bool = False) -> str:
+    data = await card_data(conn, typ, tn, q, id, cols, include_hidden=include_hidden)
     return json.dumps(data, ensure_ascii=False, indent=4, default=str)
 
 
-async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str]] = None) -> dict:
-    """Карточка по запросу create_select_*: строка на колонку (участок с парой — подача и обратка)."""
+async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str]] = None,
+                    include_hidden: bool = False) -> dict:
+    """Карточка по запросу create_select_*: строка на колонку (участок с парой — подача и обратка).
+
+    ``include_hidden`` — для формы правки: поля, которые десктоп скрывает по правилам .vis, остаются
+    с признаком ``hidden`` (при смене значения ключа форма показывает их, как setVis десктопа).
+    """
     logger.debug(f"Executing query for {tn} with id={id}")
     rows = await query_log(conn, q, id)
     
@@ -465,7 +471,7 @@ async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str
     vis_row = {k: map_col.get(k + '||', v) for k, v in map_col.items() if '||' not in k}
     hidden = hidden_fields(tn, await storage.read_vis(tn), vis_row)
 
-    async def print_col(subsection, tn, col, prefix, labels=None):
+    async def print_col(subsection, tn, col, prefix, labels=None, is_hidden=False):
         (tnr, fnr, txt, f1) = storage.get_help(tn, col)
         # подпись как в десктопе: из строки описания карточки, иначе справочник, иначе имя колонки
         label = (labels or {}).get(col.lower()) or txt
@@ -478,6 +484,8 @@ async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str
         id_key = {'': 'id', 'N': 'n_id', 'N1': 'n1_id', 'N2': 'n2_id', 'L': 'l_id'}.get(prefix)
         field = {'table': tn, 'field': col, 'label': label, 'value': map_col.get(key),
                  'id': map_col.get(id_key) if id_key else -1}
+        if is_hidden:
+            field['hidden'] = True
         if len(maps) > 1:
             field['value2'] = maps[1].get(key)
             field['id2'] = maps[1].get(id_key) if id_key else -1
@@ -534,10 +542,10 @@ async def card_data(conn, typ: str, tn: str, q: str, id, cols: Optional[List[str
                 data["tabs"].append(tab)
             subsection = {'title': col[3:], "fields": []}
             tab["subsections"].append(subsection)
-        elif col.lower() in ('id', 'shape') or col.lower() in hidden:
+        elif col.lower() in ('id', 'shape') or (col.lower() in hidden and not include_hidden):
             continue
         else:
-            await print_col(subsection, tn, col, '', labels)
+            await print_col(subsection, tn, col, '', labels, is_hidden=col.lower() in hidden)
 
     # десктоп: у НС, источника, потребителей — поля узла в конце первой вкладки
     if typ == 'N' and first_tab is not None and tn.lower() not in NO_NODE_TAIL:

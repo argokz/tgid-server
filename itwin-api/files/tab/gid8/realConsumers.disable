@@ -1,0 +1,32 @@
+hydroModeSignID
+  1
+     throtStageSignID
+     temperChartSignID
+     diameterThrotDiaph
+     diameterElevNozzle
+     mixFactCoeff
+     calcThrustLosHS
+     calcThrustLosAH
+--     calcThrustLosAC
+     calcThrustLosFlow
+     calcThrustLosFlowCirc
+     calcThrustInWDO
+     calcThrustLosHeaters1
+     calcThrustLosHeaters2
+     calcFerDiameterSignID
+  2
+     PDvalveInstallLocID
+     setPDonRegulator
+  3
+    1
+  4
+    1
+  5
+    1
+automDegID1
+  1
+     1
+  2
+     hourIrregCoeff
+  3
+     1

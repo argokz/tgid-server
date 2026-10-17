@@ -1,0 +1,3 @@
+hydroRes hydroRes
+operatorID ReadOnly
+archiveChangeDate ReadOnly

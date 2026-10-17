@@ -1,0 +1,15 @@
+connectionSchemeID
+  2
+    mixFactCoeffDep
+schemeParallID
+  1
+      AMRdepParall
+schemeMixID
+  1
+      AMRdepMix
+schemeConseqID
+  1
+      AMRdepConseq
+schemePreONID
+  1
+      AMRdepPreON

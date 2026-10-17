@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("UsersDB pool unavailable at startup: %s", exc)
     await storage.read_lookup("kls/gid.lookup")
+    # встроенные списки справочников (десктоп: findLookup2) — выпадающие списки как в карточке gid8
+    await storage.read_lookup2("kls/gid.lookup2")
     await storage.read_help("kls/gid.txt1")
     await storage.read_help("kls/gid.txt2")
 
