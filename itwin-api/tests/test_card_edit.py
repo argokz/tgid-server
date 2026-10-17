@@ -102,3 +102,25 @@ def test_card_edit_routes_require_editor(monkeypatch):
     # пустой список изменений — ошибка клиента
     monkeypatch.setenv("MUTATIONS_ENABLED", "true")
     assert client.put('/api/v1/card-edit', json={'changes': []}, headers=bearer("editor")).status_code == 422
+
+
+def test_transl_like_desktop_any_cpp():
+    assert ce.transl('14_Шероховатость стальных труб') == '14_sherohovatost_stalnyh_trub'
+    assert ce.transl('02_Теплоотдача от изоляции к окружаемому воздуху') == \
+        '02_teplootdacha_ot_izolyatsii_k_okruzhaemomu_vozduhu'
+    assert ce.transl('06_Состояние изоляции') == '06_sostoyanie_izolyatsii'
+    assert ce.parse_table_fun('Table "sprav","06_Состояние изоляции",2') == ('sprav', '06_Состояние изоляции', 2)
+    assert ce.parse_table_fun('diameter_std') is None
+
+
+def test_helpers_flagged_and_unknown_helper_is_404():
+    assert 'diameter_std' in ce.HELPER_FUNS and 'Местные сопротивления' in ce.HELPER_FUNS
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ce.field_helper(None, 'heatPipeSections', 'inventNumber'))
+    assert exc.value.status == 404
+    # поле без ms_rs — зависимых полей нет; участок РС сбрасывает магистраль и участок МС
+    assert _run(ce.after_change(None, 'heatPipeSections', 'diameterCondit', '1')) == {'set': {}}
+    res = _run(ce.after_change(None, 'heatPipeSections', 'distSite', '5'))
+    assert set(res['set']) == {'magistral', 'magistralSite'}
+    assert _run(ce.after_change(None, 'heatPipeSections', 'magistral', '5'))['set'] == \
+        {'distSite': {'value': None, 'title': None}}

@@ -72,6 +72,34 @@ async def card_edit_options(
             raise _http(exc)
 
 
+@router.get(PREFIX + "/helper")
+async def card_edit_helper(
+    table: str = Query(..., max_length=64),
+    field: str = Query(..., max_length=64),
+    standard_id: Optional[int] = Query(None, description="standardID участка (выбор по сортаменту)"),
+):
+    """Окно-помощник поля, как функция десктопа: сортамент труб, справочная таблица, местные сопротивления."""
+    async with acquire_conn() as conn:
+        try:
+            return await ce.field_helper(conn, table, field, standard_id=standard_id)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
+@router.get(PREFIX + "/after")
+async def card_edit_after(
+    table: str = Query(..., max_length=64),
+    field: str = Query(..., max_length=64),
+    value: Optional[str] = Query(None, max_length=64),
+):
+    """Зависимые поля после выбора значения (магистраль / участок МС / участок РС — как ms_rs десктопа)."""
+    async with acquire_conn() as conn:
+        try:
+            return await ce.after_change(conn, table, field, value)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "bad_value", "message": "Ожидается код"})
+
+
 @router.get(PREFIX + "/{kind}/{table}/{obj_id}")
 async def card_edit_get(kind: Literal["line", "node"], table: str = Path(..., max_length=64),
                         obj_id: int = Path(..., ge=1)):
