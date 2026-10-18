@@ -1,13 +1,16 @@
 """Окно свойств: шаблоны значений и «как у соседнего».
 
-Шаблон — значения полей карточки ({таблица: {поле: значение}}) для вида объекта (line — участок).
+Шаблон — значения полей карточки ({таблица: {поле: значение}}) для вида объекта (line — участок,
+node — узел).
 Применяется к выбранным или новым участкам так же, как правка нескольких объектов
 (``card_batch.apply``: одна группа audit_log, отмена — /api/v1/group-setters/undo): значения
 шаблона — в каждую колонку (подача и обратка).
 
 «Как у соседнего» — значения конструктива смежного участка (общий узел; предпочтительно тот же
 признак П/О и тот же Ду) — те же колонки, что копирует создание участка
-(``topology.PASSPORT_TEMPLATE_COLUMNS``), без длины, инвентарного номера и т.п.
+(``topology.PASSPORT_TEMPLATE_COLUMNS``), без длины, инвентарного номера и т.п. У узла — смежный
+по участку узел (предпочтительно того же типа), иначе ближайший в том же фрагменте: код расчётной
+схемы, конструкция, балансовая принадлежность, геодезические отметки.
 """
 
 from __future__ import annotations
@@ -21,12 +24,14 @@ from database import card_edit as ce
 from database import typed_edit as te
 from database.sql_ident import resolve_table
 
-KINDS = frozenset({"line"})
+KINDS = frozenset({"line", "node"})
 NAME_MAX = 200
 TEMPLATE_SQL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "sql", "migrations", "20261017_card_template.sql")
 # Поля участка, которые «как у соседнего» берёт с соседа (кроме конструктива heatpipesections)
 NEIGHBOR_LINE_COLUMNS = ("organizationid",)
+# Поля узла, которые «как у соседнего» берёт с соседнего узла (без имени, номеров и признака П/О)
+NEIGHBOR_NODE_COLUMNS = ("externalcodeid", "nodetypeid", "organizationid", "geomarktoptube", "geomarknodearea")
 
 _ready: set[str] = set()
 
@@ -63,7 +68,7 @@ async def clean_values(conn, kind: str, values: dict) -> dict:
     out: dict[str, dict[str, Any]] = {}
     for table, fields in (values or {}).items():
         t = str(table).lower()
-        if t not in ce.EDIT_TABLES:
+        if t not in ce.CARD_TABLES[kind]:
             raise _err(422, "table_not_editable", f"Таблица {table} не правится через карточку")
         if not isinstance(fields, dict) or not fields:
             continue
@@ -144,12 +149,13 @@ async def delete_template(conn, template_id: int, *, user: str, is_admin: bool) 
 
 async def template_changes(conn, template: dict, line_ids: list[int]) -> list[dict]:
     """Изменения правки выбора: значения шаблона — в каждую колонку выбора (подача/обратка)."""
-    columns = await cb.line_columns(conn, line_ids)
+    kind = template.get("kind") or "line"
+    columns = await cb.object_columns(conn, kind, line_ids)
     changes = []
     for ci in range(len(columns)):
         for table, fields in (template.get("values") or {}).items():
             for field, value in fields.items():
-                if ce.readonly_columns("line", table, field, len(columns), None, True)[ci]:
+                if ce.readonly_columns(kind, table, field, len(columns), None, True)[ci]:
                     continue
                 changes.append({"table": table, "id": ci + 1, "field": field, "value": value})
     return changes
@@ -201,5 +207,43 @@ async def neighbor_values(conn, line_id: int) -> dict:
             for c in cols:
                 if row[c] is not None and ce.storage.get_lookup(table, c):
                     titles[table][c] = await cb.value_title(conn, table, c, row[c])
-        out.append({"line_id": lid, "neighbor_line_id": nid, "values": values, "titles": titles})
+        out.append({"line_id": lid, "neighbor_line_id": nid, "neighbor_id": nid,
+                    "values": values, "titles": titles})
     return {"columns": out}
+
+
+async def neighbor_node_values(conn, node_id: int) -> dict:
+    """«Как у соседнего» для карточки узла: узел, смежный по участку (предпочтительно того же типа),
+    иначе ближайший в том же фрагменте; его значения NEIGHBOR_NODE_COLUMNS."""
+    cols = {f.name.lower(): f.name for f in await ce.writable_specs(conn, "nodes")}
+    take = [cols[c] for c in NEIGHBOR_NODE_COLUMNS if c in cols]
+    me = await conn.fetchrow("SELECT id, fileid, nodetypeid, shape FROM nodes WHERE id = $1", int(node_id))
+    if me is None:
+        raise _err(404, "not_found", "Узел не найден")
+    nb = await conn.fetchval(
+        """
+        SELECT b.id
+          FROM linesobj l
+          JOIN nodes b ON b.id = CASE WHEN l.nodeid1 = $1 THEN l.nodeid2 ELSE l.nodeid1 END
+         WHERE (l.nodeid1 = $1 OR l.nodeid2 = $1) AND COALESCE(l.removed, 0) = 0
+           AND COALESCE(b.removed, 0) = 0 AND b.id <> $1
+         ORDER BY (b.nodetypeid IS NOT DISTINCT FROM $2) DESC, b.id
+         LIMIT 1
+        """, int(node_id), me["nodetypeid"])
+    if nb is None and me["shape"] is not None:
+        nb = await conn.fetchval(
+            "SELECT b.id FROM nodes b, nodes a WHERE a.id = $1 AND b.id <> a.id AND COALESCE(b.removed, 0) = 0 "
+            "AND b.fileid IS NOT DISTINCT FROM a.fileid AND b.shape IS NOT NULL "
+            "ORDER BY b.shape <-> a.shape LIMIT 1", int(node_id))
+    if nb is None or not take:
+        return {"columns": [{"node_id": int(node_id), "neighbor_id": None, "values": {}, "titles": {}}]}
+    sel = ", ".join(f'"{c}"' for c in take)
+    row = await conn.fetchrow(f"SELECT {sel} FROM nodes WHERE id = $1", int(nb))
+    # пустые значения соседа не переносятся: не стирать заполненное (тип камеры рядом с обычным узлом)
+    take = [c for c in take if row[c] is not None]
+    values = {"nodes": {c: te.jsonable(row[c]) for c in take}}
+    titles: dict[str, dict[str, Any]] = {"nodes": {}}
+    for c in take:
+        if row[c] is not None and ce.storage.get_lookup("nodes", c):
+            titles["nodes"][c] = await cb.value_title(conn, "nodes", c, row[c])
+    return {"columns": [{"node_id": int(node_id), "neighbor_id": int(nb), "values": values, "titles": titles}]}

@@ -46,15 +46,20 @@ class SaveBody(BaseModel):
     dry_run: bool = False
 
 
+Kind = Literal["line", "node"]
+
+
 class BatchBody(BaseModel):
-    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES, description="linesobj.id выбранных участков")
+    kind: Kind = "line"
+    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES,
+                           description="linesobj.id выбранных участков (nodes.id — узлов)")
     changes: list[Change] = Field(default_factory=list, max_length=2000,
                                   description="id — колонка карточки выбора: 1 подача/одиночные, 2 обратка")
     expected_changes: Optional[int] = Field(None, ge=0, description="Число строк из предпросмотра")
 
 
 class TemplateBody(BaseModel):
-    kind: Literal["line"] = "line"
+    kind: Kind = "line"
     name: str = Field(..., min_length=1, max_length=ct.NAME_MAX)
     values: dict[str, dict[str, Any]] = Field(..., description="{таблица: {поле: значение}}")
     shared: bool = False
@@ -67,11 +72,12 @@ class TemplatePatch(BaseModel):
 
 
 class TemplateApplyBody(BaseModel):
-    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES, description="linesobj.id")
+    ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES, description="linesobj.id / nodes.id")
     expected_changes: Optional[int] = Field(None, ge=0)
 
 
 class BatchCardBody(BaseModel):
+    kind: Kind = "line"
     ids: list[int] = Field(..., min_length=1, max_length=cb.MAX_LINES)
 
 
@@ -136,7 +142,7 @@ async def card_edit_batch_card(body: BatchCardBody):
     """Карточка нескольких участков: поля как у одного, значения сведены по колонкам («разные»)."""
     async with acquire_conn() as conn:
         try:
-            return await cb.batch_card(conn, body.ids)
+            return await cb.batch_card(conn, body.ids, body.kind)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -148,7 +154,7 @@ async def card_edit_batch_preview(body: BatchBody, user: Editor):
         raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
     async with acquire_conn() as conn:
         try:
-            return await cb.preview(conn, body.ids, [c.model_dump() for c in body.changes])
+            return await cb.preview(conn, body.ids, [c.model_dump() for c in body.changes], body.kind)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -163,7 +169,8 @@ async def card_edit_batch_apply(body: BatchBody, user: Editor):
         try:
             async with conn.transaction():
                 result = await cb.apply(conn, body.ids, [c.model_dump() for c in body.changes],
-                                        audit_row=_audit_writer(user), expected_changes=body.expected_changes)
+                                        audit_row=_audit_writer(user), expected_changes=body.expected_changes,
+                                        kind=body.kind)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
     if result.get("changed"):
@@ -176,12 +183,15 @@ async def card_edit_batch_apply(body: BatchBody, user: Editor):
     return result
 
 
-@router.get(PREFIX + "/neighbor/line/{line_id}")
-async def card_edit_neighbor(line_id: int = Path(..., ge=1)):
-    """«Как у соседнего»: значения конструктива смежного участка по колонкам карточки."""
+@router.get(PREFIX + "/neighbor/{kind}/{obj_id}")
+async def card_edit_neighbor(kind: Kind, obj_id: int = Path(..., ge=1)):
+    """«Как у соседнего»: значения конструктива смежного участка по колонкам карточки (у узла —
+    смежного или ближайшего узла)."""
     async with acquire_conn() as conn:
         try:
-            return await ct.neighbor_values(conn, line_id)
+            if kind == "node":
+                return await ct.neighbor_node_values(conn, obj_id)
+            return await ct.neighbor_values(conn, obj_id)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -192,7 +202,7 @@ TPL = "/api/v1/card-templates"
 
 
 @router.get(TPL)
-async def card_templates_list(user: Editor, kind: Literal["line"] = Query("line")):
+async def card_templates_list(user: Editor, kind: Kind = Query("line")):
     """Шаблоны вида объектов: свои и общие."""
     async with acquire_conn() as conn:
         return {"items": await ct.list_templates(conn, kind, user.username)}
@@ -239,7 +249,7 @@ async def card_template_preview(body: TemplateApplyBody, user: Editor, template_
         try:
             tpl = await ct.get_template(conn, template_id, user.username)
             changes = await ct.template_changes(conn, tpl, body.ids)
-            return await cb.preview(conn, body.ids, changes)
+            return await cb.preview(conn, body.ids, changes, tpl["kind"])
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -254,7 +264,7 @@ async def card_template_apply(body: TemplateApplyBody, user: Editor, template_id
                 tpl = await ct.get_template(conn, template_id, user.username)
                 changes = await ct.template_changes(conn, tpl, body.ids)
                 result = await cb.apply(conn, body.ids, changes, audit_row=_audit_writer(user),
-                                        expected_changes=body.expected_changes)
+                                        expected_changes=body.expected_changes, kind=tpl["kind"])
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
     return {**result, "template": {"id": tpl["id"], "name": tpl["name"]}}

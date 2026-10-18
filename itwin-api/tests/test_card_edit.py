@@ -32,6 +32,10 @@ def test_readonly_columns_like_desktop_filldvalues():
     assert ce.readonly_columns('line', 'linesobj', 'externalNodeName', 1, None, True) == [True]
     assert ce.readonly_columns('line', 'heatPipeSections', 'diameterCondit', 2, 'diameter_std', True) == [False, False]
     assert ce.readonly_columns('line', 'heatPipeSections', 'x', 1, None, False) == [True]
+    # карточка узла: поля узла правятся, чужие таблицы — нет
+    assert ce.readonly_columns('node', 'nodes', 'externalNodeName', 1, None, True) == [False]
+    assert ce.readonly_columns('node', 'nodes', 'operatorID', 1, 'ReadOnly', True) == [True]
+    assert ce.readonly_columns('node', 'heatPipeSections', 'diameterCondit', 1, None, True) == [True]
 
 
 def test_desktop_sql_like_ispr_sql():
@@ -135,6 +139,12 @@ def test_batch_selection_limits():
     with pytest.raises(te.TypedEditError) as exc:
         _run(cb.line_columns(None, list(range(1, cb.MAX_LINES + 2))))
     assert exc.value.detail["code"] == "too_many"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.node_columns(None, [0, -1]))
+    assert exc.value.detail["code"] == "no_objects"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.object_columns(None, "pump", [1]))
+    assert exc.value.detail["code"] == "bad_kind"
 
 
 def test_batch_routes_require_editor(monkeypatch):
@@ -156,8 +166,12 @@ def test_template_values_validated_like_card():
     from database import card_template as ct
 
     with pytest.raises(te.TypedEditError) as exc:
-        _run(ct.clean_values(None, 'node', {'nodes': {'x': 1}}))
+        _run(ct.clean_values(None, 'pump', {'nodes': {'x': 1}}))
     assert exc.value.detail["code"] == "bad_kind"
+    # шаблон узла — только поля узла
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.clean_values(None, 'node', {'heatpipesections': {'diameterCondit': 100}}))
+    assert exc.value.detail["code"] == "table_not_editable"
     with pytest.raises(te.TypedEditError) as exc:
         _run(ct.clean_values(None, 'line', {'users': {'role': 'admin'}}))
     assert exc.value.status == 422 and exc.value.detail["code"] == "table_not_editable"

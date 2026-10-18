@@ -8,7 +8,8 @@ SQL), функция десктопа (``tab/<table>.fun``), обязатель�
 (``.vis``/``.disable``) и версия каждой строки (``xmin`` → 409 при чужой правке).
 
 Запись — ``save_card``: одна транзакция, ``typed_edit.update_record`` по каждой строке, audit_log.
-Таблицы, которые правятся через карточку, — ``EDIT_TABLES`` (расширяется по этапам).
+Таблицы, которые правятся через карточку, — ``EDIT_TABLES`` (расширяется по этапам); какие из них
+правятся в карточке какого вида — ``CARD_TABLES`` (в карточке участка поля узлов только для чтения).
 """
 
 from __future__ import annotations
@@ -20,10 +21,16 @@ from database import typed_edit as te
 from database.sql_ident import quote_ident, resolve_column, resolve_table
 from utils.ini import storage
 
-# Таблицы, поля которых правятся через карточку (этап 1 — участки)
+# Таблицы, поля которых правятся через карточку (этапы 1–2 — участки, 3 — узлы и камеры)
 EDIT_TABLES: dict[str, str] = {
     "heatpipesections": "Участок трубопровода",
     "linesobj": "Линейный объект",
+    "nodes": "Узел",
+}
+# Вид карточки → таблицы, правимые в ней
+CARD_TABLES: dict[str, frozenset[str]] = {
+    "line": frozenset({"heatpipesections", "linesobj"}),
+    "node": frozenset({"nodes"}),
 }
 
 # Поля только для чтения всегда (десктоп: fillValues — код и имя узла в карточке линии)
@@ -67,7 +74,7 @@ def readonly_columns(card_kind: str, table: str, col: str, ncols: int, fun: Opti
                      editable: bool) -> list[bool]:
     t, c = table.lower(), col.lower()
     if (not editable or fun_name(fun) == "ReadOnly" or (t, c) in ALWAYS_READONLY
-            or (card_kind == "line" and t == "nodes")):
+            or t not in CARD_TABLES.get(card_kind, frozenset())):
         return [True] * ncols
     ro = [False] * ncols
     if ncols == 2 and (t, c) in PAIR_READONLY_COLUMN:
@@ -105,7 +112,7 @@ async def annotate_card(conn, card_kind: str, card: dict) -> dict:
                 c = str(field["field"]).lower()
                 spec = specs[t].get(c)
                 fun = funs[t].get(c)
-                editable = spec is not None and t in EDIT_TABLES
+                editable = spec is not None and t in CARD_TABLES.get(card_kind, frozenset())
                 ncols = _columns_of(field)
                 ids = [field.get("id"), field.get("id2")][:ncols]
                 if editable:
@@ -136,9 +143,10 @@ async def annotate_card(conn, card_kind: str, card: dict) -> dict:
                 f"SELECT id, xmin::text AS v FROM {quote_ident(actual)} WHERE id = ANY($1::int[])", sorted(ids)):
             versions[f"{t}:{r['id']}"] = r["v"]
     card["versions"] = versions
+    own = CARD_TABLES.get(card_kind, frozenset())
     card["rules"] = {t: {"vis": await storage.read_vis(t), "disable": await storage.read_disable(t)}
-                     for t in specs if t in EDIT_TABLES}
-    card["edit_tables"] = sorted(t for t in specs if t in EDIT_TABLES)
+                     for t in specs if t in own}
+    card["edit_tables"] = sorted(t for t in specs if t in own)
     return card
 
 

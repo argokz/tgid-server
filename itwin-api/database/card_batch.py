@@ -1,4 +1,6 @@
-"""Окно свойств: правка нескольких участков одной карточкой.
+"""Окно свойств: правка нескольких участков (или узлов) одной карточкой.
+
+Узлы (kind="node") — одна колонка, строки nodes выбора; дальше — как у участков.
 
 Выбор — участки (linesobj.id). Пары П/О дополняются (как карточка одного участка, db.line_pair_ids):
 колонка «Подача» — участки с признаком не «обратный», «Обратка» — обратные. Карточка — та же, что у
@@ -25,8 +27,15 @@ from utils.ini import storage
 SETTER = "card_edit"
 MAX_LINES = 5000
 COLUMN_TITLES = ["Подача", "Обратка"]
-# Таблица карточки → колонка, по которой строки относятся к участку
-LINE_KEY = {"heatpipesections": "lineid", "linesobj": "id"}
+# Вид объектов → таблица карточки → колонка, по которой строки относятся к объекту выбора
+KIND_KEYS: dict[str, dict[str, str]] = {
+    "line": {"heatpipesections": "lineid", "linesobj": "id"},
+    "node": {"nodes": "id"},
+}
+LINE_KEY = KIND_KEYS["line"]
+KIND_LABEL = {"line": "Свойства участков", "node": "Свойства узлов"}
+# таблица строки-итога GROUP_SET / GROUP_UNDO
+KIND_TABLE = {"line": "heatpipesections", "node": "nodes"}
 
 _EXPAND_SQL = """
 WITH sel AS (SELECT l.id, l.nodeid1, l.nodeid2, l.externalsignlineid AS sign
@@ -60,9 +69,31 @@ async def line_columns(conn, ids: list[int]) -> list[list[int]]:
     return [c for c in (flow, ret) if c]
 
 
-async def _table_rows(conn, table: str, line_ids: list[int], cols: list[str]) -> list[dict]:
+async def node_columns(conn, ids: list[int]) -> list[list[int]]:
+    """Узлы выбора (не удалённые) → одна колонка."""
+    ids = sorted({int(i) for i in ids if int(i) > 0})
+    if not ids:
+        raise _err(422, "no_objects", "Не выбраны узлы")
+    if len(ids) > MAX_LINES:
+        raise _err(422, "too_many", f"Не более {MAX_LINES} узлов за операцию")
+    found = sorted(int(r["id"]) for r in await conn.fetch(
+        "SELECT id FROM nodes WHERE id = ANY($1::int[]) AND COALESCE(removed, 0) = 0", ids))
+    if not found:
+        raise _err(404, "not_found", "Выбранные узлы не найдены")
+    return [found]
+
+
+async def object_columns(conn, kind: str, ids: list[int]) -> list[list[int]]:
+    if kind == "node":
+        return await node_columns(conn, ids)
+    if kind == "line":
+        return await line_columns(conn, ids)
+    raise _err(422, "bad_kind", f"Вид объектов «{kind}» не поддерживается")
+
+
+async def _table_rows(conn, table: str, line_ids: list[int], cols: list[str], kind: str = "line") -> list[dict]:
     actual = await resolve_table(conn, table)
-    key = LINE_KEY[table]
+    key = KIND_KEYS[kind][table]
     sel = ", ".join(quote_ident(c) for c in cols) or "1"
     return [dict(r) for r in await conn.fetch(
         f"SELECT id AS __id, {sel} FROM {quote_ident(actual)} WHERE {quote_ident(key)} = ANY($1::int[])",
@@ -94,12 +125,13 @@ async def value_title(conn, table: str, field: str, value: Any) -> Any:
     return title if title is not None else value
 
 
-async def batch_card(conn, ids: list[int]) -> dict:
-    """Карточка выбора: поля карточки участка, значения сведены по колонкам."""
-    from database.db import create_select_line
+async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
+    """Карточка выбора: поля карточки участка (узла), значения сведены по колонкам."""
+    from database.db import create_select_line, create_select_node
 
-    columns = await line_columns(conn, ids)
+    columns = await object_columns(conn, kind, ids)
     ncols = len(columns)
+    own = KIND_KEYS[kind]
     # образец карточки: участок-пара, если колонок две
     sample = columns[0][0]
     if ncols == 2:
@@ -111,8 +143,11 @@ async def batch_card(conn, ids: list[int]) -> dict:
             if other in partners:
                 sample = lid
                 break
-    card = json.loads(await create_select_line("heatPipeSections", sample, include_hidden=True))
-    card = await ce.annotate_card(conn, "line", card)
+    if kind == "node":
+        card = json.loads(await create_select_node("nodes", sample, include_hidden=True))
+    else:
+        card = json.loads(await create_select_line("heatPipeSections", sample, include_hidden=True))
+    card = await ce.annotate_card(conn, kind, card)
 
     tabs = []
     wanted: dict[str, set[str]] = {}
@@ -121,7 +156,7 @@ async def batch_card(conn, ids: list[int]) -> dict:
             continue
         subs = []
         for sub in tab.get("subsections", []):
-            fields = [f for f in sub.get("fields", []) if str(f["table"]).lower() in ce.EDIT_TABLES and f.get("edit")]
+            fields = [f for f in sub.get("fields", []) if str(f["table"]).lower() in own and f.get("edit")]
             if fields:
                 subs.append({**sub, "fields": fields})
                 for f in fields:
@@ -144,7 +179,7 @@ async def batch_card(conn, ids: list[int]) -> dict:
         real_cols[t] = names
         stats[t], counts[t] = [], []
         for line_ids in columns:
-            rows = await _table_rows(conn, t, line_ids, list(names.values()))
+            rows = await _table_rows(conn, t, line_ids, list(names.values()), kind)
             counts[t].append(len(rows))
             stats[t].append({c: Counter(_key(r.get(n)) for r in rows) for c, n in names.items()})
 
@@ -154,7 +189,7 @@ async def batch_card(conn, ids: list[int]) -> dict:
                 t, c = str(f["table"]).lower(), str(f["field"]).lower()
                 e = f["edit"]
                 spec_ok = e.get("kind") is not None
-                ro = ce.readonly_columns("line", t, c, ncols, e.get("fun"), spec_ok and t in ce.EDIT_TABLES)
+                ro = ce.readonly_columns(kind, t, c, ncols, e.get("fun"), spec_ok and t in own)
                 raw, mixed, titles = [], [], []
                 for ci in range(ncols):
                     cnt = stats.get(t, [{}] * ncols)[ci].get(c) or Counter()
@@ -183,7 +218,7 @@ async def batch_card(conn, ids: list[int]) -> dict:
                 e["readonly"] = ro
 
     return {
-        "kind": "line", "batch": True, "table": "heatPipeSections", "id": 0,
+        "kind": kind, "batch": True, "table": "nodes" if kind == "node" else "heatPipeSections", "id": 0,
         "fileid": card.get("fileid"),
         "tabs": tabs,
         "columns": COLUMN_TITLES[:ncols] if ncols == 2 else [""],
@@ -207,14 +242,14 @@ def _key(v: Any) -> Any:
 
 # --- предпросмотр и применение ---------------------------------------------------------------------
 
-async def _plan(conn, ids: list[int], changes: list[dict[str, Any]]):
+async def _plan(conn, ids: list[int], changes: list[dict[str, Any]], kind: str = "line"):
     """changes [{table, id: колонка 1|2, field, value}] → [(table, line_ids, {col: value}, specs)]."""
-    columns = await line_columns(conn, ids)
+    columns = await object_columns(conn, kind, ids)
     ncols = len(columns)
     grouped: dict[tuple[str, int], dict[str, Any]] = {}
     for ch in changes:
         t = str(ch.get("table", "")).lower()
-        if t not in ce.EDIT_TABLES:
+        if t not in KIND_KEYS[kind]:
             raise _err(403, "table_not_editable", f"Таблица {ch.get('table')} не правится через карточку")
         try:
             ci = int(ch["id"]) - 1
@@ -223,7 +258,7 @@ async def _plan(conn, ids: list[int], changes: list[dict[str, Any]]):
         if not 0 <= ci < ncols:
             raise _err(422, "bad_column", "Колонка не относится к выбору")
         field = str(ch.get("field", ""))
-        if ce.readonly_columns("line", t, field.lower(), ncols, None, True)[ci]:
+        if ce.readonly_columns(kind, t, field.lower(), ncols, None, True)[ci]:
             raise _err(422, "field_readonly", f"Поле {field} в этой колонке не правится")
         grouped.setdefault((t, ci), {})[field] = ch.get("value")
     plans = []
@@ -238,9 +273,10 @@ async def _plan(conn, ids: list[int], changes: list[dict[str, Any]]):
     return columns, plans
 
 
-async def _plan_rows(conn, table: str, line_ids: list[int], values: dict[str, Any], lock: bool = False):
+async def _plan_rows(conn, table: str, line_ids: list[int], values: dict[str, Any], lock: bool = False,
+                     kind: str = "line"):
     actual = await resolve_table(conn, table)
-    key = LINE_KEY[table]
+    key = KIND_KEYS[kind][table]
     cols = ", ".join(quote_ident(c) for c in values)
     rows = await conn.fetch(
         f"SELECT id AS __id, {cols} FROM {quote_ident(actual)} WHERE {quote_ident(key)} = ANY($1::int[]) "
@@ -248,12 +284,12 @@ async def _plan_rows(conn, table: str, line_ids: list[int], values: dict[str, An
     return actual, [dict(r) for r in rows]
 
 
-async def preview(conn, ids: list[int], changes: list[dict[str, Any]]) -> dict:
+async def preview(conn, ids: list[int], changes: list[dict[str, Any]], kind: str = "line") -> dict:
     """Сколько строк изменится по каждому полю и какие значения были (до 5 самых частых)."""
-    columns, plans = await _plan(conn, ids, changes)
+    columns, plans = await _plan(conn, ids, changes, kind)
     fields_out, rows_changed = [], set()
     for t, ci, line_ids, values, by_name in plans:
-        actual, rows = await _plan_rows(conn, t, line_ids, values)
+        actual, rows = await _plan_rows(conn, t, line_ids, values, kind=kind)
         for col, new in values.items():
             olds = [r[col] for r in rows if r[col] != new]
             for r in rows:
@@ -275,9 +311,9 @@ async def preview(conn, ids: list[int], changes: list[dict[str, Any]]) -> dict:
 
 
 async def apply(conn, ids: list[int], changes: list[dict[str, Any]], *, audit_row,
-                expected_changes: Optional[int] = None) -> dict:
+                expected_changes: Optional[int] = None, kind: str = "line") -> dict:
     """Применение в транзакции вызывающего: UPDATE строк колонки, audit_log с группой, итог GROUP_SET."""
-    columns, plans = await _plan(conn, ids, changes)
+    columns, plans = await _plan(conn, ids, changes, kind)
     group_id = str(uuid.uuid4())
     await conn.execute("SELECT set_config('tgid.current_group_id', $1, true)", group_id)
     changed_rows: set[tuple[str, int]] = set()
@@ -285,7 +321,7 @@ async def apply(conn, ids: list[int], changes: list[dict[str, Any]], *, audit_ro
     touched: dict[str, set[str]] = {}
     pending = []
     for t, ci, line_ids, values, _ in plans:
-        actual, rows = await _plan_rows(conn, t, line_ids, values, lock=True)
+        actual, rows = await _plan_rows(conn, t, line_ids, values, lock=True, kind=kind)
         diff = [r for r in rows if any(r[c] != v for c, v in values.items())]
         for r in diff:
             changed_rows.add((actual, r["__id"]))
@@ -314,8 +350,8 @@ async def apply(conn, ids: list[int], changes: list[dict[str, Any]], *, audit_ro
                                 old={c: te.jsonable(r[c]) for c in values},
                                 new={c: te.jsonable(v) for c, v in values.items()}, group=group_id)
     if audit_row is not None and changed_rows:
-        await audit_row(conn, operation="GROUP_SET", table="heatpipesections", record_id=None, old=None, new={
-            "setter": SETTER, "label": "Свойства участков", "lines": sum(len(c) for c in columns),
+        await audit_row(conn, operation="GROUP_SET", table=KIND_TABLE[kind], record_id=None, old=None, new={
+            "setter": SETTER, "label": KIND_LABEL[kind], "kind": kind, "lines": sum(len(c) for c in columns),
             "applied": applied, "columns": {t: sorted(c) for t, c in touched.items()},
             "changes": [{k: ch.get(k) for k in ("table", "id", "field", "value")} for ch in changes][:200],
         }, group=group_id)
@@ -390,7 +426,8 @@ async def undo(conn, group: str, summary: dict, *, dry_run: bool, audit_row) -> 
         if has_flag:
             await conn.execute("UPDATE audit_log SET is_rolled_back = TRUE WHERE change_group_id = $1::uuid", group)
         if audit_row is not None:
-            await audit_row(conn, operation="GROUP_UNDO", table="heatpipesections", record_id=None, old=None,
+            await audit_row(conn, operation="GROUP_UNDO", table=KIND_TABLE.get(str(summary.get("kind")), "heatpipesections"),
+                            record_id=None, old=None,
                             new={"undo_of": group, "setter": SETTER, "restored": result["restorable"],
                                  "conflicts": len(result["conflicts"])}, group=undo_group)
         result["undo_group_id"] = undo_group
