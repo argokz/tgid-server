@@ -46,7 +46,7 @@ class SaveBody(BaseModel):
     dry_run: bool = False
 
 
-Kind = Literal["line", "node"]
+Kind = Literal["line", "node", "consumer", "genconsumer", "source", "pumpstation"]
 
 
 class BatchBody(BaseModel):
@@ -191,7 +191,9 @@ async def card_edit_neighbor(kind: Kind, obj_id: int = Path(..., ge=1)):
         try:
             if kind == "node":
                 return await ct.neighbor_node_values(conn, obj_id)
-            return await ct.neighbor_values(conn, obj_id)
+            if kind == "line":
+                return await ct.neighbor_values(conn, obj_id)
+            return await ct.neighbor_owner_values(conn, kind, obj_id)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -271,9 +273,12 @@ async def card_template_apply(body: TemplateApplyBody, user: Editor, template_id
 
 
 @router.get(PREFIX + "/{kind}/{table}/{obj_id}")
-async def card_edit_get(kind: Literal["line", "node"], table: str = Path(..., max_length=64),
+async def card_edit_get(kind: Kind, table: str = Path(..., max_length=64),
                         obj_id: int = Path(..., ge=1)):
     """Карточка объекта для правки: поля как в просмотре + edit/versions/rules."""
+    if kind in ce.NODE_CARD_TABLE and table.lower() != ce.NODE_CARD_TABLE[kind].lower():
+        raise HTTPException(status_code=422, detail={"code": "wrong_kind",
+                                                     "message": "Таблица не относится к этому виду объектов"})
     try:
         build = create_select_line if kind == "line" else create_select_node
         card = json.loads(await build(table, obj_id, include_hidden=True))

@@ -21,17 +21,37 @@ from database import typed_edit as te
 from database.sql_ident import quote_ident, resolve_column, resolve_table
 from utils.ini import storage
 
-# Таблицы, поля которых правятся через карточку (этапы 1–2 — участки, 3 — узлы и камеры)
+# Таблицы, поля которых правятся через карточку (этапы 1–2 — участки, 3 — узлы и камеры,
+# 4 — потребители, источники, насосные станции)
 EDIT_TABLES: dict[str, str] = {
     "heatpipesections": "Участок трубопровода",
     "linesobj": "Линейный объект",
     "nodes": "Узел",
+    "realconsumers": "Потребитель",
+    "generalizedconsumers": "Обобщённый потребитель",
+    "heatsources": "Источник тепла",
+    "pumpstations": "Насосная станция",
 }
-# Вид карточки → таблицы, правимые в ней
+# Вид карточки → таблицы, правимые в ней (поля узла в карточке потребителя — только чтение)
 CARD_TABLES: dict[str, frozenset[str]] = {
     "line": frozenset({"heatpipesections", "linesobj"}),
     "node": frozenset({"nodes"}),
+    "consumer": frozenset({"realconsumers"}),
+    "genconsumer": frozenset({"generalizedconsumers"}),
+    "source": frozenset({"heatsources"}),
+    "pumpstation": frozenset({"pumpstations"}),
 }
+# Вид карточки объекта в узле → таблица карточки (create_select_node; id карточки — id узла)
+NODE_CARD_TABLE: dict[str, str] = {
+    "node": "nodes",
+    "consumer": "realConsumers",
+    "genconsumer": "generalizedConsumers",
+    "source": "heatSources",
+    "pumpstation": "pumpStations",
+}
+# Функции полей, которые не правятся сразу у нескольких объектов и не идут в шаблон:
+# смена схемы потребителя переносит нагрузки (fun_schemeNum десктопа) — только в карточке одного
+BATCH_READONLY_FUNS = frozenset({"schemeNum"})
 
 # Поля только для чтения всегда (десктоп: fillValues — код и имя узла в карточке линии)
 ALWAYS_READONLY = frozenset({("linesobj", "externalcodeid"), ("linesobj", "externalnodename")})
@@ -232,7 +252,11 @@ async def field_options(conn, table: str, field: str, *, fileid: Optional[int] =
 
 # Функции с окном-помощником в карточке: выбор по сортаменту, строка справочной таблицы,
 # местные сопротивления; ms_rs — список с зависимыми полями (магистраль/участок МС/участок РС)
-HELPER_FUNS = frozenset({"diameter_std", "Table", "Местные сопротивления"})
+HELPER_FUNS = frozenset({"diameter_std", "Table", "Местные сопротивления", "uf", "uf150-70"})
+# Коэффициент смешения (fun_uf / fun_uf150_70, окно CUtfDialog): u = (t1 − t3) / (t3 − t2)
+UF_DEFAULTS = {"t1": 150.0, "t2": 70.0, "t3": 95.0}
+# fun_uf берёт температуры из полей карточки источника
+UF_FROM = {"t1": "t1_r", "t2": "t2_r", "t3": "t3_r"}
 AFTER_FUNS = frozenset({"ms_rs"})
 
 # fun_diameter_std: выбранная труба заполняет четыре поля той же колонки
@@ -388,6 +412,9 @@ async def field_helper(conn, table: str, field: str, *, standard_id: Optional[in
         if res is None:
             raise te.TypedEditError(404, {"code": "no_helper", "message": f"Не разобрана функция «{fun}»"})
         return res
+    if name in ("uf", "uf150-70"):
+        return {"type": "uf", "title": label or "Коэффициент смешения", **UF_DEFAULTS,
+                "from": dict(UF_FROM) if name == "uf" else None, "set": {"u": field}}
     return {"type": "mestn", "title": "Местные сопротивления", "items": await local_resistances(conn),
             "set": {"sum": field, "list": "mestn"}}
 

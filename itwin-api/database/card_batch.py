@@ -1,6 +1,8 @@
-"""Окно свойств: правка нескольких участков (или узлов) одной карточкой.
+"""Окно свойств: правка нескольких участков (или объектов в узлах) одной карточкой.
 
-Узлы (kind="node") — одна колонка, строки nodes выбора; дальше — как у участков.
+Узлы (kind="node") — одна колонка, строки nodes выбора; потребители, обобщённые потребители,
+источники и насосные (consumer/genconsumer/source/pumpstation) — выбор тоже по id узла, строки
+своей таблицы с этим nodeid; дальше — как у участков.
 
 Выбор — участки (linesobj.id). Пары П/О дополняются (как карточка одного участка, db.line_pair_ids):
 колонка «Подача» — участки с признаком не «обратный», «Обратка» — обратные. Карточка — та же, что у
@@ -31,11 +33,21 @@ COLUMN_TITLES = ["Подача", "Обратка"]
 KIND_KEYS: dict[str, dict[str, str]] = {
     "line": {"heatpipesections": "lineid", "linesobj": "id"},
     "node": {"nodes": "id"},
+    "consumer": {"realconsumers": "nodeid"},
+    "genconsumer": {"generalizedconsumers": "nodeid"},
+    "source": {"heatsources": "nodeid"},
+    "pumpstation": {"pumpstations": "nodeid"},
 }
 LINE_KEY = KIND_KEYS["line"]
-KIND_LABEL = {"line": "Свойства участков", "node": "Свойства узлов"}
+KIND_LABEL = {"line": "Свойства участков", "node": "Свойства узлов", "consumer": "Свойства потребителей",
+              "genconsumer": "Свойства обобщённых потребителей", "source": "Свойства источников",
+              "pumpstation": "Свойства насосных станций"}
 # таблица строки-итога GROUP_SET / GROUP_UNDO
-KIND_TABLE = {"line": "heatpipesections", "node": "nodes"}
+KIND_TABLE = {"line": "heatpipesections", "node": "nodes", "consumer": "realconsumers",
+              "genconsumer": "generalizedconsumers", "source": "heatsources", "pumpstation": "pumpstations"}
+# объекты в узле: «Среди выбранных узлов нет …»
+OWNER_NOUN = {"consumer": "потребителей", "genconsumer": "обобщённых потребителей", "source": "источников",
+              "pumpstation": "насосных станций"}
 
 _EXPAND_SQL = """
 WITH sel AS (SELECT l.id, l.nodeid1, l.nodeid2, l.externalsignlineid AS sign
@@ -83,9 +95,29 @@ async def node_columns(conn, ids: list[int]) -> list[list[int]]:
     return [found]
 
 
+async def owner_columns(conn, kind: str, ids: list[int]) -> list[list[int]]:
+    """Узлы выбора, в которых есть объект вида (строка таблицы с этим nodeid) → одна колонка."""
+    ids = sorted({int(i) for i in ids if int(i) > 0})
+    if not ids:
+        raise _err(422, "no_objects", "Не выбраны объекты")
+    if len(ids) > MAX_LINES:
+        raise _err(422, "too_many", f"Не более {MAX_LINES} объектов за операцию")
+    table, key = next(iter(KIND_KEYS[kind].items()))
+    actual = await resolve_table(conn, table)
+    found = sorted(int(r["nodeid"]) for r in await conn.fetch(
+        f"SELECT DISTINCT t.{quote_ident(key)} AS nodeid FROM {quote_ident(actual)} t "
+        "JOIN nodes n ON n.id = t." + quote_ident(key) + " "
+        f"WHERE t.{quote_ident(key)} = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0", ids))
+    if not found:
+        raise _err(404, "not_found", f"Среди выбранных узлов нет {OWNER_NOUN[kind]}")
+    return [found]
+
+
 async def object_columns(conn, kind: str, ids: list[int]) -> list[list[int]]:
     if kind == "node":
         return await node_columns(conn, ids)
+    if kind in OWNER_NOUN:
+        return await owner_columns(conn, kind, ids)
     if kind == "line":
         return await line_columns(conn, ids)
     raise _err(422, "bad_kind", f"Вид объектов «{kind}» не поддерживается")
@@ -143,8 +175,8 @@ async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
             if other in partners:
                 sample = lid
                 break
-    if kind == "node":
-        card = json.loads(await create_select_node("nodes", sample, include_hidden=True))
+    if kind in ce.NODE_CARD_TABLE:
+        card = json.loads(await create_select_node(ce.NODE_CARD_TABLE[kind], sample, include_hidden=True))
     else:
         card = json.loads(await create_select_line("heatPipeSections", sample, include_hidden=True))
     card = await ce.annotate_card(conn, kind, card)
@@ -190,6 +222,8 @@ async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
                 e = f["edit"]
                 spec_ok = e.get("kind") is not None
                 ro = ce.readonly_columns(kind, t, c, ncols, e.get("fun"), spec_ok and t in own)
+                if e.get("fun_name") in ce.BATCH_READONLY_FUNS:
+                    ro = [True] * ncols
                 raw, mixed, titles = [], [], []
                 for ci in range(ncols):
                     cnt = stats.get(t, [{}] * ncols)[ci].get(c) or Counter()
@@ -218,7 +252,7 @@ async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
                 e["readonly"] = ro
 
     return {
-        "kind": kind, "batch": True, "table": "nodes" if kind == "node" else "heatPipeSections", "id": 0,
+        "kind": kind, "batch": True, "table": ce.NODE_CARD_TABLE.get(kind, "heatPipeSections"), "id": 0,
         "fileid": card.get("fileid"),
         "tabs": tabs,
         "columns": COLUMN_TITLES[:ncols] if ncols == 2 else [""],
@@ -260,6 +294,8 @@ async def _plan(conn, ids: list[int], changes: list[dict[str, Any]], kind: str =
         field = str(ch.get("field", ""))
         if ce.readonly_columns(kind, t, field.lower(), ncols, None, True)[ci]:
             raise _err(422, "field_readonly", f"Поле {field} в этой колонке не правится")
+        if ce.fun_name((await storage.read_fun(t)).get(field.lower())) in ce.BATCH_READONLY_FUNS:
+            raise _err(422, "field_readonly", f"Поле {field} правится только в карточке одного объекта")
         grouped.setdefault((t, ci), {})[field] = ch.get("value")
     plans = []
     specs_cache: dict[str, list[te.FieldSpec]] = {}

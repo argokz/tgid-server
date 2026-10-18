@@ -24,7 +24,7 @@ from database import card_edit as ce
 from database import typed_edit as te
 from database.sql_ident import resolve_table
 
-KINDS = frozenset({"line", "node"})
+KINDS = frozenset(ce.CARD_TABLES)
 NAME_MAX = 200
 TEMPLATE_SQL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "sql", "migrations", "20261017_card_template.sql")
@@ -32,6 +32,27 @@ TEMPLATE_SQL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 NEIGHBOR_LINE_COLUMNS = ("organizationid",)
 # Поля узла, которые «как у соседнего» берёт с соседнего узла (без имени, номеров и признака П/О)
 NEIGHBOR_NODE_COLUMNS = ("externalcodeid", "nodetypeid", "organizationid", "geomarktoptube", "geomarknodearea")
+# Потребители: «как у соседнего» — расчётные коды и признаки, без имени, схемы, нагрузок, адреса,
+# договора и диаметров (свои у каждого здания)
+NEIGHBOR_OWNER_COLUMNS: dict[str, tuple[str, ...]] = {
+    "consumer": (
+        "automdegid", "buildingtypeid", "specexpendid", "calctemperatureid", "varcoeffid", "accumcoeff",
+        "volwaterhs", "volwatervs", "hourirregcoeff", "calctemphr", "calctempvs", "calctemphwdo",
+        "temprecircpipe", "circhlosopen", "closesyscalcsignid", "calcsignopensysflowid", "calcsignreswdoretid",
+        "hydromodesignid", "throtstagesignid", "temperchartsignid", "pdvalveinstalllocid", "setpdonregulator",
+        "wemeteringdeviceid",
+    ),
+    "genconsumer": (
+        "specexpendid", "calctemperatureid", "varcoeffid", "volwaterhs", "volwatervs", "pdvalveinstalllocid",
+        "setpdonregulator", "wemeteringdeviceid", "closesyscalcsignid", "calcsignopensysflowid",
+        "calcsignreswdoretid", "connectionschemeid", "calctempdep", "calctempindep", "calctempha",
+        "hourirregcoeffparall", "hourirregcoeffmix", "hourirregcoeffconseq", "hourirregcoeffpreon",
+        "hourirregcoeffopen", "calctemphrparall", "calctemphrmix", "calctemphrconseq", "calctemphrpreon",
+        "calctemphwdoparall", "calctemphwdomix", "calctemphwdoconseq", "calctemphwdopreon", "calctemphwdoopen",
+    ),
+}
+# соседи ищутся в радиусе (единицы геометрии узлов); дальше — ближайший с той же схемой не важнее близости
+NEIGHBOR_RADIUS = 500
 
 _ready: set[str] = set()
 
@@ -71,6 +92,11 @@ async def clean_values(conn, kind: str, values: dict) -> dict:
         if t not in ce.CARD_TABLES[kind]:
             raise _err(422, "table_not_editable", f"Таблица {table} не правится через карточку")
         if not isinstance(fields, dict) or not fields:
+            continue
+        funs = await ce.storage.read_fun(t)
+        fields = {f: v for f, v in fields.items()
+                  if ce.fun_name(funs.get(str(f).lower())) not in ce.BATCH_READONLY_FUNS}
+        if not fields:
             continue
         specs = ce.check_inline_codes(t, await ce.writable_specs(conn, t), fields)
         by_name, typed = te.prepare_values(specs, fields)
@@ -247,3 +273,50 @@ async def neighbor_node_values(conn, node_id: int) -> dict:
         if row[c] is not None and ce.storage.get_lookup("nodes", c):
             titles["nodes"][c] = await cb.value_title(conn, "nodes", c, row[c])
     return {"columns": [{"node_id": int(node_id), "neighbor_id": int(nb), "values": values, "titles": titles}]}
+
+
+async def neighbor_owner_values(conn, kind: str, node_id: int) -> dict:
+    """«Как у соседнего» для потребителя (обобщённого потребителя): ближайший объект того же вида
+    в том же фрагменте (у потребителя — предпочтительно с той же схемой присоединения в пределах
+    NEIGHBOR_RADIUS); его значения NEIGHBOR_OWNER_COLUMNS[kind] — в каждую колонку карточки."""
+    if kind not in NEIGHBOR_OWNER_COLUMNS:
+        raise _err(422, "no_neighbor", "Для этого вида объектов «как у соседнего» нет")
+    table = ce.NODE_CARD_TABLE[kind].lower()
+    actual = await resolve_table(conn, table)
+    cols = {f.name.lower(): f.name for f in await ce.writable_specs(conn, table)}
+    take = [cols[c] for c in NEIGHBOR_OWNER_COLUMNS[kind] if c in cols]
+    own_rows = await conn.fetch(f'SELECT id FROM "{actual}" WHERE nodeid = $1 ORDER BY id', int(node_id))
+    if not own_rows:
+        raise _err(404, "not_found", "Объект не найден")
+    ncols = min(len(own_rows), 2)  # как карточка: не больше двух колонок
+    has_scheme = "schemenum" in cols
+    same_scheme = (f'((SELECT schemenum FROM "{actual}" s WHERE s.nodeid = c.id ORDER BY s.id LIMIT 1) '
+                   f'IS NOT DISTINCT FROM (SELECT schemenum FROM "{actual}" s WHERE s.nodeid = $1 ORDER BY s.id LIMIT 1)) '
+                   'DESC, ' if has_scheme else "")
+    nb = await conn.fetchval(
+        f"""
+        SELECT id FROM (
+            SELECT b.id, b.shape <-> a.shape AS d
+              FROM nodes a, nodes b
+             WHERE a.id = $1 AND b.id <> a.id AND COALESCE(b.removed, 0) = 0
+               AND b.fileid IS NOT DISTINCT FROM a.fileid AND b.shape IS NOT NULL AND a.shape IS NOT NULL
+               AND EXISTS (SELECT 1 FROM "{actual}" t WHERE t.nodeid = b.id)
+             ORDER BY b.shape <-> a.shape
+             LIMIT 50
+        ) c
+        ORDER BY (c.d > {NEIGHBOR_RADIUS}), {same_scheme}c.d
+        LIMIT 1
+        """, int(node_id))
+    empty = [{"node_id": int(node_id), "neighbor_id": None, "values": {}, "titles": {}}] * ncols
+    if nb is None or not take:
+        return {"columns": empty}
+    sel = ", ".join(f'"{c}"' for c in take)
+    row = await conn.fetchrow(f'SELECT {sel} FROM "{actual}" WHERE nodeid = $1 ORDER BY id LIMIT 1', int(nb))
+    take = [c for c in take if row[c] is not None]
+    values = {table: {c: te.jsonable(row[c]) for c in take}}
+    titles: dict[str, dict[str, Any]] = {table: {}}
+    for c in take:
+        if ce.storage.get_lookup(table, c):
+            titles[table][c] = await cb.value_title(conn, table, c, row[c])
+    col = {"node_id": int(node_id), "neighbor_id": int(nb), "values": values, "titles": titles}
+    return {"columns": [col] * ncols}

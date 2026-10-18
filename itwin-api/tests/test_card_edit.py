@@ -189,3 +189,61 @@ def test_template_routes_require_editor(monkeypatch):
     body = {"kind": "line", "name": "t", "values": {"linesobj": {"hydroRes": 1}}}
     assert client.post('/api/v1/card-templates', json=body, headers=viewer).status_code == 403
     assert client.post('/api/v1/card-templates/1/apply', json={"ids": [1]}, headers=viewer).status_code == 403
+
+
+def test_owner_kinds_tables_and_readonly():
+    # потребители, источники, насосные: правится своя таблица, поля узла — только чтение
+    for kind, table in (('consumer', 'realConsumers'), ('genconsumer', 'generalizedConsumers'),
+                        ('source', 'heatSources'), ('pumpstation', 'pumpStations')):
+        assert ce.NODE_CARD_TABLE[kind] == table
+        assert ce.CARD_TABLES[kind] == frozenset({table.lower()})
+        assert table.lower() in ce.EDIT_TABLES
+        assert ce.readonly_columns(kind, table, 'name', 1, None, True) == [False]
+        assert ce.readonly_columns(kind, 'nodes', 'externalNodeName', 1, None, True) == [True]
+    assert ce.readonly_columns('consumer', 'heatSources', 'name', 1, None, True) == [True]
+
+
+def test_uf_helper_like_desktop_utf_dialog():
+    assert {'uf', 'uf150-70'} <= ce.HELPER_FUNS
+    assert ce.fun_name('uf150-70') == 'uf150-70'
+    assert ce.UF_DEFAULTS == {'t1': 150.0, 't2': 70.0, 't3': 95.0}
+    assert 'schemeNum' in ce.BATCH_READONLY_FUNS
+
+
+def test_owner_batch_selection_errors():
+    from database import card_batch as cb
+
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.object_columns(None, 'consumer', [0]))
+    assert exc.value.detail["code"] == "no_objects"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.object_columns(None, 'source', list(range(1, cb.MAX_LINES + 2))))
+    assert exc.value.detail["code"] == "too_many"
+    assert set(cb.KIND_KEYS) == set(ce.CARD_TABLES) == set(cb.KIND_LABEL) == set(cb.KIND_TABLE)
+
+
+def test_owner_templates_and_neighbor_kinds():
+    from database import card_template as ct
+
+    assert ct.KINDS == frozenset(ce.CARD_TABLES)
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.clean_values(None, 'consumer', {'nodes': {'nodeTypeID': 9}}))
+    assert exc.value.detail["code"] == "table_not_editable"
+    # «как у соседнего» — только у потребителей; источник и насосная уникальны
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.neighbor_owner_values(None, 'source', 1))
+    assert exc.value.detail["code"] == "no_neighbor"
+    for cols in ct.NEIGHBOR_OWNER_COLUMNS.values():
+        assert 'name' not in cols and 'schemenum' not in cols
+
+
+def test_card_route_kind_must_match_table(monkeypatch):
+    import main
+    from auth import create_access_token
+
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    client = TestClient(main.app)
+    viewer = {"Authorization": "Bearer " + create_access_token(username="t-viewer", role="viewer")}
+    r = client.get('/api/v1/card-edit/consumer/heatSources/1', headers=viewer)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "wrong_kind"
+    assert client.get('/api/v1/card-edit/pump/pumps/1', headers=viewer).status_code == 422
