@@ -143,7 +143,7 @@ def test_batch_selection_limits():
         _run(cb.node_columns(None, [0, -1]))
     assert exc.value.detail["code"] == "no_objects"
     with pytest.raises(te.TypedEditError) as exc:
-        _run(cb.object_columns(None, "pump", [1]))
+        _run(cb.object_columns(None, "diaphragm", [1]))
     assert exc.value.detail["code"] == "bad_kind"
 
 
@@ -166,7 +166,7 @@ def test_template_values_validated_like_card():
     from database import card_template as ct
 
     with pytest.raises(te.TypedEditError) as exc:
-        _run(ct.clean_values(None, 'pump', {'nodes': {'x': 1}}))
+        _run(ct.clean_values(None, 'diaphragm', {'nodes': {'x': 1}}))
     assert exc.value.detail["code"] == "bad_kind"
     # шаблон узла — только поля узла
     with pytest.raises(te.TypedEditError) as exc:
@@ -246,4 +246,45 @@ def test_card_route_kind_must_match_table(monkeypatch):
     viewer = {"Authorization": "Bearer " + create_access_token(username="t-viewer", role="viewer")}
     r = client.get('/api/v1/card-edit/consumer/heatSources/1', headers=viewer)
     assert r.status_code == 422 and r.json()["detail"]["code"] == "wrong_kind"
-    assert client.get('/api/v1/card-edit/pump/pumps/1', headers=viewer).status_code == 422
+    # оборудование: вид и таблица карточки должны совпадать; неизвестный вид — 422
+    r = client.get('/api/v1/card-edit/damper/pumps/1', headers=viewer)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "wrong_kind"
+    assert client.get('/api/v1/card-edit/diaphragm/diaphragms/1', headers=viewer).status_code == 422
+
+
+def test_equipment_kinds_like_desktop_line_cards():
+    from database import card_batch as cb
+    from database import card_template as ct
+
+    # оборудование — линия схемы с карточкой своей таблицы tab/<таблица>.txt
+    for kind, table in ce.EQUIPMENT_KINDS.items():
+        assert ce.LINE_CARD_TABLE[kind] == table
+        assert ce.CARD_TABLES[kind] == frozenset({table.lower(), 'linesobj'})
+        assert table.lower() in ce.EDIT_TABLES and kind in ce.EQUIPMENT_LABELS
+        assert cb.KIND_KEYS[kind] == {table.lower(): 'lineid', 'linesobj': 'id'}
+        assert kind in ct.KINDS
+        assert ce.readonly_columns(kind, table, 'name', 1, None, True) == [False]
+        assert ce.readonly_columns(kind, 'nodes', 'externalNodeName', 1, None, True) == [True]
+        assert ce.readonly_columns(kind, 'heatPipeSections', 'diameterCondit', 1, None, True) == [True]
+    assert ce.LINE_CARD_TABLE['line'] == 'heatPipeSections'
+    # узел регулирования у регуляторов — обычное поле, ключи строк — нет
+    assert 'pressregulators' in ce.OWN_NODE_FIELD and 'dampers' not in ce.OWN_NODE_FIELD
+    assert {'name', 'nodeid', 'lineid', 'number'} <= ct.NEIGHBOR_EQUIPMENT_SKIP
+
+
+def test_equipment_batch_and_neighbor_errors():
+    from database import card_batch as cb
+    from database import card_template as ct
+
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.object_columns(None, 'damper', [0]))
+    assert exc.value.detail["code"] == "no_objects"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(cb.object_columns(None, 'pump', list(range(1, cb.MAX_LINES + 2))))
+    assert exc.value.detail["code"] == "too_many"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.neighbor_equipment_values(None, 'consumer', 1))
+    assert exc.value.detail["code"] == "no_neighbor"
+    with pytest.raises(te.TypedEditError) as exc:
+        _run(ct.clean_values(None, 'damper', {'heatpipesections': {'diameterCondit': 100}}))
+    assert exc.value.detail["code"] == "table_not_editable"

@@ -10,6 +10,10 @@ SQL), функция десктопа (``tab/<table>.fun``), обязатель�
 Запись — ``save_card``: одна транзакция, ``typed_edit.update_record`` по каждой строке, audit_log.
 Таблицы, которые правятся через карточку, — ``EDIT_TABLES`` (расширяется по этапам); какие из них
 правятся в карточке какого вида — ``CARD_TABLES`` (в карточке участка поля узлов только для чтения).
+
+Оборудование (задвижки, регуляторы, насосы…) — линии схемы, как в десктопе: карточка своей таблицы
+по ``lineID`` (``create_select_line``), вид — ``EQUIPMENT_KINDS``; список оборудования узла (примыкающее
+и во внутренней схеме) — ``node_equipment``.
 """
 
 from __future__ import annotations
@@ -21,8 +25,40 @@ from database import typed_edit as te
 from database.sql_ident import quote_ident, resolve_column, resolve_table
 from utils.ini import storage
 
+# Оборудование — линия схемы с карточкой своей таблицы (ключ lineID): вид → таблица (tab/<таблица>.txt).
+# У диафрагм, радиаторов и калориферов карточки в десктопе нет — правятся в реестрах.
+EQUIPMENT_KINDS: dict[str, str] = {
+    "damper": "dampers",
+    "regarmature": "regulArmatures",
+    "reversevalve": "reverseValves",
+    "pump": "pumps",
+    "pressregulator": "pressRegulators",
+    "consregulator": "consumptRegulators",
+    "pressdropregulator": "pressDropRegulators",
+    "bypass": "bypass",
+    "elevator": "elevators",
+    "heatexchanger": "heatExchangers",
+}
+EQUIPMENT_LABELS: dict[str, str] = {
+    "damper": "Задвижка",
+    "regarmature": "Регулирующая арматура",
+    "reversevalve": "Обратный клапан",
+    "pump": "Насос",
+    "pressregulator": "Регулятор давления",
+    "consregulator": "Регулятор расхода",
+    "pressdropregulator": "Регулятор перепада давления",
+    "bypass": "Байпас",
+    "elevator": "Элеватор",
+    "heatexchanger": "Теплообменник",
+}
+# Вид карточки линии → таблица карточки (create_select_line; id карточки — linesobj.id)
+LINE_CARD_TABLE: dict[str, str] = {"line": "heatPipeSections", **EQUIPMENT_KINDS}
+# Колонки ключа, которые не пишутся через карточку (SYSTEM_COLUMNS их и так не дают), и наоборот:
+# у регуляторов и байпаса nodeID — узел с регулируемым напором (fun_nodes десктопа), обычное поле
+OWN_NODE_FIELD = frozenset({"pressregulators", "pressdropregulators", "bypass", "regularmatures"})
+
 # Таблицы, поля которых правятся через карточку (этапы 1–2 — участки, 3 — узлы и камеры,
-# 4 — потребители, источники, насосные станции)
+# 4 — потребители, источники, насосные станции, 5 — оборудование)
 EDIT_TABLES: dict[str, str] = {
     "heatpipesections": "Участок трубопровода",
     "linesobj": "Линейный объект",
@@ -31,6 +67,7 @@ EDIT_TABLES: dict[str, str] = {
     "generalizedconsumers": "Обобщённый потребитель",
     "heatsources": "Источник тепла",
     "pumpstations": "Насосная станция",
+    **{t.lower(): EQUIPMENT_LABELS[k] for k, t in EQUIPMENT_KINDS.items()},
 }
 # Вид карточки → таблицы, правимые в ней (поля узла в карточке потребителя — только чтение)
 CARD_TABLES: dict[str, frozenset[str]] = {
@@ -40,6 +77,8 @@ CARD_TABLES: dict[str, frozenset[str]] = {
     "genconsumer": frozenset({"generalizedconsumers"}),
     "source": frozenset({"heatsources"}),
     "pumpstation": frozenset({"pumpstations"}),
+    # оборудование: своя таблица и линия (организация, гидравлическое сопротивление), как у участка
+    **{k: frozenset({t.lower(), "linesobj"}) for k, t in EQUIPMENT_KINDS.items()},
 }
 # Вид карточки объекта в узле → таблица карточки (create_select_node; id карточки — id узла)
 NODE_CARD_TABLE: dict[str, str] = {
@@ -72,9 +111,10 @@ async def column_specs(conn, table: str) -> dict[str, te.FieldSpec]:
     """Колонки таблицы, которые можно править (lower → FieldSpec): без служебных и геометрии."""
     actual = await resolve_table(conn, table)
     specs: dict[str, te.FieldSpec] = {}
+    own_node = table.lower() in OWN_NODE_FIELD
     for key, (name, data_type, max_len) in (await te._columns(conn, actual)).items():
         kind = te._KINDS.get(data_type)
-        if kind is None or key in te.SYSTEM_COLUMNS:
+        if kind is None or (key in te.SYSTEM_COLUMNS and not (own_node and key == "nodeid")):
             continue
         lookup = storage.get_lookup(table, name)
         specs[key] = te.FieldSpec(
@@ -103,7 +143,7 @@ def readonly_columns(card_kind: str, table: str, col: str, ncols: int, fun: Opti
 
 
 async def card_fileid(conn, card_kind: str, obj_id: int) -> Optional[int]:
-    if card_kind == "line":
+    if card_kind in LINE_CARD_TABLE:
         return await conn.fetchval(
             "SELECT n.fileid FROM linesobj l JOIN nodes n ON n.id = l.nodeid1 WHERE l.id = $1", obj_id)
     return await conn.fetchval("SELECT fileid FROM nodes WHERE id = $1", obj_id)
@@ -511,3 +551,58 @@ async def save_card(conn, changes: list[dict[str, Any]], versions: dict[str, str
                                         audit_row=audit_row, dry_run=dry_run)
         results.append(result)
     return {"rows": results, "dry_run": dry_run}
+
+
+# --- оборудование узла ----------------------------------------------------------------------------
+
+EQUIPMENT_LIST_LIMIT = 2000
+_SIGN = {1: "", 2: "П", 3: "О"}
+
+
+async def node_equipment(conn, node_id: int) -> dict:
+    """Оборудование узла, как в десктопе при входе во внутреннюю схему: линии оборудования, которые
+    примыкают к узлу или лежат во внутренней схеме (их узлы — internalNodeID = узел). → {"items": […]}
+    по видам (порядок EQUIPMENT_KINDS), внутри — по имени."""
+    node = await conn.fetchrow("SELECT id, fileid FROM nodes WHERE id = $1", int(node_id))
+    if node is None:
+        raise te.TypedEditError(404, {"code": "not_found", "message": "Узел не найден"})
+    lines = [int(r["id"]) for r in await conn.fetch(
+        """
+        WITH ns AS (SELECT $1::int AS id UNION SELECT id FROM nodes WHERE internalnodeid = $1)
+        SELECT l.id FROM linesobj l
+         WHERE (l.nodeid1 IN (SELECT id FROM ns) OR l.nodeid2 IN (SELECT id FROM ns))
+           AND COALESCE(l.removed, 0) = 0
+        """, int(node_id))]
+    items: list[dict] = []
+    if lines:
+        for kind, table in EQUIPMENT_KINDS.items():
+            try:
+                actual = await resolve_table(conn, table)
+            except Exception:  # noqa: BLE001 — нет таблицы в этой базе
+                continue
+            cols = await te._columns(conn, actual)
+            name = 't."name"::text' if "name" in cols else ("t.number::text" if "number" in cols else "NULL")
+            rows = await conn.fetch(
+                f"""
+                SELECT l.id AS line_id, t.id AS row_id, {name} AS name, l.externalsignlineid AS sign,
+                       n1.externalnodename AS node1, n2.externalnodename AS node2,
+                       (n1.id = $2 OR n2.id = $2) AS adjacent
+                  FROM {quote_ident(actual)} t
+                  JOIN linesobj l ON l.id = t.lineid
+                  LEFT JOIN nodes n1 ON n1.id = l.nodeid1
+                  LEFT JOIN nodes n2 ON n2.id = l.nodeid2
+                 WHERE t.lineid = ANY($1::int[])
+                 ORDER BY 3 NULLS LAST, l.id
+                 LIMIT {EQUIPMENT_LIST_LIMIT}
+                """, lines, int(node_id))
+            for r in rows:
+                items.append({
+                    "kind": kind, "table": table, "label": EQUIPMENT_LABELS[kind],
+                    "id": int(r["line_id"]), "row_id": int(r["row_id"]),
+                    "name": (r["name"] or "").strip() or None,
+                    "sign": _SIGN.get(r["sign"], ""),
+                    "nodes": " – ".join(x for x in (r["node1"], r["node2"]) if x) or None,
+                    "inner": not r["adjacent"],
+                })
+    return {"node_id": int(node_id), "fileid": node["fileid"], "items": items[:EQUIPMENT_LIST_LIMIT],
+            "truncated": len(items) > EQUIPMENT_LIST_LIMIT}

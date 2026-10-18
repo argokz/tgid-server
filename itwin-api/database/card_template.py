@@ -51,6 +51,13 @@ NEIGHBOR_OWNER_COLUMNS: dict[str, tuple[str, ...]] = {
         "calctemphwdoparall", "calctemphwdomix", "calctemphwdoconseq", "calctemphwdopreon", "calctemphwdoopen",
     ),
 }
+# Оборудование: «как у соседнего» — все поля карточки, кроме своих у каждого объекта (имя, номер,
+# узел регулирования, насосная, даты замен и счётчики ремонтов)
+NEIGHBOR_EQUIPMENT_SKIP = frozenset({
+    "name", "number", "nodeid", "lineid", "pumpstationid", "offreason", "lastpumpreplacedate",
+    "lastemreplacedate", "lastagregreplacedate", "repaircountpump", "replacecountagreg", "repaircountem",
+    "entrymark", "registnum",
+})
 # соседи ищутся в радиусе (единицы геометрии узлов); дальше — ближайший с той же схемой не важнее близости
 NEIGHBOR_RADIUS = 500
 
@@ -320,3 +327,56 @@ async def neighbor_owner_values(conn, kind: str, node_id: int) -> dict:
             titles[table][c] = await cb.value_title(conn, table, c, row[c])
     col = {"node_id": int(node_id), "neighbor_id": int(nb), "values": values, "titles": titles}
     return {"columns": [col] * ncols}
+
+
+async def neighbor_equipment_values(conn, kind: str, line_id: int) -> dict:
+    """«Как у соседнего» для оборудования: объект той же таблицы — с общим узлом, иначе в той же
+    внутренней схеме, иначе ближайший в том же фрагменте (предпочтительно тот же признак П/О);
+    значения полей карточки без NEIGHBOR_EQUIPMENT_SKIP — по колонкам (подача/обратка)."""
+    from database.db import line_pair_ids
+
+    table = ce.EQUIPMENT_KINDS.get(kind)
+    if table is None:
+        raise _err(422, "no_neighbor", "Для этого вида объектов «как у соседнего» нет")
+    t = table.lower()
+    actual = await resolve_table(conn, t)
+    if not await conn.fetchval(f'SELECT EXISTS (SELECT 1 FROM "{actual}" WHERE lineid = $1)', int(line_id)):
+        raise _err(404, "not_found", "Оборудование не найдено")
+    card_cols = {c.lower() for c in (await ce.storage.read_tab2(table) or []) if not c.startswith(('!', '$', '-'))}
+    cols = {f.name.lower(): f.name for f in await ce.writable_specs(conn, t)}
+    take_all = [cols[c] for c in cols if c in card_cols and c not in NEIGHBOR_EQUIPMENT_SKIP]
+    out = []
+    for lid in await line_pair_ids(conn, actual, int(line_id)):
+        nb = await conn.fetchval(
+            f"""
+            SELECT b.id
+              FROM linesobj a
+              JOIN "{actual}" tb ON tb.lineid <> a.id
+              JOIN linesobj b ON b.id = tb.lineid AND COALESCE(b.removed, 0) = 0
+              LEFT JOIN nodes a1 ON a1.id = a.nodeid1
+              LEFT JOIN nodes b1 ON b1.id = b.nodeid1
+             WHERE a.id = $1
+               AND (b.nodeid1 IN (a.nodeid1, a.nodeid2) OR b.nodeid2 IN (a.nodeid1, a.nodeid2)
+                    OR (COALESCE(a1.internalnodeid, 0) > 0 AND b1.internalnodeid = a1.internalnodeid)
+                    OR (a.shape IS NOT NULL AND b.shape IS NOT NULL AND ST_DWithin(a.shape, b.shape, {NEIGHBOR_RADIUS})))
+             ORDER BY (b.nodeid1 IN (a.nodeid1, a.nodeid2) OR b.nodeid2 IN (a.nodeid1, a.nodeid2)) DESC,
+                      (COALESCE(a1.internalnodeid, 0) > 0 AND b1.internalnodeid = a1.internalnodeid) DESC,
+                      (b.externalsignlineid IS NOT DISTINCT FROM a.externalsignlineid) DESC,
+                      CASE WHEN a.shape IS NOT NULL AND b.shape IS NOT NULL THEN a.shape <-> b.shape END NULLS LAST,
+                      b.id
+             LIMIT 1
+            """, lid)
+        if nb is None or not take_all:
+            out.append({"line_id": lid, "neighbor_id": None, "values": {}, "titles": {}})
+            continue
+        sel = ", ".join(f'"{c}"' for c in take_all)
+        row = await conn.fetchrow(f'SELECT {sel} FROM "{actual}" WHERE lineid = $1 ORDER BY id LIMIT 1', int(nb))
+        take = [c for c in take_all if row[c] is not None]
+        values = {t: {c: te.jsonable(row[c]) for c in take}}
+        titles: dict[str, dict[str, Any]] = {t: {}}
+        for c in take:
+            if ce.storage.get_lookup(t, c):
+                titles[t][c] = await cb.value_title(conn, t, c, row[c])
+        out.append({"line_id": lid, "neighbor_id": int(nb), "neighbor_line_id": int(nb),
+                    "values": values, "titles": titles})
+    return {"columns": out}

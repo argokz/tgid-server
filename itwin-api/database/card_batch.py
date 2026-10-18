@@ -1,5 +1,8 @@
 """Окно свойств: правка нескольких участков (или объектов в узлах) одной карточкой.
 
+Оборудование (kind из card_edit.EQUIPMENT_KINDS) — как участки: выбор — линии (linesobj.id), строки
+своей таблицы по lineID, пары П/О — колонки; в выбор идут только линии с этим оборудованием.
+
 Узлы (kind="node") — одна колонка, строки nodes выбора; потребители, обобщённые потребители,
 источники и насосные (consumer/genconsumer/source/pumpstation) — выбор тоже по id узла, строки
 своей таблицы с этим nodeid; дальше — как у участков.
@@ -37,28 +40,32 @@ KIND_KEYS: dict[str, dict[str, str]] = {
     "genconsumer": {"generalizedconsumers": "nodeid"},
     "source": {"heatsources": "nodeid"},
     "pumpstation": {"pumpstations": "nodeid"},
+    **{k: {t.lower(): "lineid", "linesobj": "id"} for k, t in ce.EQUIPMENT_KINDS.items()},
 }
 LINE_KEY = KIND_KEYS["line"]
 KIND_LABEL = {"line": "Свойства участков", "node": "Свойства узлов", "consumer": "Свойства потребителей",
               "genconsumer": "Свойства обобщённых потребителей", "source": "Свойства источников",
-              "pumpstation": "Свойства насосных станций"}
+              "pumpstation": "Свойства насосных станций",
+              **{k: f"Свойства: {v.lower()}" for k, v in ce.EQUIPMENT_LABELS.items()}}
 # таблица строки-итога GROUP_SET / GROUP_UNDO
 KIND_TABLE = {"line": "heatpipesections", "node": "nodes", "consumer": "realconsumers",
-              "genconsumer": "generalizedconsumers", "source": "heatsources", "pumpstation": "pumpstations"}
+              "genconsumer": "generalizedconsumers", "source": "heatsources", "pumpstation": "pumpstations",
+              **{k: t.lower() for k, t in ce.EQUIPMENT_KINDS.items()}}
 # объекты в узле: «Среди выбранных узлов нет …»
 OWNER_NOUN = {"consumer": "потребителей", "genconsumer": "обобщённых потребителей", "source": "источников",
               "pumpstation": "насосных станций"}
 
+# {table} — таблица карточки; {own} — фильтр выбора (оборудование: только линии с ним)
 _EXPAND_SQL = """
 WITH sel AS (SELECT l.id, l.nodeid1, l.nodeid2, l.externalsignlineid AS sign
-               FROM linesobj l WHERE l.id = ANY($1::int[]) AND l.removed = 0)
+               FROM linesobj l WHERE l.id = ANY($1::int[]) AND l.removed = 0{own})
 SELECT id, sign FROM sel
 UNION
 SELECT b.id, b.externalsignlineid
   FROM sel a
   JOIN linesobj b ON b.nodeid1 = a.nodeid1 AND b.nodeid2 = a.nodeid2 AND b.id <> a.id AND b.removed = 0
    AND b.externalsignlineid = CASE a.sign WHEN 2 THEN 3 WHEN 3 THEN 2 END
- WHERE EXISTS (SELECT 1 FROM heatpipesections t WHERE t.lineid = b.id)
+ WHERE EXISTS (SELECT 1 FROM {table} t WHERE t.lineid = b.id)
 """
 
 
@@ -66,16 +73,22 @@ def _err(status: int, code: str, message: str, **extra) -> te.TypedEditError:
     return te.TypedEditError(status, {"code": code, "message": message, **extra})
 
 
-async def line_columns(conn, ids: list[int]) -> list[list[int]]:
-    """Участки выбора с парами П/О → колонки [[подача и одиночные], [обратка]] (пустая — убирается)."""
+async def line_columns(conn, ids: list[int], kind: str = "line") -> list[list[int]]:
+    """Участки (линии оборудования) выбора с парами П/О → колонки [[подача и одиночные], [обратка]]
+    (пустая — убирается)."""
+    equipment = kind in ce.EQUIPMENT_KINDS
+    what = "оборудование" if equipment else "участки"
     ids = sorted({int(i) for i in ids if int(i) > 0})
     if not ids:
-        raise _err(422, "no_objects", "Не выбраны участки")
+        raise _err(422, "no_objects", f"Не выбраны {what}")
     if len(ids) > MAX_LINES:
-        raise _err(422, "too_many", f"Не более {MAX_LINES} участков за операцию")
-    rows = await conn.fetch(_EXPAND_SQL, ids)
+        raise _err(422, "too_many", f"Не более {MAX_LINES} объектов за операцию")
+    table = quote_ident(await resolve_table(conn, ce.LINE_CARD_TABLE[kind]))
+    own = f" AND EXISTS (SELECT 1 FROM {table} t WHERE t.lineid = l.id)" if equipment else ""
+    rows = await conn.fetch(_EXPAND_SQL.format(table=table, own=own), ids)
     if not rows:
-        raise _err(404, "not_found", "Выбранные участки не найдены")
+        raise _err(404, "not_found", "Выбранное оборудование не найдено" if equipment
+                   else "Выбранные участки не найдены")
     flow = sorted(int(r["id"]) for r in rows if r["sign"] != 3)
     ret = sorted(int(r["id"]) for r in rows if r["sign"] == 3)
     return [c for c in (flow, ret) if c]
@@ -118,8 +131,8 @@ async def object_columns(conn, kind: str, ids: list[int]) -> list[list[int]]:
         return await node_columns(conn, ids)
     if kind in OWNER_NOUN:
         return await owner_columns(conn, kind, ids)
-    if kind == "line":
-        return await line_columns(conn, ids)
+    if kind in ce.LINE_CARD_TABLE:
+        return await line_columns(conn, ids, kind)
     raise _err(422, "bad_kind", f"Вид объектов «{kind}» не поддерживается")
 
 
@@ -178,7 +191,7 @@ async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
     if kind in ce.NODE_CARD_TABLE:
         card = json.loads(await create_select_node(ce.NODE_CARD_TABLE[kind], sample, include_hidden=True))
     else:
-        card = json.loads(await create_select_line("heatPipeSections", sample, include_hidden=True))
+        card = json.loads(await create_select_line(ce.LINE_CARD_TABLE[kind], sample, include_hidden=True))
     card = await ce.annotate_card(conn, kind, card)
 
     tabs = []
@@ -252,7 +265,8 @@ async def batch_card(conn, ids: list[int], kind: str = "line") -> dict:
                 e["readonly"] = ro
 
     return {
-        "kind": kind, "batch": True, "table": ce.NODE_CARD_TABLE.get(kind, "heatPipeSections"), "id": 0,
+        "kind": kind, "batch": True, "id": 0,
+        "table": ce.NODE_CARD_TABLE.get(kind) or ce.LINE_CARD_TABLE.get(kind, "heatPipeSections"),
         "fileid": card.get("fileid"),
         "tabs": tabs,
         "columns": COLUMN_TITLES[:ncols] if ncols == 2 else [""],

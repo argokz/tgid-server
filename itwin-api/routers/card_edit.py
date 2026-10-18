@@ -3,7 +3,8 @@
 - ``GET  /api/v1/card-edit/{kind}/{table}/{id}`` — карточка (как ``/line|/node``) со сведениями для
   правки полей, версиями строк и правилами видимости/доступности;
 - ``GET  /api/v1/card-edit/options`` — варианты выпадающего списка поля, как в десктопе;
-- ``PUT  /api/v1/card-edit`` — сохранить изменения (одна транзакция, версии → 409, audit_log).
+- ``PUT  /api/v1/card-edit`` — сохранить изменения (одна транзакция, версии → 409, audit_log);
+- ``GET  /api/v1/card-edit/equipment-at/{node_id}`` — оборудование узла (примыкающее и во внутренней схеме).
 Чтение — viewer; запись — editor с правом ``network`` и MUTATIONS_ENABLED.
 """
 from __future__ import annotations
@@ -46,7 +47,10 @@ class SaveBody(BaseModel):
     dry_run: bool = False
 
 
-Kind = Literal["line", "node", "consumer", "genconsumer", "source", "pumpstation"]
+Kind = Literal["line", "node", "consumer", "genconsumer", "source", "pumpstation",
+               # оборудование — card_edit.EQUIPMENT_KINDS
+               "damper", "regarmature", "reversevalve", "pump", "pressregulator", "consregulator",
+               "pressdropregulator", "bypass", "elevator", "heatexchanger"]
 
 
 class BatchBody(BaseModel):
@@ -137,6 +141,16 @@ async def card_edit_after(
             raise HTTPException(status_code=422, detail={"code": "bad_value", "message": "Ожидается код"})
 
 
+@router.get(PREFIX + "/equipment-at/{node_id}")
+async def card_edit_node_equipment(node_id: int = Path(..., ge=1)):
+    """Оборудование узла: задвижки, регуляторы, насосы… — примыкающие к узлу и во внутренней схеме."""
+    async with acquire_conn() as conn:
+        try:
+            return await ce.node_equipment(conn, node_id)
+        except (te.TypedEditError, UnknownIdentifierError) as exc:
+            raise _http(exc)
+
+
 @router.post(PREFIX + "/batch/card")
 async def card_edit_batch_card(body: BatchCardBody):
     """Карточка нескольких участков: поля как у одного, значения сведены по колонкам («разные»)."""
@@ -193,6 +207,8 @@ async def card_edit_neighbor(kind: Kind, obj_id: int = Path(..., ge=1)):
                 return await ct.neighbor_node_values(conn, obj_id)
             if kind == "line":
                 return await ct.neighbor_values(conn, obj_id)
+            if kind in ce.EQUIPMENT_KINDS:
+                return await ct.neighbor_equipment_values(conn, kind, obj_id)
             return await ct.neighbor_owner_values(conn, kind, obj_id)
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
@@ -276,11 +292,12 @@ async def card_template_apply(body: TemplateApplyBody, user: Editor, template_id
 async def card_edit_get(kind: Kind, table: str = Path(..., max_length=64),
                         obj_id: int = Path(..., ge=1)):
     """Карточка объекта для правки: поля как в просмотре + edit/versions/rules."""
-    if kind in ce.NODE_CARD_TABLE and table.lower() != ce.NODE_CARD_TABLE[kind].lower():
+    own = ce.NODE_CARD_TABLE.get(kind) or (ce.EQUIPMENT_KINDS.get(kind))
+    if own and table.lower() != own.lower():
         raise HTTPException(status_code=422, detail={"code": "wrong_kind",
                                                      "message": "Таблица не относится к этому виду объектов"})
     try:
-        build = create_select_line if kind == "line" else create_select_node
+        build = create_select_line if kind in ce.LINE_CARD_TABLE else create_select_node
         card = json.loads(await build(table, obj_id, include_hidden=True))
         async with acquire_conn() as conn:
             card = await ce.annotate_card(conn, kind, card)
