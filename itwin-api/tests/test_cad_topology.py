@@ -445,3 +445,229 @@ def test_split_refuses_equipment_link_without_pipe_passport():
         _run(lambda: split_line(100, 76.9, 43.2, dry_run=True), conn, line_deps={"dampers": 2})
     assert exc.value.blockers == {"not_a_pipe": {"dampers": 2}}
     assert not [c for c in conn.calls if "INSERT" in c[1]]
+
+
+# --- цепочка участков (CAD) -----------------------------------------------------
+
+from database import topology_cad
+from database.topology_cad import (
+    ChainValidationError,
+    create_chain,
+    line_signs,
+    normalize_points,
+    segments,
+    signs_overlap,
+)
+
+
+def _run_cad(coro_factory, conn, **patches):
+    async def _inner():
+        with patch("database.topology_cad.invalidate_outage_cache"), \
+             patch("database.topology_cad.get_pool", return_value=_Pool(conn)):
+            return await coro_factory()
+    return _run(_inner, conn, **patches)[0]
+
+
+def test_line_signs_follow_desktop_sign_line():
+    assert line_signs("common", 2) == [1]
+    assert line_signs("pair", 1) == [2, 3]
+    # подача в узел без подающей сети — «подающий-обратный», обратка в узел без обратной — 5
+    assert [line_signs("supply", s) for s in (1, 2, 3, None)] == [[2], [2], [4], [2]]
+    assert [line_signs("return", s) for s in (1, 2, 3, None)] == [[3], [5], [3], [3]]
+    with pytest.raises(ValueError):
+        line_signs("both", 1)
+
+
+def test_signs_overlap_by_pipes():
+    assert signs_overlap([1], 2) and signs_overlap([2, 3], 1) and signs_overlap([2], 4)
+    assert not signs_overlap([2], 3) and not signs_overlap([3], 2) and not signs_overlap([5], 2)
+
+
+def test_normalize_points_shapes_chain():
+    pts = normalize_points([
+        {"kind": "node", "node_id": 1},
+        {"kind": "vertex", "lng": 76.9, "lat": 43.2},
+        {"kind": "vertex", "lng": 76.9, "lat": 43.2},  # повтор отбрасывается
+        {"kind": "new", "lng": 76.91, "lat": 43.2},
+        {"kind": "vertex", "lng": 76.92, "lat": 43.21},
+        {"kind": "tap", "line_id": 5, "lng": 76.93, "lat": 43.21},
+    ])
+    assert [p["kind"] for p in pts] == ["node", "vertex", "new", "vertex", "tap"]
+    assert segments(pts) == [(0, 2), (2, 4)]
+    with pytest.raises(ValueError, match="изломом"):
+        normalize_points([{"kind": "node", "node_id": 1}, {"kind": "vertex", "lng": 1, "lat": 2}])
+    with pytest.raises(ValueError, match="line_id"):
+        normalize_points([{"kind": "node", "node_id": 1}, {"kind": "tap", "lng": 1, "lat": 2}])
+    with pytest.raises(ValueError, match="нет ни одного участка"):
+        normalize_points([{"kind": "node", "node_id": 1}, {"kind": "node", "node_id": 1}])
+
+
+def _chain_conn(nodes=None, dup=None, length=25.0, simple=True, near=None, crossings=None, extra=()):
+    nodes = nodes or {1: (74, 25, 1), 2: (74, 25, 1)}
+    return FakeConn([
+        *extra,
+        _lock_rule({i: (0, TS, str(i)) for i in nodes}),
+        ("ST_X(shape) AS x, ST_Y(shape) AS y FROM nodes", lambda a: [
+            {"id": i, "fileid": nodes[i][0], "externalcodeid": nodes[i][1], "externalsignid": nodes[i][2],
+             "internalnodeid": None, "x": float(i * 10), "y": 0.0} for i in a[0] if i in nodes]),
+        ("AS t(lng, lat, i)", lambda a: [
+            {"i": k + 1, "x": 100.0 + k, "y": 5.0} for k in range(len(a[0]))]),
+        ("ST_IsSimple(g)", {"length": length, "simple": simple}),
+        ("SELECT id, externalsignlineid FROM linesobj", dup or []),
+        ("ST_PointOnSurface", crossings or []),
+        ("ORDER BY d LIMIT 1", near),
+        ("INSERT INTO nodes", 900),
+        ("INSERT INTO linesobj", lambda a: 700 + a[4]),
+        ("round(ST_Length(shape)::numeric, 2)::float8", length),
+    ])
+
+
+_TWO_NODES = [{"kind": "node", "node_id": 1}, {"kind": "vertex", "lng": 76.9, "lat": 43.2},
+              {"kind": "node", "node_id": 2}]
+
+
+def test_chain_common_creates_one_line_with_sign_1_through_vertices():
+    conn = _chain_conn()
+    res = _run_cad(lambda: create_chain(_TWO_NODES, actor="u"), conn)
+    assert res["ok"] and res["created_lines"] == [701] and res["lines"][0]["sign"] == 1
+    sql, args = [c for c in conn.calls if "INSERT INTO linesobj" in c[1]][0][1:]
+    # геометрия: узел 1 → излом → узел 2, концы прижаты к узлам
+    assert args[0] == [10.0, 100.0, 20.0] and args[1] == [0.0, 5.0, 0.0]
+    assert "ST_SetPoint(ST_SetPoint(" in sql and args[2:5] == (1, 2, 1)
+    assert res["total_length_m"] == 25.0
+
+
+def test_chain_pair_creates_supply_and_return_with_shared_geometry():
+    conn = _chain_conn()
+    res = _run_cad(lambda: create_chain(_TWO_NODES, pipe_mode="pair"), conn)
+    inserts = [c[2] for c in conn.calls if "INSERT INTO linesobj" in c[1]]
+    assert [a[4] for a in inserts] == [2, 3] and inserts[0][:4] == inserts[1][:4]
+    assert [ln["sign"] for ln in res["lines"]] == [2, 3]
+
+
+def test_chain_supply_into_return_only_node_is_transition():
+    conn = _chain_conn(nodes={1: (74, 25, 2), 2: (74, 25, 3)})
+    res = _run_cad(lambda: create_chain(_TWO_NODES, pipe_mode="supply", dry_run=True), conn)
+    assert res["segments"][0]["signs"] == [4]
+    assert any(i["code"] == "transition" for i in res["issues"])
+
+
+def test_chain_duplicate_line_blocks_and_writes_nothing():
+    conn = _chain_conn(dup=[{"id": 55, "externalsignlineid": 1}])
+    res = _run_cad(lambda: create_chain(_TWO_NODES, dry_run=True), conn)
+    assert res["ok"] is False and res["issues"][0]["code"] == "duplicate_line"
+    assert not [c for c in conn.calls if "INSERT" in c[1]]
+    with pytest.raises(ChainValidationError) as exc:
+        _run_cad(lambda: create_chain(_TWO_NODES), _chain_conn(dup=[{"id": 55, "externalsignlineid": 1}]))
+    assert exc.value.issues[0]["line_id"] == 55
+    # обратка рядом с подачей — не дубль
+    ok = _run_cad(lambda: create_chain(_TWO_NODES, pipe_mode="return", dry_run=True),
+                  _chain_conn(dup=[{"id": 55, "externalsignlineid": 2}]))
+    assert ok["ok"] is True
+
+
+def test_chain_short_selfcrossing_and_mixed_fragments():
+    res = _run_cad(lambda: create_chain(_TWO_NODES, dry_run=True), _chain_conn(length=0.05, simple=False))
+    assert {i["code"] for i in res["issues"]} == {"short_line", "self_intersection"}
+    res = _run_cad(lambda: create_chain(_TWO_NODES, dry_run=True),
+                   _chain_conn(nodes={1: (74, 25, 1), 2: (75, 25, 1)}))
+    assert "mixed_context" in {i["code"] for i in res["issues"]} and res["ok"] is False
+
+
+def test_chain_new_node_near_existing_is_error_and_crossing_is_warning():
+    pts = [{"kind": "node", "node_id": 1}, {"kind": "new", "lng": 76.9, "lat": 43.2}]
+    res = _run_cad(lambda: create_chain(pts, dry_run=True), _chain_conn(near={"id": 9, "d": 0.12}))
+    assert res["issues"][0]["code"] == "almost_node" and res["issues"][0]["node_id"] == 9
+    conn = _chain_conn(crossings=[{"id": 77, "lng": 76.9, "lat": 43.2}])
+    res = _run_cad(lambda: create_chain(pts, actor="u"), conn)
+    assert res["ok"] and [i["code"] for i in res["issues"]] == ["crossing_without_node"]
+    # новый узел — фрагмент и код узла цепочки, признак по режиму трубы
+    node_insert = [c for c in conn.calls if "INSERT INTO nodes" in c[1]][0][2]
+    assert node_insert[3:] == (74, 25, 1, None)
+    assert res["created_nodes"] == [900]
+
+
+def _tap_row(**kw):
+    row = {"id": 50, "nodeid1": 3, "nodeid2": 4, "fileid": 74, "internalnodeid": None,
+           "externalcodeid": 25, "externalsignid": 1, "is_pipe": True, "x": 30.0, "y": 1.0,
+           "off": 0.2, "d1": 12.0, "d2": 30.0, "lng": 76.95, "lat": 43.25, "n1_fileid": 74}
+    row.update(kw)
+    return row
+
+
+def test_chain_tap_into_pair_splits_both_pipes_in_one_node():
+    conn = _chain_conn(extra=[("WITH c AS (SELECT ST_Transform", _tap_row())])
+    conn.rules.insert(0, _lock_rule({1: (0, TS, "1"), 50: (0, TS, "5"), 51: (0, TS, "6")}))
+    split = AsyncMock(side_effect=[
+        {"new_node_id": 800, "new_line_id": 801, "transferred": {}},
+        {"new_node_id": 800, "new_line_id": 802, "transferred": {}},
+    ])
+    pts = [{"kind": "node", "node_id": 1}, {"kind": "tap", "line_id": 50, "lng": 76.95, "lat": 43.25}]
+    with patch("database.topology_cad._split_line_body", split), \
+         patch("database.topology_cad.find_pair_line", AsyncMock(return_value={"line_id": 51})):
+        res = _run_cad(lambda: create_chain(pts, versions={"line:50": version_token(TS, "5")}), conn)
+    assert split.await_args_list[0].args[1:4] == (50, 76.95, 43.25)
+    assert split.await_args_list[1].args[1] == 51 and split.await_args_list[1].kwargs["at_node_id"] == 800
+    assert res["split_lines"] == [50, 51] and res["created_nodes"] == [800]
+    assert res["taps"][0]["pair_new_line_id"] == 802
+    line_insert = [c[2] for c in conn.calls if "INSERT INTO linesobj" in c[1]][0]
+    assert line_insert[2:4] == (1, 800)
+
+
+def test_chain_tap_with_review_equipment_needs_decision_on_apply():
+    conn = _chain_conn(extra=[("WITH c AS (SELECT ST_Transform", _tap_row())])
+    conn.rules.insert(0, _lock_rule({1: (0, TS, "1"), 50: (0, TS, "5")}))
+    transferred = {"review": {"dampers": 1}, "review_items": {"dampers": [{"id": 3, "attrs": {}}]}}
+    split = AsyncMock(return_value={"new_node_id": 800, "new_line_id": 801, "transferred": transferred})
+    pts = [{"kind": "node", "node_id": 1}, {"kind": "tap", "line_id": 50, "lng": 76.95, "lat": 43.25}]
+    with patch("database.topology_cad._split_line_body", split), \
+         patch("database.topology_cad.find_pair_line", AsyncMock(return_value=None)):
+        res = _run_cad(lambda: create_chain(pts, dry_run=True), conn)
+        assert [i["code"] for i in res["issues"]] == ["review"]
+        with pytest.raises(TopologyDependencyError) as exc:
+            _run_cad(lambda: create_chain(pts), conn)
+        assert exc.value.blockers["requires_resolution"] is True
+        res = _run_cad(lambda: create_chain(pts, review_to_new={"50": {}}), conn)
+        assert res["ok"] and split.await_args.kwargs["review_to_new"] == {}
+
+
+def test_chain_tap_too_close_to_node_and_into_equipment():
+    conn = _chain_conn(extra=[("WITH c AS (SELECT ST_Transform", _tap_row(is_pipe=False, d1=0.1))])
+    conn.rules.insert(0, _lock_rule({1: (0, TS, "1"), 50: (0, TS, "5")}))
+    pts = [{"kind": "node", "node_id": 1}, {"kind": "tap", "line_id": 50, "lng": 76.95, "lat": 43.25}]
+    with patch("database.topology_cad.find_pair_line", AsyncMock(return_value=None)):
+        res = _run_cad(lambda: create_chain(pts, dry_run=True), conn)
+    codes = {i["code"]: i for i in res["issues"]}
+    assert set(codes) == {"not_a_pipe", "tap_at_node"} and codes["tap_at_node"]["node_id"] == 3
+
+
+def test_router_maps_chain_validation_to_422_and_exposes_paths():
+    import main
+    from routers.topology import _topology_http_error
+
+    e = _topology_http_error(ChainValidationError([{"level": "error", "code": "short_line", "message": "x"}]), "c")
+    assert e.status_code == 422 and e.detail["issues"][0]["code"] == "short_line"
+    paths = main.app.openapi()["paths"]
+    assert "post" in paths["/api/v1/topology/chains"]
+    assert "get" in paths["/api/v1/topology/snap-data"]
+    assert {"get", "post"} <= set(paths["/api/v1/topology/redo"])
+
+
+def test_snap_data_rejects_large_window():
+    conn = FakeConn([("ST_XMax(e)", {"w": 9000.0, "h": 100.0})])
+    res = _run_cad(lambda: topology_cad.snap_data((76.0, 43.0, 77.0, 43.5)), conn)
+    assert res["too_large"] is True and res["nodes"] == []
+
+
+def test_snap_data_returns_nodes_and_lines_and_truncation():
+    conn = FakeConn([
+        ("ST_XMax(e)", {"w": 900.0, "h": 600.0}),
+        ("FROM nodes n", [{"id": 1, "fileid": 74, "externalsignid": 1, "lng": 76.912345678, "lat": 43.2}] * 3),
+        ("FROM linesobj l", [{"id": 5, "nodeid1": 1, "nodeid2": 2, "externalsignlineid": 1, "fileid": 74,
+                              "pipe": True,
+                              "geojson": '{"type":"LineString","coordinates":[[76.9,43.2],[76.91,43.2]]}'}]),
+    ])
+    res = _run_cad(lambda: topology_cad.snap_data((76.9, 43.19, 76.92, 43.21), [74], limit=2), conn)
+    assert res["truncated"] is True and len(res["nodes"]) == 2
+    assert res["lines"][0]["c"] == [[76.9, 43.2], [76.91, 43.2]] and res["lines"][0]["pipe"] is True
+    assert [c for c in conn.calls if "FROM nodes n" in c[1]][0][2][4:] == ([74], 3)

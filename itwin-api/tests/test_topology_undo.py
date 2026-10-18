@@ -303,3 +303,73 @@ def test_router_maps_nothing_to_undo_to_404_and_exposes_paths():
     paths = main.app.openapi()["paths"]
     assert "post" in paths["/api/v1/topology/undo"] and "get" in paths["/api/v1/topology/undo"]
     assert "get" in paths["/api/v1/topology/line/{line_id}/geometry"]
+
+
+# --- повтор (redo) -------------------------------------------------------------
+
+from database.topology import last_redoable_operation, redo_last_operation
+
+
+def test_undo_keeps_after_image_for_redo():
+    conn = _undo_conn()
+    conn.rules.insert(0, ("::text AS img FROM", [{"id": 5, "img": '{"id": 5, "x": 9}'}]))
+    _run_undo(conn)
+    stored = conn.executed("SET after_rows = $2::jsonb")[0][2]
+    assert stored[0] == 12 and json.loads(stored[1]) == [{"t": "nodes", "id": 5, "row": {"id": 5, "x": 9}}]
+
+
+def _redo_conn(row_id=12, before_hash="hb", hashes_now=None):
+    hashes_now = hashes_now if hashes_now is not None else {5: "hb"}
+    return FakeConn([
+        ("to_regclass", True),
+        ("column_name = 'after_rows'", 1),
+        ("ORDER BY j.undone_at DESC", {
+            "id": row_id, "operation": "CHAIN", "created_at": TS, "summary": '{"created_lines": [7]}',
+            "unsupported": None, "undone_at": TS, "objects": 2,
+        }),
+        ("md5((e->'row')::text)", [{"t": "nodes", "id": 5, "h": before_hash}, {"t": "linesobj", "id": 7, "h": None}]),
+        ("information_schema.columns", [{"column_name": "id", "udt_name": "int4"},
+                                        {"column_name": "x", "udt_name": "float8"}]),
+        ("md5(", lambda a: [{"id": i, "h": hashes_now[i]} for i in a[0] if i in hashes_now]),
+        ("jsonb_array_elements(j.after_rows)", [
+            {"t": "nodes", "id": 5, "img": '{"id": 5, "x": 9}'},
+            {"t": "linesobj", "id": 7, "img": '{"id": 7, "x": 1}'},
+        ]),
+        ('UPDATE "linesobj"', "UPDATE 0"),
+    ])
+
+
+def test_redo_restores_after_image_and_reopens_operation():
+    conn = _redo_conn()
+    res, invalidate, audit, _ = _run(lambda: redo_last_operation("u", operation_id=12), conn)
+    assert res["success"] is True and res["operation"] == "CHAIN"
+    assert conn.executed('UPDATE "nodes" AS _t')
+    # строку, созданную операцией (её удалила отмена), повтор вставляет заново
+    assert conn.executed('INSERT INTO "linesobj" SELECT')
+    assert conn.executed("SET undone_at = NULL")
+    assert audit.await_args.kwargs["operation"] == "REDO"
+    invalidate.assert_called_once()
+
+
+def test_redo_conflicts_when_objects_changed_after_undo():
+    with pytest.raises(TopologyConflictError) as exc:
+        _run(lambda: redo_last_operation("u"), _redo_conn(hashes_now={5: "other"}))
+    assert set(exc.value.conflicts) == {"nodes:5"}
+    # строка, которую создавала операция, снова существует — тоже конфликт
+    with pytest.raises(TopologyConflictError) as exc:
+        _run(lambda: redo_last_operation("u"), _redo_conn(hashes_now={5: "hb", 7: "x"}))
+    assert set(exc.value.conflicts) == {"linesobj:7"}
+
+
+def test_redo_nothing_and_wrong_operation():
+    with pytest.raises(TopologyNothingToUndo):
+        _run(lambda: redo_last_operation("u"), FakeConn([("to_regclass", True)]))  # нет after_rows
+    with pytest.raises(TopologyConflictError):
+        _run(lambda: redo_last_operation("u", operation_id=11), _redo_conn())
+    assert asyncio.run(_last_redo(FakeConn([("to_regclass", True)]))) is None
+
+
+async def _last_redo(conn):
+    from tests.test_cad_topology import _Pool
+    with patch("database.topology.get_pool", return_value=_Pool(conn)):
+        return await last_redoable_operation("u")

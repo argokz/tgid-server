@@ -194,6 +194,34 @@ class OperationJournal:
         )
 
 
+async def redo_available(conn) -> bool:
+    """Повтор возможен, если в журнале есть колонка after_rows (миграция 20261018_topology_redo)."""
+    return bool(await conn.fetchval(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'after_rows'",
+        JOURNAL_TABLE,
+    ))
+
+
+async def rows_image_json(conn, by_table: dict[str, list[int]]) -> str:
+    """Текущие образы строк в формате before_rows ([{"t", "id", "row" | null}]) — текстом jsonb.
+
+    При отмене так снимается состояние «после операции»: повтор вернёт его как есть.
+    """
+    parts = []
+    for table, ids in sorted(by_table.items()):
+        expr = row_image_sql(table, await geometry_columns(conn, table))
+        rows = await conn.fetch(
+            f"SELECT _r.id AS id, {expr}::text AS img FROM {_ident(table)} AS _r WHERE _r.id = ANY($1::int[])",
+            sorted(set(ids)),
+        )
+        found = {int(r["id"]): r["img"] for r in rows}
+        for row_id in sorted(set(ids)):
+            img = found.get(int(row_id))
+            parts.append('{"t": %s, "id": %d, "row": %s}' % (json.dumps(table), row_id, img if img is not None else "null"))
+    return "[" + ", ".join(parts) + "]"
+
+
 async def current_hashes(conn, by_table: dict[str, list[int]], lock: bool = False) -> dict[str, Optional[str]]:
     """md5 текущих образов строк: {"table:id": md5 | None (строки нет)}."""
     result: dict[str, Optional[str]] = {}

@@ -28,7 +28,9 @@ from database.topology_journal import (
     changed_since,
     current_hashes,
     journal_available,
+    redo_available,
     restore_rows,
+    rows_image_json,
     table_columns,
 )
 from database.topology_transfer import (
@@ -314,7 +316,8 @@ def _journal_summary(operation: str, result: dict) -> dict:
     keep = (
         "id", "node_id", "line_id", "pair_line_id", "new_node_id", "new_line_id",
         "target_node_id", "source_node_id", "removed_lines", "relinked_lines", "fileid",
-        "created_nodes", "created_lines", "updated_nodes", "mode",
+        "created_nodes", "created_lines", "updated_nodes", "mode", "split_lines", "pipe_mode",
+        "total_length_m",
     )
     return {"operation": operation, **{k: result[k] for k in keep if k in result}}
 
@@ -870,7 +873,16 @@ async def split_line(
     return result
 
 
-async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to_new: Optional[dict] = None) -> dict:
+async def _split_line_body(
+    conn,
+    line_id: int,
+    lng: float,
+    lat: float,
+    review_to_new: Optional[dict] = None,
+    at_node_id: Optional[int] = None,
+) -> dict:
+    """at_node_id — разрезать в уже существующем узле (вторая труба пары П/О режется в узле,
+    созданном на первой): нового узла нет, концы половин прижимаются к узлу."""
     now = datetime.now()
 
     # 1. Locate the clicked point on the original geometry. The fraction is
@@ -908,25 +920,28 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to
     # 2. Новый узел в точке разреза. Фрагмент (fileid), код и признак подачи/обратки
     # берём у начального узла участка, принадлежность внутренней схеме — у участка: без fileid/externalcodeid расчёт (sety читает
     # узлы по fileID и JOIN externalCodes) не увидит узел и обе половины участка.
-    new_node_id = await conn.fetchval(
-        """
-        INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
-                           fileid, externalcodeid, externalsignid, internalnodeid)
-        SELECT
-          ST_LineInterpolatePoint(l.shape, $2),
-          ST_X(ST_LineInterpolatePoint(l.shape, $2)) * 100.0,
-          -ST_Y(ST_LineInterpolatePoint(l.shape, $2)) * 100.0,
-          0,
-          $3,
-          1,
-          COALESCE(n1.fileid, l.fileid), n1.externalcodeid, n1.externalsignid, l.internalnodeid
-        FROM linesobj l
-        LEFT JOIN nodes n1 ON n1.id = l.nodeid1
-        WHERE l.id = $1
-        RETURNING id
-        """,
-        line_id, split_fraction, now,
-    )
+    if at_node_id is not None:
+        new_node_id = at_node_id
+    else:
+        new_node_id = await conn.fetchval(
+            """
+            INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
+                               fileid, externalcodeid, externalsignid, internalnodeid)
+            SELECT
+              ST_LineInterpolatePoint(l.shape, $2),
+              ST_X(ST_LineInterpolatePoint(l.shape, $2)) * 100.0,
+              -ST_Y(ST_LineInterpolatePoint(l.shape, $2)) * 100.0,
+              0,
+              $3,
+              1,
+              COALESCE(n1.fileid, l.fileid), n1.externalcodeid, n1.externalsignid, l.internalnodeid
+            FROM linesobj l
+            LEFT JOIN nodes n1 ON n1.id = l.nodeid1
+            WHERE l.id = $1
+            RETURNING id
+            """,
+            line_id, split_fraction, now,
+        )
 
     # 3. Create the new line from new_node_id to old nodeid2
     new_line_id = await conn.fetchval(
@@ -974,6 +989,18 @@ async def _split_line_body(conn, line_id: int, lng: float, lat: float, review_to
         """,
         new_node_id, split_fraction, now, line_id,
     )
+    if at_node_id is not None:
+        # половины сходятся ровно в существующем узле, а не в точке на своей трассе
+        await conn.execute(
+            """
+            UPDATE linesobj l SET shape = CASE
+                WHEN l.id = $2 THEN ST_SetPoint(l.shape, ST_NumPoints(l.shape) - 1, n.shape)
+                ELSE ST_SetPoint(l.shape, 0, n.shape) END
+            FROM nodes n
+            WHERE n.id = $1 AND l.id IN ($2, $3)
+            """,
+            new_node_id, line_id, new_line_id,
+        )
 
     # 6. Клон паспорта трубы для новой половины и длины обеих половин.
     # jsonb_populate_record сохраняет все текущие и будущие колонки без списка из 150 полей.
@@ -1543,6 +1570,12 @@ async def undo_last_operation(actor: Optional[str], operation_id: Optional[int] 
                 row["id"],
             )
         ]
+        if await redo_available(conn):
+            # состояние «после операции» — для повтора (Ctrl+Y)
+            await conn.execute(
+                f"UPDATE {JOURNAL_TABLE} SET after_rows = $2::jsonb WHERE id = $1",
+                row["id"], await rows_image_json(conn, by_table),
+            )
         report = await restore_rows(conn, items)
         await conn.execute(
             f"UPDATE {JOURNAL_TABLE} SET undone_at = now(), undone_by = $2, undo_group_id = $3::uuid WHERE id = $1",
@@ -1550,6 +1583,102 @@ async def undo_last_operation(actor: Optional[str], operation_id: Optional[int] 
         )
         result = {"success": True, **entry, **report, "undone_group_id": row["group_id"]}
         await op.audit("UNDO", JOURNAL_TABLE, row["id"], result)
+        return result
+
+    result = await _run(False, body, None, actor)
+    invalidate_outage_cache()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Повтор отменённой операции (Ctrl+Y)
+# ---------------------------------------------------------------------------
+
+_REDO_CANDIDATE_SQL = f"""
+    SELECT j.id, j.operation, j.created_at, j.summary, j.unsupported, j.undone_at,
+           jsonb_array_length(j.before_rows) AS objects
+    FROM {JOURNAL_TABLE} j
+    WHERE j.actor IS NOT DISTINCT FROM $1 AND j.undone_at IS NOT NULL AND j.after_rows IS NOT NULL
+      -- новая операция после отмены закрывает повтор (как в любом редакторе)
+      AND NOT EXISTS (
+            SELECT 1 FROM {JOURNAL_TABLE} k
+            WHERE k.actor IS NOT DISTINCT FROM $1 AND k.undone_at IS NULL AND k.created_at > j.undone_at)
+    ORDER BY j.undone_at DESC, j.id DESC
+    LIMIT 1
+"""
+
+
+async def last_redoable_operation(actor: Optional[str]) -> Optional[dict]:
+    """Последняя отменённая операция пользователя, которую можно повторить; None — нечего."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if not await journal_available(conn) or not await redo_available(conn):
+            return None
+        row = await conn.fetchrow(_REDO_CANDIDATE_SQL, actor)
+    return _journal_entry(row) if row else None
+
+
+async def redo_last_operation(actor: Optional[str], operation_id: Optional[int] = None) -> dict:
+    """Повтор последней отменённой операции пользователя.
+
+    Строки операции должны быть такими же, как после отмены (образы «до»; созданные операцией —
+    отсутствовать): иначе 409, ничего не трогаем. Образы «после» (after_rows, сняты при отмене)
+    восстанавливаются, операция снова становится последней неотменённой — её можно отменить.
+    """
+    async def body(conn, op):
+        if not await journal_available(conn) or not await redo_available(conn):
+            raise TopologyNothingToUndo("Повтор операций не установлен в этой БД")
+        row = await conn.fetchrow(_REDO_CANDIDATE_SQL + " FOR UPDATE OF j", actor)
+        if row is None:
+            raise TopologyNothingToUndo("Нет операций для повтора")
+        entry = _journal_entry(row)
+        if operation_id is not None and row["id"] != operation_id:
+            raise TopologyConflictError(
+                {"operation": {"expected": operation_id, "actual": row["id"]}},
+                "Операция для повтора изменилась — обновите список",
+            )
+        expected = {
+            f"{r['t']}:{r['id']}": r["h"]
+            for r in await conn.fetch(
+                f"""
+                SELECT e->>'t' AS t, (e->>'id')::int AS id,
+                       CASE WHEN jsonb_typeof(e->'row') = 'null' THEN NULL ELSE md5((e->'row')::text) END AS h
+                FROM {JOURNAL_TABLE} j, jsonb_array_elements(j.before_rows) AS e
+                WHERE j.id = $1
+                """,
+                row["id"],
+            )
+        }
+        by_table: dict[str, list[int]] = {}
+        for k in expected:
+            table, rid = k.rsplit(":", 1)
+            by_table.setdefault(table, []).append(int(rid))
+        changed = changed_since(expected, await current_hashes(conn, by_table, lock=True))
+        if changed:
+            raise TopologyConflictError(
+                {k: {**v, "removed": v["actual"] is None} for k, v in changed.items()},
+                "Объекты изменены после отмены — повтор невозможен",
+            )
+        items = [
+            {"t": r["t"], "id": r["id"], "row": r["img"]}
+            for r in await conn.fetch(
+                f"""
+                SELECT e->>'t' AS t, (e->>'id')::int AS id,
+                       CASE WHEN jsonb_typeof(e->'row') = 'null' THEN NULL ELSE (e->'row')::text END AS img
+                FROM {JOURNAL_TABLE} j, jsonb_array_elements(j.after_rows) AS e
+                WHERE j.id = $1
+                """,
+                row["id"],
+            )
+        ]
+        report = await restore_rows(conn, items)
+        await conn.execute(
+            f"UPDATE {JOURNAL_TABLE} SET undone_at = NULL, undone_by = NULL, undo_group_id = NULL, "
+            f"redone_at = now() WHERE id = $1",
+            row["id"],
+        )
+        result = {"success": True, **entry, **report}
+        await op.audit("REDO", JOURNAL_TABLE, row["id"], result)
         return result
 
     result = await _run(False, body, None, actor)

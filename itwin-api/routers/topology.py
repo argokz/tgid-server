@@ -1,14 +1,15 @@
 """Изменение топологии сети (за флагами TOPOLOGY_MUTATIONS_ENABLED + MUTATIONS_ENABLED)."""
 
 import os
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from auth import AuthUser, require_mutations_enabled, require_roles
 from database.connect import acquire_conn
+from database.topology_cad import ChainValidationError, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
 from database.topology import (
     TopologyConflictError,
@@ -22,9 +23,11 @@ from database.topology import (
     get_line_geometry,
     get_line_ref,
     get_versions,
+    last_redoable_operation,
     last_undoable_operation,
     merge_nodes,
     move_node,
+    redo_last_operation,
     reverse_line,
     split_line,
     undo_last_operation,
@@ -97,6 +100,29 @@ class UndoRequest(BaseModel):
     operation_id: Optional[int] = None
 
 
+class ChainPoint(BaseModel):
+    # node — существующий узел; tap — врезка в участок line_id; new — новый узел; vertex — излом
+    kind: Literal["node", "tap", "new", "vertex"]
+    node_id: Optional[int] = None
+    line_id: Optional[int] = None
+    lng: Optional[float] = None
+    lat: Optional[float] = None
+
+
+class ChainRequest(BaseModel):
+    points: list[ChainPoint] = Field(..., min_length=2, max_length=500)
+    # common — общая (признак 1); pair — подача и обратка раздельно (2 + 3, общая геометрия);
+    # supply / return — только подача / обратка (4/5 — автоматически на переходе между сетями)
+    pipe_mode: Literal["common", "pair", "supply", "return"] = "common"
+    # рабочий фрагмент: объекты цепочки должны быть в нём
+    fileid: Optional[int] = None
+    dry_run: bool = False
+    # {"node:ID" | "line:ID": версия} — объекты, которые видел клиент
+    versions: dict[str, str] = Field(default_factory=dict)
+    # {line_id: {таблица: [id…]}} — оборудование без позиции на трубах врезки ({} — всё на первой половине)
+    review_to_new: Optional[dict[int, dict[str, list[int]]]] = None
+
+
 class MergeNodesRequest(BaseModel):
     target_node_id: int
     source_node_id: int
@@ -128,6 +154,11 @@ def _topology_http_error(exc: Exception, what: str) -> HTTPException:
     """
     if isinstance(exc, HTTPException):
         return exc
+    if isinstance(exc, ChainValidationError):
+        return HTTPException(
+            status_code=422,
+            detail={"code": "validation", "message": str(exc), "issues": exc.issues},
+        )
     if isinstance(exc, TopologyNothingToUndo):
         return HTTPException(status_code=404, detail={"code": "nothing_to_undo", "message": str(exc)})
     if isinstance(exc, TopologyConflictError):
@@ -189,6 +220,54 @@ async def topology_diagnostics(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Фрагмент {fragment_id} не найден")
     return result
+
+
+@router.get("/api/v1/topology/snap-data")
+async def topology_snap_data(
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    bbox: str = Query(..., description="minLng,minLat,maxLng,maxLat (WGS84)"),
+    fragments: Optional[str] = Query(None, description="id фрагментов через запятую (рабочий фрагмент)"),
+):
+    """Узлы и участки основной сети в окне карты с полной точностью — для привязки при рисовании.
+
+    too_large — окно слишком большое (приблизьте карту); truncated — объектов больше лимита.
+    """
+    try:
+        parts = [float(x) for x in bbox.split(",")]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bbox: minLng,minLat,maxLng,maxLat")
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox: minLng,minLat,maxLng,maxLat")
+    try:
+        return await snap_data((parts[0], parts[1], parts[2], parts[3]), _parse_ids(fragments))
+    except Exception as e:
+        raise _topology_http_error(e, "reading snap data")
+
+
+@router.post("/api/v1/topology/chains")
+async def api_create_chain(
+    req: ChainRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+):
+    """Цепочка участков одной операцией: врезки, новые узлы, изломы, режим трубы.
+
+    dry_run=true — проверки (issues) и отчёт без записи; ok=false — есть ошибки.
+    422 validation — при сохранении нашлись ошибки (issues); 409 — версии/оборудование врезки.
+    """
+    if not req.dry_run:
+        require_topology_mutations_enabled()
+    try:
+        return await create_chain(
+            [p.model_dump() for p in req.points],
+            pipe_mode=req.pipe_mode,
+            fileid=req.fileid,
+            dry_run=req.dry_run,
+            versions=req.versions,
+            review_to_new=req.review_to_new,
+            actor=user.username,
+        )
+    except Exception as e:
+        raise _topology_http_error(e, "creating chain")
 
 
 @router.get("/api/topology/line-ref")
@@ -431,3 +510,22 @@ async def api_undo(
         return await undo_last_operation(user.username, operation_id=req.operation_id)
     except Exception as e:
         raise _topology_http_error(e, "undoing topology operation")
+
+
+@router.get("/api/v1/topology/redo")
+async def api_last_redoable(user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))]):
+    """Последняя отменённая операция пользователя, которую можно повторить (кнопка «Повторить»)."""
+    return {"operation": await last_redoable_operation(user.username)}
+
+
+@router.post("/api/v1/topology/redo")
+async def api_redo(
+    req: UndoRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+):
+    """Повтор последней отменённой операции. 404 — нечего; 409 — объекты изменены после отмены."""
+    require_topology_mutations_enabled()
+    try:
+        return await redo_last_operation(user.username, operation_id=req.operation_id)
+    except Exception as e:
+        raise _topology_http_error(e, "redoing topology operation")
