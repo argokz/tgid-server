@@ -61,6 +61,19 @@ GEOMETRY_ENDPOINT_TOLERANCE_M = 5.0
 NEW_NODE_REFERENCE_RADIUS_M = 300.0
 # Парная труба при развороте: макс. расхождение трасс подачи и обратки (Хаусдорф), м.
 PAIR_LINE_MAX_DEVIATION_M = 1.0
+# Вид нового узла основной сети (nodes.nodeTypeID, enum TipPS gid8) — 13, «неустановленный узел»,
+# как addNodeUS десктопа; у узла внутренней схемы вид не задаётся (NULL).
+
+
+async def name_new_nodes(conn, node_ids) -> None:
+    """Имя нового узла — «Узел_<id>», как у десктопа (externalNodeName); названные не трогает."""
+    ids = [int(i) for i in node_ids if i is not None]
+    if ids:
+        await conn.execute(
+            "UPDATE nodes SET externalnodename = 'Узел_' || id "
+            "WHERE id = ANY($1::int[]) AND externalnodename IS NULL",
+            ids,
+        )
 
 # Паспорт нового участка (create_line) — конструктив трубы от участка-образца: смежного
 # (через общий узел) или ближайшего в радиусе NEW_NODE_REFERENCE_RADIUS_M того же фрагмента
@@ -331,7 +344,7 @@ def _journal_summary(operation: str, result: dict) -> dict:
         "id", "node_id", "line_id", "pair_line_id", "new_node_id", "new_line_id",
         "target_node_id", "source_node_id", "removed_lines", "relinked_lines", "fileid",
         "created_nodes", "created_lines", "updated_nodes", "mode", "split_lines", "pipe_mode",
-        "total_length_m",
+        "total_length_m", "old_type", "new_type", "flag", "on", "node_type",
     )
     return {"operation": operation, **{k: result[k] for k in keep if k in result}}
 
@@ -592,8 +605,16 @@ async def create_node(
     fileid: Optional[int] = None,
     near_node_id: Optional[int] = None,
     near_line_id: Optional[int] = None,
+    node_type: str = "US",
 ) -> dict:
-    """Новый узел с фрагментом/кодом/признаком от узла-образца (см. _new_node_reference)."""
+    """Новый узел с фрагментом/кодом/признаком от узла-образца (см. _new_node_reference).
+
+    node_type — расчётный тип (database/node_types): карточка типа создаётся в той же операции.
+    """
+    from database.node_types import check_node_type, insert_node_card
+
+    node_type = check_node_type(node_type)
+
     async def body(conn, op):
         ref = await _new_node_reference(conn, lng, lat, fileid, near_node_id, near_line_id)
         new_id = await conn.fetchval(
@@ -606,7 +627,7 @@ async def create_node(
               -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
               0,
               $3,
-              1, -- простой узел
+              CASE WHEN COALESCE($7::int, 0) = 0 THEN 13 END, -- вид: неустановленный узел
               $4, $5, $6, $7
             ) RETURNING id
             """,
@@ -614,8 +635,12 @@ async def create_node(
             ref["fileid"], ref["externalcodeid"], ref["externalsignid"], ref["internalnodeid"],
         )
         op.journal.created("nodes", new_id)
+        await name_new_nodes(conn, [new_id])
+        card = await insert_node_card(conn, op.journal, new_id, node_type)
         result = {
             "id": new_id,
+            "node_type": node_type,
+            "card": card,
             "fileid": ref["fileid"],
             "externalcodeid": ref["externalcodeid"],
             "externalsignid": ref["externalsignid"],
@@ -947,7 +972,7 @@ async def _split_line_body(
               -ST_Y(ST_LineInterpolatePoint(l.shape, $2)) * 100.0,
               0,
               $3,
-              1,
+              CASE WHEN COALESCE(l.internalnodeid, 0) = 0 THEN 13 END,
               COALESCE(n1.fileid, l.fileid), n1.externalcodeid, n1.externalsignid, l.internalnodeid
             FROM linesobj l
             LEFT JOIN nodes n1 ON n1.id = l.nodeid1
@@ -956,6 +981,7 @@ async def _split_line_body(
             """,
             line_id, split_fraction, now,
         )
+        await name_new_nodes(conn, [new_node_id])
 
     # 3. Create the new line from new_node_id to old nodeid2
     new_line_id = await conn.fetchval(

@@ -40,16 +40,20 @@ KIND_KEYS: dict[str, dict[str, str]] = {
     "genconsumer": {"generalizedconsumers": "nodeid"},
     "source": {"heatsources": "nodeid"},
     "pumpstation": {"pumpstations": "nodeid"},
+    "setpress": {"setpressnodes": "nodeid"},
+    "refill": {"refillnodes": "nodeid"},
     **{k: {t.lower(): "lineid", "linesobj": "id"} for k, t in ce.EQUIPMENT_KINDS.items()},
 }
 LINE_KEY = KIND_KEYS["line"]
 KIND_LABEL = {"line": "Свойства участков", "node": "Свойства узлов", "consumer": "Свойства потребителей",
               "genconsumer": "Свойства обобщённых потребителей", "source": "Свойства источников",
               "pumpstation": "Свойства насосных станций",
+              "setpress": "Свойства узлов с заданным напором", "refill": "Свойства узлов подпитки",
               **{k: f"Свойства: {v.lower()}" for k, v in ce.EQUIPMENT_LABELS.items()}}
 # таблица строки-итога GROUP_SET / GROUP_UNDO
 KIND_TABLE = {"line": "heatpipesections", "node": "nodes", "consumer": "realconsumers",
               "genconsumer": "generalizedconsumers", "source": "heatsources", "pumpstation": "pumpstations",
+              "setpress": "setpressnodes", "refill": "refillnodes",
               **{k: t.lower() for k, t in ce.EQUIPMENT_KINDS.items()}}
 # объекты в узле: «Среди выбранных узлов нет …»
 OWNER_NOUN = {"consumer": "потребителей", "genconsumer": "обобщённых потребителей", "source": "источников",

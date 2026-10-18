@@ -48,6 +48,8 @@ class SaveBody(BaseModel):
 
 
 Kind = Literal["line", "node", "consumer", "genconsumer", "source", "pumpstation",
+               # дополнения узла: заданный напор, подпитка
+               "setpress", "refill",
                # оборудование — card_edit.EQUIPMENT_KINDS
                "damper", "regarmature", "reversevalve", "pump", "pressregulator", "consregulator",
                "pressdropregulator", "bypass", "elevator", "heatexchanger"]

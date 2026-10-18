@@ -11,6 +11,13 @@ from auth import AuthUser, require_mutations_enabled, require_roles
 from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
+from database.node_types import (
+    NODE_FLAG_LABELS,
+    NODE_TYPE_LABELS,
+    change_node_type,
+    node_cards,
+    set_node_flag,
+)
 from database.topology import (
     TopologyConflictError,
     TopologyDependencyError,
@@ -42,6 +49,9 @@ router = APIRouter(tags=["topology"])
 # GET /topology/versions или из ответа dry-run; допускается и archivechangedate из
 # карточки объекта. None — не проверять (совместимость со старыми клиентами).
 VersionField = Optional[str]
+# Расчётный тип узла (database/node_types): US — узел, PR — потребитель, PO — обобщённый
+# потребитель, IS — источник, HS — насосная станция, US2 — узел соединения
+NodeTypeField = Literal["US", "PR", "PO", "IS", "HS", "US2"]
 
 
 class MoveNodeParams(BaseModel):
@@ -57,6 +67,21 @@ class CreateNodeParams(BaseModel):
     fileid: Optional[int] = None
     near_node_id: Optional[int] = None
     near_line_id: Optional[int] = None
+    node_type: NodeTypeField = "US"
+
+
+class NodeTypeRequest(BaseModel):
+    node_type: NodeTypeField
+    dry_run: bool = False
+    expected_version: VersionField = None
+
+
+class NodeFlagRequest(BaseModel):
+    # setpress — узел с заданным напором (setPressNodes), refill — узел подпитки (refillNodes)
+    flag: Literal["setpress", "refill"]
+    on: bool
+    dry_run: bool = False
+    expected_version: VersionField = None
 
 
 class CreateLineParams(BaseModel):
@@ -107,6 +132,8 @@ class ChainPoint(BaseModel):
     line_id: Optional[int] = None
     lng: Optional[float] = None
     lat: Optional[float] = None
+    # тип нового узла (только kind=new): карточка типа создаётся в той же операции
+    node_type: Optional[NodeTypeField] = None
 
 
 class ChainRequest(BaseModel):
@@ -324,10 +351,74 @@ async def create_node_endpoint(
             fileid=params.fileid,
             near_node_id=params.near_node_id,
             near_line_id=params.near_line_id,
+            node_type=params.node_type,
         )
         return {"success": True, **result}
     except Exception as e:
         raise _topology_http_error(e, "creating node")
+
+
+@router.get("/api/v1/topology/node/{id}/type")
+async def api_node_type(
+    id: int,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Расчётный тип узла, его карточки и дополнения (заданный напор, подпитка), версия узла."""
+    try:
+        async with acquire_conn() as conn:
+            exists = await conn.fetchval("SELECT 1 FROM nodes WHERE id = $1 AND COALESCE(removed, 0) = 0", id)
+            if not exists:
+                raise HTTPException(status_code=404, detail=f"Узел {id} не найден или удалён")
+            info = await node_cards(conn, id)
+            inner = await conn.fetchval(
+                "SELECT count(*) FROM nodes WHERE internalnodeid = $1 AND COALESCE(removed, 0) = 0", id,
+            )
+        versions = await get_versions([id], [])
+        return {
+            "node_id": id,
+            **info,
+            "label": NODE_TYPE_LABELS[info["type"]],
+            "inner_nodes": int(inner or 0),
+            "types": [{"value": k, "title": v} for k, v in NODE_TYPE_LABELS.items()],
+            "flag_labels": NODE_FLAG_LABELS,
+            "version": (versions.get("nodes") or {}).get(str(id), {}).get("version"),
+        }
+    except Exception as e:
+        raise _topology_http_error(e, "reading node type")
+
+
+@router.post("/api/v1/topology/node/{id}/type")
+async def api_change_node_type(
+    id: int,
+    req: NodeTypeRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+):
+    """Смена расчётного типа узла (как «Изменить тип объекта» десктопа); dry_run — что удалится."""
+    if not req.dry_run:
+        require_topology_mutations_enabled()
+    try:
+        return await change_node_type(
+            id, req.node_type, dry_run=req.dry_run, expected_version=req.expected_version, actor=user.username,
+        )
+    except Exception as e:
+        raise _topology_http_error(e, "changing node type")
+
+
+@router.post("/api/v1/topology/node/{id}/flag")
+async def api_set_node_flag(
+    id: int,
+    req: NodeFlagRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+):
+    """Заданный напор / подпитка узла: добавить (on) или удалить."""
+    if not req.dry_run:
+        require_topology_mutations_enabled()
+    try:
+        return await set_node_flag(
+            id, req.flag, req.on, dry_run=req.dry_run, expected_version=req.expected_version, actor=user.username,
+        )
+    except Exception as e:
+        raise _topology_http_error(e, "setting node flag")
 
 
 @router.delete("/topology/node/{id}")

@@ -37,7 +37,9 @@ from database.topology import (
     _split_line_body,
     find_pair_line,
     ground_length_sql,
+    name_new_nodes,
 )
+from database.node_types import check_node_type, insert_node_card
 from database.topology_transfer import SPLIT_TRANSFER_RULES
 
 # Новая точка ближе этого к узлу — это тот же узел (иначе «почти совпадающие» узлы рвут сеть).
@@ -122,6 +124,10 @@ def normalize_points(points: list[dict]) -> list[dict]:
                 raise ValueError(f"Точка {i + 1}: координаты вне диапазона")
             if kind == "tap" and (not isinstance(p.get("line_id"), int) or p["line_id"] <= 0):
                 raise ValueError(f"Точка {i + 1}: для врезки нужен line_id")
+        if p.get("node_type") not in (None, "", "US"):
+            if kind != "new":
+                raise ValueError(f"Точка {i + 1}: тип узла задаётся только новому узлу")
+            p["node_type"] = check_node_type(p["node_type"])
         p["index"] = i
         prev = result[-1] if result else None
         if prev is not None and _same_point(prev, p):
@@ -496,13 +502,18 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
             """
             INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
                                fileid, externalcodeid, externalsignid, internalnodeid)
-            VALUES (ST_SetSRID(ST_MakePoint($1, $2), 9998), $1 * 100.0, -$2 * 100.0, 0, $3, 1,
+            VALUES (ST_SetSRID(ST_MakePoint($1, $2), 9998), $1 * 100.0, -$2 * 100.0, 0, $3,
+                    CASE WHEN COALESCE($7::int, 0) = 0 THEN 13 END,
                     $4, $5, $6, $7)
             RETURNING id
             """,
             p["x"], p["y"], now, ctx_fileid, code, NODE_SIGN_BY_MODE[pipe_mode], ctx_inner,
         )
         op.journal.created("nodes", new_id)
+        await name_new_nodes(conn, [new_id])
+        node_type = check_node_type(p.get("node_type") or "US")
+        if node_type != "US":
+            await insert_node_card(conn, op.journal, new_id, node_type)
         point_node[i] = new_id
         created_nodes.append(new_id)
 

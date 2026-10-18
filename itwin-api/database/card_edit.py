@@ -67,6 +67,9 @@ EDIT_TABLES: dict[str, str] = {
     "generalizedconsumers": "Обобщённый потребитель",
     "heatsources": "Источник тепла",
     "pumpstations": "Насосная станция",
+    # дополнения узла (меню узла десктопа: «Узел с заданным напором», «Узел подпитки»)
+    "setpressnodes": "Узел с заданным напором",
+    "refillnodes": "Узел подпитки",
     **{t.lower(): EQUIPMENT_LABELS[k] for k, t in EQUIPMENT_KINDS.items()},
 }
 # Вид карточки → таблицы, правимые в ней (поля узла в карточке потребителя — только чтение)
@@ -77,6 +80,8 @@ CARD_TABLES: dict[str, frozenset[str]] = {
     "genconsumer": frozenset({"generalizedconsumers"}),
     "source": frozenset({"heatsources"}),
     "pumpstation": frozenset({"pumpstations"}),
+    "setpress": frozenset({"setpressnodes"}),
+    "refill": frozenset({"refillnodes"}),
     # оборудование: своя таблица и линия (организация, гидравлическое сопротивление), как у участка
     **{k: frozenset({t.lower(), "linesobj"}) for k, t in EQUIPMENT_KINDS.items()},
 }
@@ -87,6 +92,8 @@ NODE_CARD_TABLE: dict[str, str] = {
     "genconsumer": "generalizedConsumers",
     "source": "heatSources",
     "pumpstation": "pumpStations",
+    "setpress": "setPressNodes",
+    "refill": "refillNodes",
 }
 # Функции полей, которые не правятся сразу у нескольких объектов и не идут в шаблон:
 # смена схемы потребителя переносит нагрузки (fun_schemeNum десктопа) — только в карточке одного
