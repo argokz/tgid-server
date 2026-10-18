@@ -614,13 +614,16 @@ async def snap_data(
         )
         line_rows = await conn.fetch(
             f"""
-            SELECT l.id, l.nodeid1, l.nodeid2, l.externalsignlineid, l.fileid,
+            SELECT l.id, l.nodeid1, l.nodeid2, l.externalsignlineid,
+                   -- у половины участков fileid пуст: фрагмент — по начальному узлу, как у врезки
+                   COALESCE(l.fileid, n1.fileid) AS fileid,
                    EXISTS (SELECT 1 FROM heatpipesections h WHERE h.lineid = l.id) AS pipe,
                    ST_AsGeoJSON(ST_Transform(l.shape, 4326), 8) AS geojson
             FROM linesobj l
+            LEFT JOIN nodes n1 ON n1.id = l.nodeid1
             WHERE COALESCE(l.removed, 0) = 0 AND l.internalnodeid IS NULL AND l.shape IS NOT NULL
               AND l.shape && {env}
-              AND ($5::int[] IS NULL OR l.fileid = ANY($5::int[]))
+              AND ($5::int[] IS NULL OR COALESCE(l.fileid, n1.fileid) = ANY($5::int[]))
             ORDER BY l.id LIMIT $6
             """,
             min_lng, min_lat, max_lng, max_lat, fragments, limit + 1,
