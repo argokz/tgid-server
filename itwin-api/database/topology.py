@@ -81,6 +81,20 @@ PASSPORT_TEMPLATE_COLUMNS: tuple[str, ...] = (
 )
 
 
+# Длина участка в метрах на земле. SRID 9998 — местная метрическая СК (Алматы, Астана):
+# плоская ST_Length, как в десктопе. В Шатуре под 9998 лежит Web Mercator: плоская длина там
+# завышена примерно в 1,7 раза (широта 55,6°), поэтому — длина по эллипсоиду.
+MERCATOR_9998_SQL = "(SELECT proj4text LIKE '+proj=merc%' FROM spatial_ref_sys WHERE srid = 9998)"
+
+
+def ground_length_sql(geom: str) -> str:
+    """SQL-выражение длины геометрии в SRID 9998, м на земле (см. MERCATOR_9998_SQL)."""
+    return (
+        f"(CASE WHEN {MERCATOR_9998_SQL} THEN ST_Length(ST_Transform({geom}, 4326)::geography) "
+        f"ELSE ST_Length({geom}) END)"
+    )
+
+
 class TopologyDependencyError(Exception):
     """Операция заблокирована зависимыми объектами (для ответа 409 с отчётом)."""
 
@@ -419,9 +433,9 @@ async def move_node(
         )
         # Длина паспорта труб следует за геометрией — иначе расчёт получит устаревшую длину
         affected = await conn.fetch(
-            """
+            f"""
             UPDATE heatpipesections h
-            SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
+            SET pipesectlength = round({ground_length_sql("l.shape")}::numeric, 2)
             FROM linesobj l
             WHERE h.lineid = l.id
               AND (l.nodeid1 = $1 OR l.nodeid2 = $1)
@@ -647,7 +661,7 @@ async def _create_line_passport(conn, line_id: int, nodeid1: int, nodeid2: int) 
         line_id, nodeid1, nodeid2, NEW_NODE_REFERENCE_RADIUS_M,
     )
     # длина паспорта — до сантиметров, как в desktop (QA F55)
-    length_sql = "round(ST_Length((SELECT shape FROM linesobj WHERE id = $1))::numeric, 2)"
+    length_sql = f"round({ground_length_sql('(SELECT shape FROM linesobj WHERE id = $1)')}::numeric, 2)"
     if template is None:
         await conn.execute(
             f"INSERT INTO heatpipesections (lineid, pipesectlength) VALUES ($1, {length_sql})", line_id,
@@ -782,11 +796,11 @@ async def get_line_geometry(line_id: int) -> dict:
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT l.id, l.nodeid1, l.nodeid2, COALESCE(l.removed, 0) AS removed,
                    l.archivechangedate, l.xmin::text AS xmin,
                    ST_AsGeoJSON(ST_Transform(l.shape, 4326), 9) AS geojson,
-                   ST_Length(l.shape) AS length,
+                   {ground_length_sql("l.shape")} AS length,
                    ST_AsGeoJSON(ST_Transform(n1.shape, 4326), 9) AS n1,
                    ST_AsGeoJSON(ST_Transform(n2.shape, 4326), 9) AS n2
             FROM linesobj l
@@ -1007,7 +1021,7 @@ async def _split_line_body(
     # Алиас hps, а не h: у heatpipesections есть колонка «h», и to_jsonb(h) взял бы её
     # (число), а не строку — «populate_composite с массивом нельзя».
     await conn.execute(
-        """
+        f"""
         INSERT INTO heatpipesections
         SELECT (jsonb_populate_record(
           NULL::heatpipesections,
@@ -1015,7 +1029,7 @@ async def _split_line_body(
             'id', nextval('heatpipesections_id_seq'),
             -- явный ::int: в jsonb_build_object аргумент имеет тип "any"
             'lineid', $2::int,
-            'pipesectlength', round(ST_Length((SELECT shape FROM linesobj WHERE id = $2))::numeric, 2)
+            'pipesectlength', round({ground_length_sql('(SELECT shape FROM linesobj WHERE id = $2)')}::numeric, 2)
           )
         )).*
         FROM heatpipesections hps
@@ -1024,9 +1038,9 @@ async def _split_line_body(
         line_id, new_line_id,
     )
     await conn.execute(
-        """
+        f"""
         UPDATE heatpipesections
-        SET pipesectlength = round(ST_Length((SELECT shape FROM linesobj WHERE id = $1))::numeric, 2)
+        SET pipesectlength = round({ground_length_sql('(SELECT shape FROM linesobj WHERE id = $1)')}::numeric, 2)
         WHERE lineid = $1
         """,
         line_id,
@@ -1094,10 +1108,10 @@ async def find_pair_line(conn, line_id: int, candidate: Optional[int] = None) ->
 
 async def _reverse_report(conn, line_id: int) -> dict:
     row = await conn.fetchrow(
-        """
+        f"""
         SELECT nodeid1, nodeid2, externalsignlineid,
                CASE WHEN shape IS NOT NULL THEN ST_NumPoints(shape) END AS points,
-               ST_Length(shape) AS length
+               {ground_length_sql("shape")} AS length
         FROM linesobj WHERE id = $1
         """,
         line_id,
@@ -1367,9 +1381,9 @@ async def merge_nodes(
         )
         if relinked:
             await conn.execute(
-                """
+                f"""
                 UPDATE heatpipesections h
-                SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
+                SET pipesectlength = round({ground_length_sql("l.shape")}::numeric, 2)
                 FROM linesobj l
                 WHERE h.lineid = l.id AND l.id = ANY($1::int[]) AND l.shape IS NOT NULL
                 """,
@@ -1446,7 +1460,7 @@ async def update_line_geometry(
 
         await _capture_lines_with_passports(conn, op, [line_id])
         new_len = await conn.fetchval(
-            """
+            f"""
             UPDATE linesobj l
             SET shape = ST_SetPoint(
                     ST_SetPoint(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), 9998), 0, n1.shape),
@@ -1454,7 +1468,7 @@ async def update_line_geometry(
                 archivechangedate = $3
             FROM nodes n1, nodes n2
             WHERE l.id = $1 AND n1.id = l.nodeid1 AND n2.id = l.nodeid2
-            RETURNING round(ST_Length(l.shape)::numeric, 2)::float8 as new_len
+            RETURNING round({ground_length_sql("l.shape")}::numeric, 2)::float8 as new_len
             """,
             line_id, geojson_geom, datetime.now(),
         )

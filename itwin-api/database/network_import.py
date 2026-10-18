@@ -45,6 +45,7 @@ from database.topology import (
     _create_line_passport,
     _new_node_reference,
     _run,
+    ground_length_sql,
 )
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -620,12 +621,12 @@ async def _import_lines(conn, op, items: list[_Item], params: dict, report: dict
         try:
             async with conn.transaction():
                 g = await conn.fetchrow(
-                    """
+                    f"""
                     WITH src AS (SELECT ST_Force2D(ST_SetSRID(ST_GeomFromText($1), $2)) AS g),
                          w AS (SELECT ST_Transform(g, 4326) AS g FROM src)
                     SELECT ST_X(ST_StartPoint(w.g)) AS x1, ST_Y(ST_StartPoint(w.g)) AS y1,
                            ST_X(ST_EndPoint(w.g)) AS x2, ST_Y(ST_EndPoint(w.g)) AS y2,
-                           ST_Length(ST_Transform(w.g, 9998)) AS len
+                           {ground_length_sql('ST_Transform(w.g, 9998)')} AS len
                     FROM w
                     """,
                     it.wkt, it.srid,
@@ -817,8 +818,8 @@ async def _import_coords(conn, op, items: list[_Item], params: dict, report: dic
         recalculated = 0
         if recalc:
             recalculated = len(await conn.fetch(
-                """
-                UPDATE heatpipesections h SET pipesectlength = round(ST_Length(l.shape)::numeric, 2)
+                f"""
+                UPDATE heatpipesections h SET pipesectlength = round({ground_length_sql('l.shape')}::numeric, 2)
                 FROM linesobj l
                 WHERE h.lineid = l.id AND (l.nodeid1 = $1 OR l.nodeid2 = $1)
                   AND l.shape IS NOT NULL AND COALESCE(l.removed, 0) = 0

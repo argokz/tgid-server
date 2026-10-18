@@ -16,7 +16,7 @@
 Проверки до записи (dry_run возвращает их списком issues; ошибки блокируют сохранение):
 новая точка почти в существующем узле, врезка у конца трубы, участок короче
 MIN_LINE_LENGTH_M, самопересечение, дубль участка, разные фрагменты/схемы — ошибки;
-пересечение трубы без узла — предупреждение. Длина — ST_Length в SRID 9998, как везде.
+пересечение трубы без узла — предупреждение. Длина — в SRID 9998, как везде (ground_length_sql).
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from database.topology import (
     _run,
     _split_line_body,
     find_pair_line,
+    ground_length_sql,
 )
 from database.topology_transfer import SPLIT_TRANSFER_RULES
 
@@ -366,7 +367,8 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         xs, ys = [p["x"] for p in part], [p["y"] for p in part]
         signs = line_signs(pipe_mode, end_sign(pts[b]))
         geo = await conn.fetchrow(
-            f"SELECT ST_Length(g) AS length, ST_IsSimple(g) AS simple FROM (SELECT {_SEGMENT_GEOM} AS g) s",
+            f"SELECT {ground_length_sql('g')} AS length, ST_IsSimple(g) AS simple "
+            f"FROM (SELECT {_SEGMENT_GEOM} AS g) s",
             xs, ys,
         )
         length = float(geo["length"] or 0.0)
@@ -525,7 +527,8 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
             passport = await _create_line_passport(conn, line_id, n1, n2)
             await op.journal.created_where(conn, "heatpipesections", "_r.lineid = $1", line_id)
             length = await conn.fetchval(
-                "SELECT round(ST_Length(shape)::numeric, 2)::float8 FROM linesobj WHERE id = $1", line_id,
+                f"SELECT round({ground_length_sql('shape')}::numeric, 2)::float8 FROM linesobj WHERE id = $1",
+                line_id,
             )
             created_lines.append(line_id)
             lines_report.append({
