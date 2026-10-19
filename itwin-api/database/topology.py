@@ -124,6 +124,15 @@ class TopologyConflictError(Exception):
         self.conflicts = conflicts
 
 
+class FragmentRequiredError(ValueError):
+    """Фрагмент нового объекта не определить однозначно: рядом узлы нескольких фрагментов
+    (копии сети по годам/сезонам лежат друг на друге) — клиент должен указать fileid."""
+
+    def __init__(self, message: str, candidates: list[int]):
+        super().__init__(message)
+        self.candidates = candidates
+
+
 class TopologyNothingToUndo(Exception):
     """У пользователя нет неотменённых операций (404)."""
 
@@ -532,7 +541,13 @@ async def _new_node_reference(
       3. ближайший активный узел основной сети в радиусе NEW_NODE_REFERENCE_RADIUS_M
          (при явном fileid — ближайший узел этого фрагмента).
     Явный fileid имеет приоритет; код тогда — от узла этого фрагмента или первый код фрагмента.
+    Без fileid и образца, когда рядом узлы нескольких фрагментов, фрагмент не угадывается —
+    FragmentRequiredError (фрагменты-копии сети лежат друг на друге, «ближайший» случаен).
     """
+    if fileid is not None:
+        exists = await conn.fetchval("SELECT 1 FROM fragments WHERE id = $1", fileid)
+        if not exists:
+            raise ValueError(f"Фрагмент {fileid} не найден")
     ref = None
     source = None
     if near_node_id is not None:
@@ -560,27 +575,42 @@ async def _new_node_reference(
             raise ValueError(f"Участок-образец {near_line_id} не найден или удалён")
         source = "line"
     if ref is None or (fileid is not None and ref["fileid"] != fileid):
-        nearest = await conn.fetchrow(
+        # ближайший узел каждого фрагмента в радиусе (без fileid — чтобы заметить неоднозначность)
+        nearest = await conn.fetch(
             """
             WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998) AS g)
-            SELECT n.id, n.fileid, n.externalcodeid, n.externalsignid, n.internalnodeid,
-                   ST_Distance(n.shape, p.g) AS distance
-            FROM nodes n, p
-            WHERE COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL AND n.fileid IS NOT NULL
-              AND n.internalnodeid IS NULL
-              AND ($4::int IS NULL OR n.fileid = $4)
-              AND ST_DWithin(n.shape, p.g, $3)
-            ORDER BY n.shape <-> p.g
-            LIMIT 1
+            SELECT * FROM (
+              SELECT DISTINCT ON (n.fileid) n.id, n.fileid, n.externalcodeid, n.externalsignid,
+                     n.internalnodeid, ST_Distance(n.shape, p.g) AS distance
+              FROM nodes n, p
+              WHERE COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL AND n.fileid IS NOT NULL
+                AND n.internalnodeid IS NULL
+                AND ($4::int IS NULL OR n.fileid = $4)
+                -- узлы, оставшиеся от удалённых фрагментов, не образец
+                AND EXISTS (SELECT 1 FROM fragments fr WHERE fr.id = n.fileid)
+                AND ST_DWithin(n.shape, p.g, $3)
+              ORDER BY n.fileid, n.shape <-> p.g
+            ) f
+            ORDER BY distance
             """,
             lng, lat, NEW_NODE_REFERENCE_RADIUS_M, fileid,
         )
-        if nearest is not None:
-            ref, source = nearest, "nearest_node"
+        if fileid is None and len(nearest) > 1:
+            ids = [r["fileid"] for r in nearest]
+            raise FragmentRequiredError(
+                "Рядом узлы нескольких фрагментов ("
+                + ", ".join(str(i) for i in ids)
+                + ") — укажите фрагмент, в котором создать объект",
+                ids,
+            )
+        if nearest:
+            ref, source = nearest[0], "nearest_node"
     if fileid is not None and (ref is None or ref["fileid"] != fileid):
         code = await conn.fetchval(
             "SELECT min(id) FROM externalcodes WHERE fileid = $1 AND COALESCE(removed, 0) = 0", fileid,
         )
+        if code is None:
+            raise ValueError(f"У фрагмента {fileid} нет кода (externalcodes) — узел не попадёт в расчёт")
         return {"fileid": fileid, "externalcodeid": code, "externalsignid": 1,
                 "internalnodeid": None, "reference_node_id": None, "source": "fileid"}
     if ref is None or ref["fileid"] is None:

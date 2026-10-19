@@ -28,6 +28,7 @@ from typing import Any, Optional
 from database.connect import get_pool
 from database.outage_simulation import invalidate_outage_cache
 from database.topology import (
+    FragmentRequiredError,
     TopologyDependencyError,
     _capture_lines_with_passports,
     _create_line_passport,
@@ -285,9 +286,13 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
             ))
     else:
         first = pts[0]
-        ref = await _new_node_reference(conn, first["lng"], first["lat"], fileid, None, None)
-        ctx_fileid, ctx_inner = ref["fileid"], ref["internalnodeid"]
-    if ctx_fileid is None:
+        try:
+            ref = await _new_node_reference(conn, first["lng"], first["lat"], fileid, None, None)
+            ctx_fileid, ctx_inner = ref["fileid"], ref["internalnodeid"]
+        except FragmentRequiredError as e:
+            issues.append(_issue("error", "fragment_required", str(e)))
+            ctx_fileid, ctx_inner = None, None
+    if ctx_fileid is None and not any(i["code"] == "fragment_required" for i in issues):
         issues.append(_issue("error", "no_fragment", "Не удалось определить фрагмент цепочки"))
     # код (externalcodeid) новых узлов и узлов врезки — от узла того же фрагмента
     code = next((r["externalcodeid"] for r in nodes.values()

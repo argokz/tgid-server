@@ -28,6 +28,7 @@ from database.node_types import (
     set_node_flag,
 )
 from database.topology import (
+    FragmentRequiredError,
     TopologyConflictError,
     TopologyDependencyError,
     TopologyNothingToUndo,
@@ -274,6 +275,11 @@ def _topology_http_error(exc: Exception, what: str) -> HTTPException:
         return HTTPException(
             status_code=409,
             detail={"code": "blocked", "message": str(exc), "blockers": exc.blockers},
+        )
+    if isinstance(exc, FragmentRequiredError):
+        return HTTPException(
+            status_code=409,
+            detail={"code": "fragment_required", "message": str(exc), "candidates": exc.candidates},
         )
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))

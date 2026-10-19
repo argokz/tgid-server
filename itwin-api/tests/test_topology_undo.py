@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from database.topology import (
+    FragmentRequiredError,
     TopologyConflictError,
     TopologyDependencyError,
     TopologyNothingToUndo,
@@ -174,7 +175,7 @@ def test_undo_nothing_to_undo():
 def test_create_node_takes_fragment_code_and_sign_from_nearest_node():
     ref = {"id": 40, "fileid": 41, "externalcodeid": 883, "externalsignid": 1,
            "internalnodeid": None, "distance": 12.0}
-    conn = FakeConn([("ORDER BY n.shape <-> p.g", ref), ("INSERT INTO nodes", 900)])
+    conn = FakeConn([("ORDER BY n.fileid, n.shape <-> p.g", [ref]), ("INSERT INTO nodes", 900)])
     res, *_ = _run(lambda: create_node(76.9, 43.2, actor="u"), conn)
     assert res["id"] == 900 and res["fileid"] == 41 and res["reference"] == {"source": "nearest_node", "node_id": 40}
     insert = [c for c in conn.calls if "INSERT INTO nodes" in c[1]][0]
@@ -188,9 +189,40 @@ def test_create_node_without_reference_is_rejected():
 
 
 def test_create_node_explicit_fileid_uses_fragment_code():
-    conn = FakeConn([("FROM externalcodes", 1119), ("INSERT INTO nodes", 901)])
+    conn = FakeConn([("FROM fragments WHERE id = $1", 1), ("FROM externalcodes", 1119), ("INSERT INTO nodes", 901)])
     res, *_ = _run(lambda: create_node(76.9, 43.2, fileid=95), conn)
     assert (res["fileid"], res["externalcodeid"], res["reference"]["source"]) == (95, 1119, "fileid")
+    # ближайший узел ищется только в этом фрагменте
+    near = [c for c in conn.calls if "ORDER BY n.fileid, n.shape <-> p.g" in c[1]][0]
+    assert near[2][3] == 95
+
+
+def test_create_node_explicit_fileid_takes_nearest_node_of_that_fragment():
+    ref = {"id": 41, "fileid": 95, "externalcodeid": 7, "externalsignid": 2,
+           "internalnodeid": None, "distance": 3.0}
+    conn = FakeConn([("FROM fragments WHERE id = $1", 1), ("ORDER BY n.fileid, n.shape <-> p.g", [ref]),
+                     ("INSERT INTO nodes", 903)])
+    res, *_ = _run(lambda: create_node(76.9, 43.2, fileid=95), conn)
+    assert (res["fileid"], res["externalsignid"], res["reference"]["source"]) == (95, 2, "nearest_node")
+
+
+def test_create_node_unknown_or_codeless_fragment_is_rejected():
+    with pytest.raises(ValueError, match="Фрагмент 95 не найден"):
+        _run(lambda: create_node(76.9, 43.2, fileid=95), FakeConn([("FROM fragments WHERE id = $1", None)]))
+    with pytest.raises(ValueError, match="нет кода"):
+        _run(lambda: create_node(76.9, 43.2, fileid=95),
+             FakeConn([("FROM fragments WHERE id = $1", 1), ("FROM externalcodes", None)]))
+
+
+def test_create_node_near_several_fragments_requires_fileid():
+    """Копии сети разных фрагментов лежат друг на друге — «ближайший» фрагмент не угадывается."""
+    rows = [{"id": 40 + f, "fileid": f, "externalcodeid": 1, "externalsignid": 1,
+             "internalnodeid": None, "distance": 5.0} for f in (91, 93)]
+    conn = FakeConn([("ORDER BY n.fileid, n.shape <-> p.g", rows)])
+    with pytest.raises(FragmentRequiredError) as exc:
+        _run(lambda: create_node(76.9, 43.2), conn)
+    assert exc.value.candidates == [91, 93]
+    assert not [c for c in conn.calls if "INSERT INTO nodes" in c[1]]
 
 
 def test_create_node_from_near_line_uses_its_start_node():

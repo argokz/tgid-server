@@ -526,6 +526,17 @@ _TWO_NODES = [{"kind": "node", "node_id": 1}, {"kind": "vertex", "lng": 76.9, "l
               {"kind": "node", "node_id": 2}]
 
 
+def test_chain_from_nowhere_near_several_fragments_needs_fragment():
+    """Трасса без узлов сети, рядом копии разных фрагментов, фрагмент не указан — ошибка проверки."""
+    rows = [{"id": 40 + f, "fileid": f, "externalcodeid": 1, "externalsignid": 1,
+             "internalnodeid": None, "distance": 5.0} for f in (91, 93)]
+    pts = [{"kind": "new", "lng": 76.9, "lat": 43.2}, {"kind": "new", "lng": 76.901, "lat": 43.2}]
+    conn = _chain_conn(nodes={}, extra=[("ORDER BY n.fileid, n.shape <-> p.g", rows)])
+    res = _run_cad(lambda: create_chain(pts, dry_run=True), conn)
+    codes = [i["code"] for i in res["issues"] if i["level"] == "error"]
+    assert "fragment_required" in codes and "no_fragment" not in codes
+
+
 def test_chain_common_creates_one_line_with_sign_1_through_vertices():
     conn = _chain_conn()
     res = _run_cad(lambda: create_chain(_TWO_NODES, actor="u"), conn)
