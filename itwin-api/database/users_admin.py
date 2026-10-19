@@ -21,13 +21,10 @@ import cities as city_access
 from auth import ROLE_ORDER, hash_password, is_master_login, master_enabled, resolve_user_role, verify_password
 from database.connect import async_session
 from database.models import User
+import permissions as permissions_model
 
-ROLE_DESCRIPTIONS: dict[str, str] = {
-    "viewer": "Просмотр карты, журналов и результатов",
-    "calculator": "Просмотр + запуск расчётов (режимщик)",
-    "editor": "Расчёты + правка журналов и атрибутов",
-    "admin": "Всё, включая топологию и управление пользователями",
-}
+# Подписи и шаблоны прав ролей — permissions.py (роль-шаблон + отличия users.permissions)
+ROLE_DESCRIPTIONS = permissions_model.ROLE_DESCRIPTIONS
 
 
 class UserAdminError(Exception):
@@ -51,6 +48,11 @@ def user_to_dict(row: User) -> dict[str, Any]:
         "is_active": bool(row.is_active),
         "is_admin": bool(row.is_admin),
         "cities": city_access.parse_stored(getattr(row, "cities", None)),
+        # отличия прав от шаблона роли и действующие права (шаблон + отличия)
+        "permissions": permissions_model.parse_overrides(getattr(row, "permissions", None)),
+        "effective": permissions_model.effective(
+            resolve_user_role(row.role, row.is_admin), getattr(row, "permissions", None) or ""
+        ).to_dict(),
     }
 
 
@@ -65,10 +67,19 @@ def _cities_value(codes: Optional[list[str]]) -> Optional[str]:
 
 
 def roles_catalog() -> list[dict[str, Any]]:
+    """Роли-шаблоны: подпись, описание, уровень и права шаблона (permissions.ROLE_PRESETS)."""
     return [
-        {"role": role, "level": level, "description": ROLE_DESCRIPTIONS.get(role, "")}
-        for role, level in sorted(ROLE_ORDER.items(), key=lambda item: item[1])
+        {**item, "level": ROLE_ORDER.get(item["role"], 0)}
+        for item in permissions_model.catalog()["roles"]
     ]
+
+
+def _permissions_value(role: str, permissions: Optional[dict[str, Any]]) -> Optional[str]:
+    """Права из админки: отличия от шаблона роли {"matrix", "general"} → JSON для users.permissions."""
+    if not permissions:
+        return None
+    clean = permissions_model.parse_overrides(permissions)
+    return permissions_model.overrides_json(clean)
 
 
 async def list_users() -> list[dict[str, Any]]:
@@ -87,7 +98,8 @@ async def _other_active_admins(session, exclude_id: int) -> int:
 
 
 async def create_user(
-    username: str, password: str, role: str, cities: Optional[list[str]] = None
+    username: str, password: str, role: str, cities: Optional[list[str]] = None,
+    permissions: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Новый пользователь; cities=None — доступ ко всем городам."""
     if role not in ROLE_ORDER:
@@ -109,6 +121,7 @@ async def create_user(
             is_admin=role == "admin",
             role=role,
             cities=stored_cities,
+            permissions=_permissions_value(role, permissions),
         )
         session.add(row)
         await session.commit()
@@ -123,6 +136,7 @@ async def update_user(
     role: Optional[str] = None,
     is_active: Optional[bool] = None,
     cities: Any = _UNSET,
+    permissions: Any = _UNSET,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Смена роли, блокировка и/или города (cities=None — все города). Возвращает (было, стало).
 
@@ -155,6 +169,9 @@ async def update_user(
             if is_self and not city_access.allowed(city_access.parse_stored(stored_cities)):
                 raise UserAdminError(409, "Нельзя закрыть себе доступ к городу, в котором вы работаете")
             row.cities = stored_cities
+        if permissions is not _UNSET:
+            # None / {} — права роли как есть
+            row.permissions = _permissions_value(new_role, permissions)
         await session.commit()
         await session.refresh(row)
         return before, user_to_dict(row)

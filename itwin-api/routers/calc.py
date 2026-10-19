@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database.calculation_admin import (
     CalculationReferencedError,
     delete_calculation,
@@ -61,7 +61,7 @@ class SetyCmdParams(BaseModel):
 @router.post("/api/v1/run-sety-cmd")
 async def run_sety_cmd(
     body: SetyCmdParams,
-    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+    user: Annotated[AuthUser, Depends(require_permission("calc_run"))],
 ):
     try:
         tokens = validate_sety_params(body.params)
@@ -134,7 +134,7 @@ async def api_calculation_temperature_range(
 @router.post("/api/v1/calculations/run")
 async def run_sety_mode(
     body: SetyRunRequest,
-    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+    user: Annotated[AuthUser, Depends(require_permission("calc_run"))],
 ):
     """Расчёт в режиме десктопа: плановый / аварийный (фактический), один фрагмент или по списку.
 
@@ -219,7 +219,7 @@ async def api_calculations_list(
 @router.delete("/api/v1/calculations/{calculation_id}")
 async def api_calculation_delete(
     calculation_id: int,
-    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+    user: Annotated[AuthUser, Depends(require_permission("calc_save"))],
 ):
     """Удаляет расчёт и его строки во всех *_out (одна транзакция).
 

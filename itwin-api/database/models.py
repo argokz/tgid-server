@@ -10,10 +10,12 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
-    # P0 RBAC: viewer | calculator | editor | admin
+    # Роль-шаблон прав: viewer | calculator (режимщик) | operator | editor | admin
     role = Column(String, nullable=False, default="viewer")
     # Города, к которым есть доступ (коды через запятую, cities.py); NULL — все
     cities = Column(Text, nullable=True)
+    # Отличия прав от шаблона роли (permissions.py), JSON; NULL — права роли
+    permissions = Column(Text, nullable=True)
 
 class UserPermission(Base):
     __tablename__ = "user_permissions"

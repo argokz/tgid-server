@@ -31,7 +31,9 @@ try:
 except ImportError:  # pragma: no cover
     CryptContext = None  # type: ignore
 
-ROLE_ORDER = {"viewer": 1, "calculator": 2, "editor": 3, "admin": 4}
+# Уровни ролей для прежних проверок require_roles; права — permissions.py (шаблон роли + отличия).
+# operator — на уровне режимщика: прав «редактора» (журналы, справочники) у него нет.
+ROLE_ORDER = {"viewer": 1, "calculator": 2, "operator": 2, "editor": 3, "admin": 4}
 _DEFAULT_JWT_SECRET = "dev-insecure-change-me"
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,15 @@ class AuthUser:
     mv: str = ""
     # Города пользователя UsersDB (живая проверка, users.cities); None — все города
     cities: Optional[tuple] = None
+    # Отличия прав от шаблона роли (users.permissions, JSON); "" — права роли
+    overrides: str = ""
+
+    @property
+    def perms(self):
+        """Действующие права (permissions.Permissions): шаблон роли + права PostgreSQL + отличия."""
+        from permissions import effective
+
+        return effective(self.role, self.overrides, frozenset(self.caps), self.is_pg_user)
 
     def has_role(self, minimum: str) -> bool:
         return ROLE_ORDER.get(self.role, 0) >= ROLE_ORDER.get(minimum, 99)
@@ -242,7 +253,7 @@ def invalidate_user_status(user_id: Optional[object] = None) -> None:
 
 
 async def _load_user_status(user_id: int) -> Optional[tuple]:
-    """(is_active, role, (), cities) из UsersDB; cities None — все города; None — пользователя нет."""
+    """(is_active, role, (), cities, overrides) из UsersDB; cities None — все города; None — пользователя нет."""
     from sqlalchemy import select
 
     from database.connect import async_session
@@ -254,7 +265,8 @@ async def _load_user_status(user_id: int) -> Optional[tuple]:
             return None
         from cities import parse_stored
 
-        return bool(row.is_active), resolve_user_role(row.role, row.is_admin), (), parse_stored(row.cities)
+        return (bool(row.is_active), resolve_user_role(row.role, row.is_admin), (), parse_stored(row.cities),
+                getattr(row, "permissions", None) or "")
 
 
 async def _load_pg_user_status(role_name: str) -> Optional[tuple]:
@@ -337,8 +349,10 @@ async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> 
             )
     caps = frozenset(status_row[2]) if len(status_row) > 2 else user.caps
     cities = tuple(status_row[3]) if len(status_row) > 3 and status_row[3] is not None else None
-    if status_row[1] != user.role or caps != user.caps or cities != user.cities:
-        return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps, cities=cities)
+    overrides = str(status_row[4] or "") if len(status_row) > 4 else user.overrides
+    if status_row[1] != user.role or caps != user.caps or cities != user.cities or overrides != user.overrides:
+        return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps, cities=cities,
+                        overrides=overrides)
     return user
 
 
@@ -348,6 +362,8 @@ def db_role_for(user: Optional[AuthUser]) -> Optional[str]:
         return None
     if user.sub.startswith(PG_USER_PREFIX):
         return user.sub
+    if user.role == "operator":
+        return "tgid_editor"  # роли PostgreSQL оператора нет: запись сети — как у редактора, права — permissions.py
     return f"tgid_{user.role}" if user.role in ROLE_ORDER else "tgid_anon"
 
 
@@ -415,6 +431,34 @@ def require_roles(*roles: str, cap: Optional[str] = None):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
     return _dependency
+
+
+def require_permission(general: Optional[str] = None, *, kind: Optional[str] = None,
+                       action: Optional[str] = None, network: bool = False):
+    """Dependency factory по правам permissions.py: общее право (general), действие с видом объектов
+    (kind + action, охват own/all — «свои» проверяет сама операция: permissions.ensure_targets)
+    или хоть какое-то право на сеть (network — отмена/повтор своих операций)."""
+    from permissions import GENERAL, PermissionDenied, ensure_can
+
+    async def _dependency(user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+        perms = user.perms
+        try:
+            if general and not perms.has(general):
+                raise PermissionDenied(f"Нет права «{GENERAL.get(general, general)}»")
+            if kind and action:
+                ensure_can(perms, kind, action)
+            if network and not perms.any_network():
+                raise PermissionDenied("Нет прав на правку сети")
+        except PermissionDenied as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail()) from exc
+        return user
+
+    return _dependency
+
+
+def permission_http_error(exc) -> HTTPException:
+    """permissions.PermissionDenied → 403 с текстом и перечнем чужих объектов."""
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.detail())
 
 
 def require_mutations_enabled() -> None:

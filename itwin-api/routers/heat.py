@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database.connect import acquire_conn
 from database.consumer_load_diagnostics import (
     get_consumer_load_diagnostic,
@@ -127,7 +127,7 @@ class StationaryGraphBody(BaseModel):
 async def temperature_graph_stationary(
     source_id: int,
     body: StationaryGraphBody,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission(kind="source", action="edit"))],
 ):
     """Desktop «Стационарный»: overwrite curve values on existing points."""
     require_mutations_enabled()
@@ -155,7 +155,7 @@ def _tg_mode(src: dict, mode: str) -> str:
 @router.post("/api/temperature-graphs/sources/{source_id}/recalculate")
 async def temperature_graph_recalculate(
     source_id: int,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission(kind="source", action="edit"))],
     mode: str = Query("otop", pattern="^(auto|otop|pov|skk_pov|skk_pon)$",
                       description="otop — ОТОП; pov — повышенный (П); skk_pov/skk_pon — скорректированный "
                                   "повышенный (СВ) / пониженный (СН); auto — по heatsources.graphtypeid, как десктоп"),
@@ -272,7 +272,7 @@ class HeatLossRunBody(BaseModel):
 @router.post("/api/v1/heat-losses/run")
 async def run_heat_losses(
     body: HeatLossRunBody,
-    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+    user: Annotated[AuthUser, Depends(require_permission("calc_run"))],
 ):
     """Launch seasonal heat-loss oriented sety job (-fileID … -tg, no -no_teplopoter).
 
@@ -318,7 +318,7 @@ class HeatLossNormRunBody(BaseModel):
 @router.post("/api/v1/heat-losses/norm/run")
 async def run_heat_losses_norm(
     body: HeatLossNormRunBody,
-    user: Annotated[AuthUser, Depends(require_roles("calculator"))],
+    user: Annotated[AuthUser, Depends(require_permission("calc_run"))],
 ):
     """Нормативные или фактические теплопотери по источникам (десктоп «Теплопотери», poteriNewPg) через Celery.
 
@@ -467,7 +467,7 @@ class WorkConditionsBody(BaseModel):
 @router.post("/api/v1/heat-losses/sources/{source_id}/work-conditions")
 async def heat_losses_work_conditions(
     body: WorkConditionsBody,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission(kind="source", action="edit"))],
     source_id: int = Path(..., ge=1),
 ):
     """«Условия работы» источника (десктоп set_cond_env_temperatures): месяцы сезона с температурами

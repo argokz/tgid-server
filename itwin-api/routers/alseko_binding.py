@@ -15,13 +15,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database import alseko_binding as ab
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["alseko"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+Editor = Annotated[AuthUser, Depends(require_permission("journals"))]
 
 
 class AddressBindBody(BaseModel):

@@ -15,13 +15,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database import electrical_binding as eb
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["electrical-network"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor"))]
+Editor = Annotated[AuthUser, Depends(require_permission("journals"))]
 ObjectType = Literal["line", "channel", "coupling", "support", "sleeve"]
 Tolerance = Query(eb.DEFAULT_TOLERANCE_M, gt=0, le=1000, description="Допуск, м (десктоп D5 = 8)")
 

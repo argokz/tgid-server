@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database import typed_edit as te
 from database.connect import acquire_conn
 from database.sql_ident import UnknownIdentifierError
@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["equipment-edit"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="network"))]
+Editor = Annotated[AuthUser, Depends(require_permission(kind="equipment", action="edit"))]
 PREFIX = "/api/v1/equipment-edit"
 
 # Таблица оборудования → подпись. Ключ строки — id таблицы (как в реестрах).

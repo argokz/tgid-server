@@ -47,11 +47,12 @@ _JOURNAL_CAPS = {"repairs": "repairs"}
 
 
 async def _journal_editor(journal: str, user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    # право «Журналы» (permissions.py); пользователю PostgreSQL — по-прежнему его предметное право
     cap = _JOURNAL_CAPS.get(journal)
-    if user.allows("editor", cap):
+    if user.perms.has("journals") and (not (cap and user.is_pg_user) or user.allows("editor", cap)):
         return user
     raise HTTPException(status_code=403, detail="Нет права «ремонты»" if cap and user.is_pg_user
-                        else f"Requires one of roles: editor (have {user.role})")
+                        else "Нет права «Журналы: ремонты, ПТС, акты, ТУ, привязки»")
 
 
 Editor = Annotated[AuthUser, Depends(_journal_editor)]

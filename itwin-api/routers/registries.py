@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
 
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database.alseko import (
     get_alseko_building,
     get_alseko_load,
@@ -248,7 +248,7 @@ async def _tu_write(action):
 @router.post("/api/v1/technical-conditions")
 async def create_technical_condition(
     body: TuFieldsBody,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission("journals"))],
 ):
     """Vertical CRUD create for ТУ (gid6 etalon)."""
     require_mutations_enabled()
@@ -269,7 +269,7 @@ async def create_technical_condition(
 async def update_technical_condition(
     condition_id: int,
     body: TuFieldsBody,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission("journals"))],
 ):
     require_mutations_enabled()
     fields = filter_tu_fields(body.fields)
@@ -288,7 +288,7 @@ async def update_technical_condition(
 @router.delete("/api/v1/technical-conditions/{condition_id}")
 async def delete_technical_condition(
     condition_id: int,
-    user: Annotated[AuthUser, Depends(require_roles("editor"))],
+    user: Annotated[AuthUser, Depends(require_permission("journals"))],
 ):
     require_mutations_enabled()
     ok = await _tu_write(delete_object(TU_TABLE, condition_id))

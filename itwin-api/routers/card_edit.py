@@ -5,7 +5,8 @@
 - ``GET  /api/v1/card-edit/options`` — варианты выпадающего списка поля, как в десктопе;
 - ``PUT  /api/v1/card-edit`` — сохранить изменения (одна транзакция, версии → 409, audit_log);
 - ``GET  /api/v1/card-edit/equipment-at/{node_id}`` — оборудование узла (примыкающее и во внутренней схеме).
-Чтение — viewer; запись — editor с правом ``network`` и MUTATIONS_ENABLED.
+Чтение — viewer; запись — право «Свойства» вида объекта (permissions.py; охват own — только свои
+объекты) и MUTATIONS_ENABLED.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, get_current_user, permission_http_error, require_mutations_enabled
 from database import card_batch as cb
 from database import card_edit as ce
 from database import card_template as ct
@@ -25,13 +26,68 @@ from database import typed_edit as te
 from database.connect import acquire_conn
 from database.db import create_select_line, create_select_node
 from database.sql_ident import UnknownIdentifierError
+from permissions import PermissionDenied, ensure_can, ensure_targets, table_kind
 from routers.group_setters import _audit_writer
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["card-edit"])
-Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="network"))]
+# Право проверяется по виду объектов правки (_guard_*): у режимщика — потребители и оборудование и т. п.
+Editor = Annotated[AuthUser, Depends(get_current_user)]
 PREFIX = "/api/v1/card-edit"
+
+# Вид карточки → вид объекта в правах (permissions.KINDS)
+CARD_PERM_KIND: dict[str, str] = {
+    "line": "line", "node": "node", "consumer": "consumer", "genconsumer": "consumer",
+    "source": "source", "pumpstation": "source", "setpress": "regime", "refill": "regime",
+    **{k: "equipment" for k in ce.EQUIPMENT_KINDS},
+}
+
+
+async def _guard_rows(user: AuthUser, rows: dict[str, set[int]]) -> None:
+    """Правка строк карточек {таблица: {id}}: право «Свойства» вида каждой таблицы; own — только свои
+    (база нужна только для охвата own)."""
+    try:
+        by_kind: dict[str, dict[str, list[int]]] = {}
+        for table, ids in rows.items():
+            # таблица вне матрицы прав (справочная часть карточки) — как свойства узла
+            kind = table_kind(table) or "node"
+            by_kind.setdefault(kind, {})[table] = sorted(ids)
+        own = [k for k in by_kind if ensure_can(user.perms, k, "edit") == "own"]
+        if own:
+            async with acquire_conn() as conn:
+                for kind in own:
+                    await ensure_targets(conn, user.perms, user.username, kind, "edit", by_kind[kind])
+    except PermissionDenied as exc:
+        raise permission_http_error(exc)
+
+
+async def _guard_objects(user: AuthUser, card_kind: str, ids: list[int]) -> None:
+    """Групповая правка / шаблон: ids — linesobj.id (участки, оборудование) или nodes.id."""
+    kind = CARD_PERM_KIND.get(card_kind, "node")
+    table = "linesobj" if card_kind in ce.LINE_CARD_TABLE else "nodes"
+    try:
+        if ensure_can(user.perms, kind, "edit") == "own":
+            async with acquire_conn() as conn:
+                await ensure_targets(conn, user.perms, user.username, kind, "edit", {table: ids})
+    except PermissionDenied as exc:
+        raise permission_http_error(exc)
+
+
+def _guard_any_edit(user: AuthUser) -> None:
+    """Шаблоны и групповая правка — тем, кто может править свойства хоть каких-то объектов."""
+    if not any(user.perms.can(k, "edit") for k in CARD_PERM_KIND.values()):
+        raise permission_http_error(PermissionDenied("Нет права на правку свойств объектов"))
+
+
+def _guard_kind(user: AuthUser, card_kind: str, *, shared: bool = False) -> None:
+    """Шаблоны вида: свои — с правом «Свойства» вида; общие — ещё и «Справочники и шаблоны»."""
+    try:
+        ensure_can(user.perms, CARD_PERM_KIND.get(card_kind, "node"), "edit")
+        if shared and not user.perms.has("refs"):
+            raise PermissionDenied("Общие шаблоны — с правом «Справочники и шаблоны карточек»")
+    except PermissionDenied as exc:
+        raise permission_http_error(exc)
 
 
 class Change(BaseModel):
@@ -168,6 +224,7 @@ async def card_edit_batch_preview(body: BatchBody, user: Editor):
     """Предпросмотр правки нескольких участков: сколько строк изменится, какие значения были."""
     if not body.changes:
         raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
+    await _guard_objects(user, body.kind, body.ids)
     async with acquire_conn() as conn:
         try:
             return await cb.preview(conn, body.ids, [c.model_dump() for c in body.changes], body.kind)
@@ -181,6 +238,7 @@ async def card_edit_batch_apply(body: BatchBody, user: Editor):
     if not body.changes:
         raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
     require_mutations_enabled()
+    await _guard_objects(user, body.kind, body.ids)
     async with acquire_conn() as conn:
         try:
             async with conn.transaction():
@@ -224,6 +282,7 @@ TPL = "/api/v1/card-templates"
 @router.get(TPL)
 async def card_templates_list(user: Editor, kind: Kind = Query("line")):
     """Шаблоны вида объектов: свои и общие."""
+    _guard_kind(user, kind)
     async with acquire_conn() as conn:
         return {"items": await ct.list_templates(conn, kind, user.username)}
 
@@ -231,6 +290,7 @@ async def card_templates_list(user: Editor, kind: Kind = Query("line")):
 @router.post(TPL)
 async def card_template_create(body: TemplateBody, user: Editor):
     require_mutations_enabled()
+    _guard_kind(user, body.kind, shared=body.shared)
     async with acquire_conn() as conn:
         try:
             return await ct.create_template(conn, kind=body.kind, name=body.name, values=body.values,
@@ -244,9 +304,11 @@ async def card_template_update(body: TemplatePatch, user: Editor, template_id: i
     require_mutations_enabled()
     async with acquire_conn() as conn:
         try:
+            tpl = await ct.get_template(conn, template_id, user.username)
+            _guard_kind(user, tpl["kind"], shared=bool(body.shared if body.shared is not None else tpl.get("shared")))
             return await ct.update_template(conn, template_id, name=body.name, values=body.values,
                                             shared=body.shared, user=user.username,
-                                            is_admin=user.has_role("admin"))
+                                            is_admin=user.perms.has("refs"))
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
 
@@ -256,7 +318,9 @@ async def card_template_delete(user: Editor, template_id: int = Path(..., ge=1))
     require_mutations_enabled()
     async with acquire_conn() as conn:
         try:
-            await ct.delete_template(conn, template_id, user=user.username, is_admin=user.has_role("admin"))
+            tpl = await ct.get_template(conn, template_id, user.username)
+            _guard_kind(user, tpl["kind"])
+            await ct.delete_template(conn, template_id, user=user.username, is_admin=user.perms.has("refs"))
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
     return {"deleted": template_id}
@@ -265,9 +329,11 @@ async def card_template_delete(user: Editor, template_id: int = Path(..., ge=1))
 @router.post(TPL + "/{template_id}/preview")
 async def card_template_preview(body: TemplateApplyBody, user: Editor, template_id: int = Path(..., ge=1)):
     """Предпросмотр шаблона на участках: как правка нескольких объектов."""
+    _guard_any_edit(user)
     async with acquire_conn() as conn:
         try:
             tpl = await ct.get_template(conn, template_id, user.username)
+            await _guard_objects(user, tpl["kind"], body.ids)
             changes = await ct.template_changes(conn, tpl, body.ids)
             return await cb.preview(conn, body.ids, changes, tpl["kind"])
         except (te.TypedEditError, UnknownIdentifierError) as exc:
@@ -277,11 +343,13 @@ async def card_template_preview(body: TemplateApplyBody, user: Editor, template_
 @router.post(TPL + "/{template_id}/apply")
 async def card_template_apply(body: TemplateApplyBody, user: Editor, template_id: int = Path(..., ge=1)):
     """Применить шаблон к участкам (новым или выбранным): одна группа, отмена — group-setters/undo."""
+    _guard_any_edit(user)
     require_mutations_enabled()
     async with acquire_conn() as conn:
         try:
             async with conn.transaction():
                 tpl = await ct.get_template(conn, template_id, user.username)
+                await _guard_objects(user, tpl["kind"], body.ids)
                 changes = await ct.template_changes(conn, tpl, body.ids)
                 result = await cb.apply(conn, body.ids, changes, audit_row=_audit_writer(user),
                                         expected_changes=body.expected_changes, kind=tpl["kind"])
@@ -304,6 +372,10 @@ async def card_edit_get(kind: Kind, table: str = Path(..., max_length=64),
         async with acquire_conn() as conn:
             card = await ce.annotate_card(conn, kind, card)
             card["fileid"] = await ce.card_fileid(conn, kind, obj_id)
+            # «Создан: кто, когда» — объекты, созданные в вебе (право «только свои»)
+            from database.authorship import owner_of
+
+            card["created"] = await owner_of(conn, "linesobj" if kind in ce.LINE_CARD_TABLE else "nodes", obj_id)
     except (te.TypedEditError, UnknownIdentifierError, UndefinedColumnError) as exc:
         raise _http(exc)
     card.update({"kind": kind, "table": table, "id": obj_id})
@@ -317,6 +389,10 @@ async def card_edit_save(body: SaveBody, user: Editor):
         raise HTTPException(status_code=422, detail={"code": "no_changes", "message": "Нет изменений"})
     if not body.dry_run:
         require_mutations_enabled()
+    rows: dict[str, set[int]] = {}
+    for c in body.changes:
+        rows.setdefault(c.table.lower(), set()).add(c.id)
+    await _guard_rows(user, rows)
     async with acquire_conn() as conn:
         try:
             async with conn.transaction():

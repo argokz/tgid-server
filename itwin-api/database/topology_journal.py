@@ -177,7 +177,7 @@ class OperationJournal:
                 '{"t": %s, "id": %d, "row": %s}' % (json.dumps(table), row_id, img if img is not None else "null")
             )
         before_json = "[" + ", ".join(parts) + "]"
-        return await conn.fetchval(
+        operation_id = await conn.fetchval(
             f"""
             INSERT INTO {JOURNAL_TABLE}
                 (change_group_id, actor, operation, summary, before_rows, after_hashes, unsupported)
@@ -192,6 +192,11 @@ class OperationJournal:
             json.dumps(after),
             json.dumps(sorted(self.unsupported)) if self.unsupported else None,
         )
+        # автор созданных строк — для права «только свои» (database/authorship.py)
+        from database.authorship import record_created
+
+        await record_created(conn, [k for k, img in self.before.items() if img is None], actor, operation_id)
+        return operation_id
 
 
 async def redo_available(conn) -> bool:

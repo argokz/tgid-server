@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database.connect import get_pool
 from database.piezo_excel import generate_piezometer_excel
 from database.ut_out_columns import (
@@ -527,7 +527,7 @@ async def get_direction(direction_id: int):
 
 
 @router.post("/piezometer/directions", dependencies=[Depends(require_mutations_enabled)])
-async def create_direction(body: DirectionCreate, user: Annotated[AuthUser, Depends(require_roles("editor"))]):
+async def create_direction(body: DirectionCreate, user: Annotated[AuthUser, Depends(require_permission("calc_save"))]):
     """Сохранить направление: строка directions + опорные узлы в deployeddirections."""
     name = body.name.strip()
     if not name:
@@ -581,7 +581,7 @@ async def create_direction(body: DirectionCreate, user: Annotated[AuthUser, Depe
 
 
 @router.delete("/piezometer/directions/{direction_id}", dependencies=[Depends(require_mutations_enabled)])
-async def delete_direction(direction_id: int, user: Annotated[AuthUser, Depends(require_roles("editor"))]):
+async def delete_direction(direction_id: int, user: Annotated[AuthUser, Depends(require_permission("calc_save"))]):
     """Удалить направление (как кнопка «Удалить» в списке направлений десктопа)."""
     pool = get_pool()
     async with pool.acquire() as conn:

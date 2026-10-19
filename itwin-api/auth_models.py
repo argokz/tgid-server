@@ -57,6 +57,9 @@ class MeResponse(BaseModel):
     city_label: str = ""
     cities: list[CityItem] = Field(default_factory=list)  # города, доступные пользователю
     all_cities: bool = True  # доступ ко всем городам (и будущим)
+    # действующие права (permissions.py): {"matrix": {вид: {действие: none|own|all}}, "general": [...]}
+    permissions: dict = Field(default_factory=dict)
+    role_label: str = ""
 
 
 class ChangePasswordRequest(BaseModel):

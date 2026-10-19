@@ -17,9 +17,11 @@ from auth import (
     master_enabled,
     master_login,
     pg_auth_enabled,
+    require_permission,
     require_roles,
 )
 from database import pg_users
+from permissions import catalog as permissions_catalog
 from database.audit_history import get_audit_entry, get_audit_log, get_audit_lookups
 from database.connect import acquire_conn
 from database.db_role import default_db_role
@@ -37,7 +39,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["admin"])
 
-RoleName = Literal["viewer", "calculator", "editor", "admin"]
+RoleName = Literal["viewer", "calculator", "operator", "editor", "admin"]
 # bcrypt учитывает только первые 72 байта пароля — длиннее не принимаем
 PASSWORD_FIELD = Field(..., min_length=8, max_length=72)
 
@@ -58,6 +60,8 @@ class CreateUserBody(BaseModel):
     web_access: bool = True
     # UsersDB: коды городов (cities.py); None — все города
     cities: Optional[list[str]] = Field(None, max_length=50)
+    # UsersDB: отличия прав от шаблона роли {"matrix": {вид: {действие: none|own|all}}, "general": {право: bool}}
+    permissions: Optional[dict] = None
 
 
 class UpdateUserBody(BaseModel):
@@ -70,6 +74,8 @@ class UpdateUserBody(BaseModel):
     web_access: Optional[bool] = None
     # UsersDB: передан null — все города; не передан — не менять
     cities: Optional[list[str]] = Field(None, max_length=50)
+    # UsersDB: отличия прав от шаблона роли; null / {} — права роли; не передан — не менять
+    permissions: Optional[dict] = None
 
 
 class PasswordBody(BaseModel):
@@ -117,15 +123,17 @@ def _pg_error(exc: "pg_users.PgUserError") -> None:
 
 @router.get("/api/admin/roles")
 @router.get("/api/v1/admin/roles")
-async def admin_roles(_: Annotated[AuthUser, Depends(require_roles("admin"))]):
+async def admin_roles(_: Annotated[AuthUser, Depends(require_permission("users_admin"))]):
     if pg_auth_enabled():
-        return {"items": pg_users.roles_catalog(), "caps": pg_users.caps_catalog(), "backend": "pg"}
-    return {"items": roles_catalog()}
+        return {"items": pg_users.roles_catalog(), "caps": pg_users.caps_catalog(), "backend": "pg",
+                "model": permissions_catalog()}
+    # model — виды объектов, действия, охваты и общие права для матрицы прав в админке
+    return {"items": roles_catalog(), "model": permissions_catalog()}
 
 
 @router.get("/api/admin/users")
 @router.get("/api/v1/admin/users")
-async def admin_users(user: Annotated[AuthUser, Depends(require_roles("admin"))]):
+async def admin_users(user: Annotated[AuthUser, Depends(require_permission("users_admin"))]):
     try:
         items = await (pg_users.list_users(_pg_admin_role(user)) if pg_auth_enabled() else list_users())
     except Exception as exc:  # noqa: BLE001
@@ -147,7 +155,7 @@ async def admin_users(user: Annotated[AuthUser, Depends(require_roles("admin"))]
 @router.post("/api/v1/admin/users", status_code=201)
 async def admin_create_user(
     body: CreateUserBody,
-    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    user: Annotated[AuthUser, Depends(require_permission("users_admin"))],
 ):
     _require_real_auth()
     if pg_auth_enabled():
@@ -161,7 +169,8 @@ async def admin_create_user(
         except pg_users.PgUserError as exc:
             _pg_error(exc)
     try:
-        created = await create_user(body.username, body.password, body.role, cities=body.cities)
+        created = await create_user(body.username, body.password, body.role, cities=body.cities,
+                                    permissions=body.permissions)
     except UserAdminError as exc:
         _raise_admin_error(exc)
     await _audit_users(user, "INSERT", created["id"], new=created)
@@ -178,7 +187,7 @@ def _usersdb_id(user_id: str) -> int:
 @router.patch("/api/v1/admin/users/{user_id}")
 async def admin_update_user(
     body: UpdateUserBody,
-    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    user: Annotated[AuthUser, Depends(require_permission("users_admin"))],
     user_id: str = Path(..., min_length=1, max_length=70),
 ):
     """Роль, права, территория, профиль и блокировка. Действует на выданные токены сразу.
@@ -204,9 +213,12 @@ async def admin_update_user(
         return after
     uid = _usersdb_id(user_id)
     cities_given = "cities" in body.model_fields_set
-    if body.role is None and body.is_active is None and not cities_given:
-        raise HTTPException(status_code=422, detail="Нужно указать role, is_active и/или cities")
-    extra = {"cities": body.cities} if cities_given else {}
+    permissions_given = "permissions" in body.model_fields_set
+    if body.role is None and body.is_active is None and not cities_given and not permissions_given:
+        raise HTTPException(status_code=422, detail="Нужно указать role, is_active, cities и/или permissions")
+    extra: dict = {"cities": body.cities} if cities_given else {}
+    if permissions_given:
+        extra["permissions"] = body.permissions
     try:
         before, after = await update_user(
             uid, actor_id=user.sub, role=body.role, is_active=body.is_active, **extra
@@ -222,7 +234,7 @@ async def admin_update_user(
 @router.put("/api/v1/admin/users/{user_id}/password")
 async def admin_set_password(
     body: PasswordBody,
-    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    user: Annotated[AuthUser, Depends(require_permission("users_admin"))],
     user_id: str = Path(..., min_length=1, max_length=70),
 ):
     _require_real_auth()
@@ -247,7 +259,7 @@ async def admin_set_password(
 @router.delete("/api/admin/users/{user_id}")
 @router.delete("/api/v1/admin/users/{user_id}")
 async def admin_delete_user(
-    user: Annotated[AuthUser, Depends(require_roles("admin"))],
+    user: Annotated[AuthUser, Depends(require_permission("users_admin"))],
     user_id: str = Path(..., min_length=1, max_length=70),
 ):
     """Удалить пользователя UsersDB. Выданные ему токены перестают действовать сразу."""

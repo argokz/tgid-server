@@ -213,6 +213,10 @@ async def auth_me(
             fragments=profile.get("fragments"),
             must_change_password=bool(profile.get("must_change_password")),
         )
+    from permissions import ROLE_LABELS
+
+    # действующие права (шаблон роли + отличия): веб прячет недоступные кнопки, проверяет сервер
+    extra.update(permissions=user.perms.to_dict(), role_label=ROLE_LABELS.get(user.role, user.role))
     return MeResponse(
         sub=user.sub,
         username=user.username,

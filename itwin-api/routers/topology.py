@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, permission_http_error, require_mutations_enabled, require_permission, require_roles
 from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, convert_point, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
@@ -49,7 +49,48 @@ from database.topology import (
     update_line_geometry,
 )
 
+from permissions import NODE_TYPE_KIND, PermissionDenied, ensure_can, ensure_targets
+
 logger = get_logger(__name__)
+
+# Хоть какое-то право на сеть: чтение для правки (версии, привязки, геометрия), отмена своих операций.
+# Конкретное действие проверяет _guard: вид объекта × действие, охват own — только свои объекты.
+Net = Annotated[AuthUser, Depends(require_permission(network=True))]
+
+
+async def _guard(user: AuthUser, kind: str, action: str,
+                 targets: Optional[dict[str, list[int]]] = None) -> None:
+    """403, если нет права kind × action; с targets охват own пропускает только объекты пользователя."""
+    try:
+        if not targets:
+            ensure_can(user.perms, kind, action)
+            return
+        async with acquire_conn() as conn:
+            await ensure_targets(conn, user.perms, user.username, kind, action, targets)
+    except PermissionDenied as exc:
+        raise permission_http_error(exc)
+
+
+async def _node_kind(node_id: int) -> str:
+    """Вид узла для прав: потребитель, источник/насосная или узел — по его карточке."""
+    try:
+        async with acquire_conn() as conn:
+            info = await node_cards(conn, node_id)
+        return NODE_TYPE_KIND.get(info.get("type") or "US", "node")
+    except Exception:  # noqa: BLE001 — узла нет: ошибку покажет сама операция
+        return "node"
+
+
+async def _guard_node(user: AuthUser, node_id: int, action: str) -> None:
+    await _guard(user, await _node_kind(node_id), action, {"nodes": [node_id]})
+
+
+async def _incident_lines(node_id: int) -> list[int]:
+    async with acquire_conn() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM linesobj WHERE (nodeid1 = $1 OR nodeid2 = $1) AND COALESCE(removed, 0) = 0", node_id,
+        )
+    return [r["id"] for r in rows]
 
 router = APIRouter(tags=["topology"])
 
@@ -253,7 +294,7 @@ def _parse_ids(raw: Optional[str]) -> list[int]:
 @router.get("/api/topology/versions")
 @router.get("/api/v1/topology/versions")
 async def topology_versions(
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
     nodes: Optional[str] = Query(None, description="id узлов через запятую"),
     lines: Optional[str] = Query(None, description="id участков через запятую"),
 ):
@@ -280,7 +321,7 @@ async def topology_diagnostics(
 
 @router.get("/api/v1/topology/snap-data")
 async def topology_snap_data(
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
     bbox: str = Query(..., description="minLng,minLat,maxLng,maxLat (WGS84)"),
     fragments: Optional[str] = Query(None, description="id фрагментов через запятую (рабочий фрагмент)"),
 ):
@@ -303,7 +344,7 @@ async def topology_snap_data(
 @router.post("/api/v1/topology/chains")
 async def api_create_chain(
     req: ChainRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Цепочка участков одной операцией: врезки, новые узлы, изломы, режим трубы.
 
@@ -312,6 +353,13 @@ async def api_create_chain(
     """
     if not req.dry_run:
         require_topology_mutations_enabled()
+    await _guard(user, "line", "create")
+    for p in req.points:
+        if p.kind == "new":
+            await _guard(user, NODE_TYPE_KIND.get(p.node_type or "US", "node"), "create")
+    taps = sorted({p.line_id for p in req.points if p.kind == "tap" and p.line_id})
+    if taps:
+        await _guard(user, "line", "move", {"linesobj": taps})
     try:
         return await create_chain(
             [p.model_dump() for p in req.points],
@@ -353,9 +401,10 @@ async def topology_line_ref(
 async def move_node_endpoint(
     id: int,
     params: MoveNodeParams,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     require_topology_mutations_enabled()
+    await _guard_node(user, id, "move")
     try:
         result = await move_node(
             id, params.lng, params.lat, expected_version=params.expected_version, actor=user.username,
@@ -370,9 +419,10 @@ async def move_node_endpoint(
 @router.post("/api/v1/topology/node")
 async def create_node_endpoint(
     params: CreateNodeParams,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     require_topology_mutations_enabled()
+    await _guard(user, NODE_TYPE_KIND.get(params.node_type, "node"), "create")
     try:
         result = await create_node(
             params.lng, params.lat,
@@ -420,11 +470,14 @@ async def api_node_type(
 async def api_change_node_type(
     id: int,
     req: NodeTypeRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Смена расчётного типа узла (как «Изменить тип объекта» десктопа); dry_run — что удалится."""
     if not req.dry_run:
         require_topology_mutations_enabled()
+    # карточки прежнего вида удаляются — правка узла; новая карточка — создание её вида
+    await _guard_node(user, id, "edit")
+    await _guard(user, NODE_TYPE_KIND.get(req.node_type, "node"), "create")
     try:
         return await change_node_type(
             id, req.node_type, dry_run=req.dry_run, expected_version=req.expected_version, actor=user.username,
@@ -437,11 +490,12 @@ async def api_change_node_type(
 async def api_set_node_flag(
     id: int,
     req: NodeFlagRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Заданный напор / подпитка узла: добавить (on) или удалить."""
     if not req.dry_run:
         require_topology_mutations_enabled()
+    await _guard(user, "regime", "edit", {"nodes": [id]})
     try:
         return await set_node_flag(
             id, req.flag, req.on, dry_run=req.dry_run, expected_version=req.expected_version, actor=user.username,
@@ -513,11 +567,14 @@ async def api_line_bends(
 async def api_change_line_type(
     id: int,
     req: LineTypeRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Смена типа линии — участок ↔ оборудование (как «Изменить тип объекта» десктопа); dry_run — что удалится."""
     if not req.dry_run:
         require_topology_mutations_enabled()
+    await _guard(user, "line", "edit", {"linesobj": [id]})
+    if req.line_type != "line":
+        await _guard(user, "equipment", "create")
     try:
         return await change_line_type(
             id, req.line_type, dry_run=req.dry_run, expected_version=req.expected_version,
@@ -532,11 +589,16 @@ async def api_change_line_type(
 @router.delete("/api/v1/topology/node/{id}")
 async def delete_node_endpoint(
     id: int,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
     cascade: bool = False,
     expected_version: VersionField = None,
 ):
     require_topology_mutations_enabled()
+    await _guard_node(user, id, "delete")
+    if cascade:
+        lines = await _incident_lines(id)
+        if lines:
+            await _guard(user, "line", "delete", {"linesobj": lines})
     try:
         result = await delete_node(id, cascade=cascade, expected_version=expected_version, actor=user.username)
         return {"success": True, "id": id, **result}
@@ -550,9 +612,10 @@ async def delete_node_endpoint(
 @router.post("/api/v1/topology/line")
 async def create_line_endpoint(
     params: CreateLineParams,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     require_topology_mutations_enabled()
+    await _guard(user, "line", "create")
     try:
         result = await create_line(
             params.nodeid1,
@@ -570,11 +633,12 @@ async def create_line_endpoint(
 @router.delete("/api/v1/topology/line/{line_id}")
 async def api_delete_line(
     line_id: int,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
     expected_version: VersionField = None,
     expected_section_id: Optional[int] = Query(None, description="heatpipesections.id из карточки (сверка, 409 object_mismatch)"),
 ):
     require_topology_mutations_enabled()
+    await _guard(user, "line", "delete", {"linesobj": [line_id]})
     try:
         result = await delete_line(
             line_id, expected_version=expected_version, actor=user.username,
@@ -589,12 +653,15 @@ async def api_delete_line(
 @router.post("/api/v1/topology/split-line")
 async def api_split_line(
     req: SplitLineRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     # Превью (dry_run) безопасно — транзакция откатывается, ничего не сохраняется,
-    # поэтому не требует включённого флага записи; RBAC (admin) остаётся.
+    # поэтому не требует включённого флага записи; права проверяются и для превью.
     if not req.dry_run:
         require_topology_mutations_enabled()
+    # врезка меняет геометрию участка и создаёт узел
+    await _guard(user, "line", "move", {"linesobj": [req.line_id]})
+    await _guard(user, "node", "create")
     try:
         result = await split_line(
             req.line_id, req.lng, req.lat,
@@ -612,11 +679,12 @@ async def api_split_line(
 @router.post("/api/v1/topology/reverse-line")
 async def api_reverse_line(
     req: ReverseLineRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Разворот участка; dry_run=true — превью: узлы, геометрия, оборудование."""
     if not req.dry_run:
         require_topology_mutations_enabled()
+    await _guard(user, "line", "edit", {"linesobj": [req.line_id]})
     try:
         return await reverse_line(
             req.line_id,
@@ -637,11 +705,14 @@ async def api_reverse_line(
 @router.post("/api/v1/topology/merge-nodes")
 async def api_merge_nodes(
     req: MergeNodesRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Слияние узла-источника в целевой; dry_run=true — превью переноса и блокеров."""
     if not req.dry_run:
         require_topology_mutations_enabled()
+    # сливаемый узел исчезает, к целевому переходят его участки
+    await _guard_node(user, req.source_node_id, "delete")
+    await _guard_node(user, req.target_node_id, "move")
     try:
         return await merge_nodes(
             req.target_node_id,
@@ -659,7 +730,7 @@ async def api_merge_nodes(
 @router.get("/api/v1/topology/line/{line_id}/geometry")
 async def api_get_line_geometry(
     line_id: int,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Полная геометрия участка (WGS84), узлы-концы и версия — для правки вершин."""
     try:
@@ -673,9 +744,10 @@ async def api_get_line_geometry(
 async def api_update_line_geometry(
     line_id: int,
     req: UpdateLineGeometryRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     require_topology_mutations_enabled()
+    await _guard(user, "line", "move", {"linesobj": [line_id]})
     try:
         return await update_line_geometry(
             line_id, req.coordinates, expected_version=req.expected_version, actor=user.username,
@@ -686,7 +758,7 @@ async def api_update_line_geometry(
 
 @router.get("/api/topology/undo")
 @router.get("/api/v1/topology/undo")
-async def api_last_undoable(user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))]):
+async def api_last_undoable(user: Net):
     """Последняя неотменённая операция топологии пользователя (для кнопки «Отменить»)."""
     return {"operation": await last_undoable_operation(user.username)}
 
@@ -695,7 +767,7 @@ async def api_last_undoable(user: Annotated[AuthUser, Depends(require_roles("adm
 @router.post("/api/v1/topology/undo")
 async def api_undo(
     req: UndoRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Отмена последней операции топологии пользователя.
 
@@ -710,7 +782,7 @@ async def api_undo(
 
 
 @router.get("/api/v1/topology/redo")
-async def api_last_redoable(user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))]):
+async def api_last_redoable(user: Net):
     """Последняя отменённая операция пользователя, которую можно повторить (кнопка «Повторить»)."""
     return {"operation": await last_redoable_operation(user.username)}
 
@@ -718,7 +790,7 @@ async def api_last_redoable(user: Annotated[AuthUser, Depends(require_roles("adm
 @router.post("/api/v1/topology/redo")
 async def api_redo(
     req: UndoRequest,
-    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+    user: Net,
 ):
     """Повтор последней отменённой операции. 404 — нечего; 409 — объекты изменены после отмены."""
     require_topology_mutations_enabled()

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database import dictionaries as dicts
 from database import group_setters as gs
 from database.connect import acquire_conn
@@ -24,7 +24,10 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["group-setters"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="network"))]
+# Групповые установки по фрагменту — охват «все» вида объектов установки (_guard_setter);
+# справочники — право «Справочники и шаблоны карточек»
+Editor = Annotated[AuthUser, Depends(require_permission(network=True))]
+RefsEditor = Annotated[AuthUser, Depends(require_permission("refs"))]
 
 
 class SetterBody(BaseModel):
@@ -97,9 +100,27 @@ async def group_setter_options(
             raise _http(exc)
 
 
+# Цель установки → вид объекта в правах (permissions.KINDS)
+_TARGET_KIND = {"consumers": "consumer", "pipes": "line", "sources": "source", "nodes": "node"}
+
+
+def _guard_setter(user: AuthUser, spec) -> None:
+    """Групповая установка меняет все выбранные объекты фрагментов — нужен охват «все»."""
+    kind = _TARGET_KIND.get(getattr(spec, "target", ""), "node")
+    if user.perms.scope(kind, "edit") != "all":
+        from permissions import need_label
+
+        raise HTTPException(status_code=403, detail={
+            "code": "permission_denied", "objects": [],
+            "message": f"Групповая установка — нужно право {need_label(kind, 'edit')}",
+        })
+
+
 @router.post("/api/v1/group-setters/{key}/preview")
 async def group_setter_preview(key: str, body: SetterBody, user: Editor):
     """Dry-run: сколько объектов/строк изменится, «было → станет» (без записи)."""
+    if key in gs.SETTERS:
+        _guard_setter(user, gs.get_spec(key))
     async with acquire_conn() as conn:
         try:
             return await gs.preview(conn, gs.get_spec(key), body.value, body.selection)
@@ -112,6 +133,7 @@ async def group_setter_apply(key: str, body: SetterBody, user: Editor):
     spec = gs.get_spec(key) if key in gs.SETTERS else None
     if spec is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": f"Установщик «{key}» не найден"})
+    _guard_setter(user, spec)
     require_mutations_enabled()
     async with acquire_conn() as conn:
         try:
@@ -182,7 +204,7 @@ async def dictionary_row(key: str, record_id: int):
 
 
 @router.post("/api/v1/dictionaries/{key}")
-async def dictionary_create(key: str, body: DictBody, user: Editor):
+async def dictionary_create(key: str, body: DictBody, user: RefsEditor):
     spec = dicts.get_spec(key) if key in dicts.DICTIONARIES else None
     if spec is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": f"Справочник «{key}» не найден"})
@@ -198,7 +220,7 @@ async def dictionary_create(key: str, body: DictBody, user: Editor):
 
 
 @router.put("/api/v1/dictionaries/{key}/{record_id}")
-async def dictionary_update(key: str, record_id: int, body: DictBody, user: Editor):
+async def dictionary_update(key: str, record_id: int, body: DictBody, user: RefsEditor):
     spec = dicts.get_spec(key) if key in dicts.DICTIONARIES else None
     if spec is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": f"Справочник «{key}» не найден"})
@@ -216,7 +238,7 @@ async def dictionary_update(key: str, record_id: int, body: DictBody, user: Edit
 
 
 @router.delete("/api/v1/dictionaries/{key}/{record_id}")
-async def dictionary_delete(key: str, record_id: int, user: Editor):
+async def dictionary_delete(key: str, record_id: int, user: RefsEditor):
     spec = dicts.get_spec(key) if key in dicts.DICTIONARIES else None
     if spec is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": f"Справочник «{key}» не найден"})

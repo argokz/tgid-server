@@ -16,7 +16,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
-from auth import AuthUser, require_roles
+from auth import AuthUser, require_roles, require_permission
 from database.connect import get_pool
 from database.fragment_transfer import (
     MAX_UPLOAD_BYTES,
@@ -39,8 +39,10 @@ router = APIRouter(tags=["fragments"])
 def _require_apply_rights(user: AuthUser, dry_run: bool) -> None:
     # dry-run тоже пишет (в откатываемой транзакции) — только при включённой записи
     require_topology_mutations_enabled()
-    if not dry_run and not user.has_role("admin"):
-        raise HTTPException(status_code=403, detail="Применение — роль admin (создание узлов и участков)")
+    # перенос и слияние фрагментов меняют чужие объекты — нужны права на все участки и узлы
+    if not dry_run and not all(user.perms.scope(k, a) == "all"
+                               for k in ("line", "node") for a in ("move", "delete")):
+        raise HTTPException(status_code=403, detail="Применение — права «Перемещение» и «Удаление» всех участков и узлов")
 
 
 def _error(e: Exception, what: str) -> HTTPException:
@@ -89,7 +91,7 @@ async def fragment_rows(fileid: int, _: Annotated[AuthUser, Depends(require_role
 @router.post("/api/fragments/import")
 @router.post("/api/v1/fragments/import")
 async def import_fragment(
-    user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))],
+    user: Annotated[AuthUser, Depends(require_permission("import", kind="line", action="create"))],
     file: UploadFile = File(..., description=".tgid (zip с tgid.txt) или tgid.txt"),
     name: Optional[str] = Form(None, description="Название нового фрагмента"),
     dry_run: bool = Form(True),
@@ -125,7 +127,7 @@ class MergeRequest(BaseModel):
 
 @router.post("/api/fragments/merge")
 @router.post("/api/v1/fragments/merge")
-async def merge(body: MergeRequest, user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))]):
+async def merge(body: MergeRequest, user: Annotated[AuthUser, Depends(require_permission("import", kind="line", action="create"))]):
     """Слияние: копии фрагментов сводятся в новый фрагмент (unite_tgid.py); исходные не меняются."""
     _require_apply_rights(user, body.dry_run)
 

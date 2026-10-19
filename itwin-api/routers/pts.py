@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
-from auth import AuthUser, require_mutations_enabled, require_roles
+from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from database import group_setters as gs
 from database import pts_sites as pts
 from database import typed_edit as te
@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["pts"])
 
-Editor = Annotated[AuthUser, Depends(require_roles("editor", cap="pts"))]
+Editor = Annotated[AuthUser, Depends(require_permission("journals"))]
 PREFIX = "/api/v1/pts"
 
 
