@@ -11,6 +11,7 @@ from auth import AuthUser, require_mutations_enabled, require_roles
 from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
+from database.bends import line_bends
 from database.line_types import (
     LINE_TYPE_LABELS,
     LINE_TYPES,
@@ -470,6 +471,22 @@ async def api_line_type(
         }
     except Exception as e:
         raise _topology_http_error(e, "reading line type")
+
+
+@router.get("/api/v1/topology/line/{id}/bends")
+async def api_line_bends(
+    id: int,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Отводы участка по геометрии и местные сопротивления паспортов (его и парной трубы) —
+    для предпросмотра «Отводы → местные сопротивления»; запись — PUT card-edit."""
+    try:
+        async with acquire_conn() as conn:
+            return await line_bends(conn, id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise _topology_http_error(e, "reading line bends")
 
 
 @router.post("/api/v1/topology/line/{id}/type")
