@@ -143,6 +143,10 @@ def test_routes_follow_permissions(monkeypatch):
     assert client.put("/api/v1/card-edit", json=pipe, headers=_bearer("calculator")).status_code == 403
     # расчёт: режимщик — да, оператор — нет
     assert client.post("/api/v1/calculations/run", json={}, headers=_bearer("operator")).status_code == 403
+    # «убрать узел, соединив трубы» и окно удаления: режимщику — нет
+    assert client.post("/api/v1/topology/node/5/dissolve", json={"dry_run": True},
+                       headers=_bearer("calculator")).status_code == 403
+    assert client.get("/api/v1/topology/node/5/delete-preview", headers=_bearer("viewer")).status_code == 403
     # управление пользователями — только с правом users_admin
     assert client.get("/api/v1/admin/users", headers=_bearer("editor")).status_code == 403
     assert client.get("/api/v1/admin/roles", headers=_bearer("admin")).json()["model"]["roles"][1]["label"] == "Режимщик"

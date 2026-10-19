@@ -773,8 +773,11 @@ async def delete_line(
     expected_version: Optional[str] = None,
     actor: Optional[str] = None,
     expected_section_id: Optional[int] = None,
+    include_pair: bool = False,
 ) -> dict:
     """Мягкое удаление участка вместе с его паспортом; отчёт по зависимому оборудованию.
+
+    include_pair — вместе с парной трубой П/О (find_pair_line, общая трасса), одной операцией.
 
     Оборудование (задвижки, регуляторы…) на удалённой линии не пропадает
     (soft-delete сохраняет данные), но возвращается в отчёте, чтобы оператор
@@ -784,12 +787,20 @@ async def delete_line(
     async def body(conn, op):
         await _lock_active(conn, "line", [line_id], {line_id: expected_version})
         await _check_line_section(conn, line_id, expected_section_id)
-        await _capture_lines_with_passports(conn, op, [line_id])
+        pair = await find_pair_line(conn, line_id) if include_pair else None
+        ids = [line_id] + ([pair["line_id"]] if pair else [])
+        if pair:
+            await _lock_active(conn, "line", [pair["line_id"]])
+        await _capture_lines_with_passports(conn, op, ids)
         now = datetime.now()
         equipment = await line_dependency_report(conn, line_id)
-        await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = $1", line_id, now)
-        await _soft_remove_heatpipesections(conn, [line_id], now)
-        result = {"line_id": line_id, "dependent_equipment": equipment}
+        if pair:
+            for k, v in (await line_dependency_report(conn, pair["line_id"])).items():
+                equipment[k] = equipment.get(k, 0) + v
+        await conn.execute("UPDATE linesobj SET removed = 1, archivechangedate = $2 WHERE id = ANY($1::int[])", ids, now)
+        await _soft_remove_heatpipesections(conn, ids, now)
+        result = {"line_id": line_id, "dependent_equipment": equipment,
+                  "pair_line_id": pair["line_id"] if pair else None, "removed_lines": ids}
         await op.audit("DELETE", "linesobj", line_id, result)
         return result
 

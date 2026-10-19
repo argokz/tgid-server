@@ -11,6 +11,7 @@ from auth import AuthUser, permission_http_error, require_mutations_enabled, req
 from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, convert_point, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
+from database.topology_dissolve import dissolve_node, line_delete_preview, node_delete_preview
 from database.bends import line_bends
 from database.line_types import (
     LINE_TYPE_LABELS,
@@ -62,8 +63,8 @@ async def _guard(user: AuthUser, kind: str, action: str,
                  targets: Optional[dict[str, list[int]]] = None) -> None:
     """403, если нет права kind × action; с targets охват own пропускает только объекты пользователя."""
     try:
-        if not targets:
-            ensure_can(user.perms, kind, action)
+        # без права — отказ сразу; база нужна только охвату own (проверка автора)
+        if ensure_can(user.perms, kind, action) == "all" or not targets:
             return
         async with acquire_conn() as conn:
             await ensure_targets(conn, user.perms, user.username, kind, action, targets)
@@ -636,17 +637,66 @@ async def api_delete_line(
     user: Net,
     expected_version: VersionField = None,
     expected_section_id: Optional[int] = Query(None, description="heatpipesections.id из карточки (сверка, 409 object_mismatch)"),
+    include_pair: bool = Query(False, description="вместе с парной трубой П/О"),
 ):
     require_topology_mutations_enabled()
-    await _guard(user, "line", "delete", {"linesobj": [line_id]})
+    targets = [line_id]
+    if include_pair:
+        async with acquire_conn() as conn:
+            pair = await find_pair_line(conn, line_id)
+        if pair:
+            targets.append(pair["line_id"])
+    await _guard(user, "line", "delete", {"linesobj": targets})
     try:
         result = await delete_line(
             line_id, expected_version=expected_version, actor=user.username,
-            expected_section_id=expected_section_id,
+            expected_section_id=expected_section_id, include_pair=include_pair,
         )
         return {"status": "success", "id": line_id, **result}
     except Exception as e:
         raise _topology_http_error(e, f"deleting line {line_id}")
+
+
+class DissolveRequest(BaseModel):
+    dry_run: bool = False
+    expected_version: VersionField = None
+
+
+@router.get("/api/v1/topology/node/{id}/delete-preview")
+async def api_node_delete_preview(id: int, _: Net):
+    """Окно удаления узла: его участки, ссылки на него, можно ли убрать его, соединив трубы."""
+    try:
+        async with acquire_conn() as conn:
+            return await node_delete_preview(conn, id)
+    except Exception as e:
+        raise _topology_http_error(e, "node delete preview")
+
+
+@router.get("/api/v1/topology/line/{id}/delete-preview")
+async def api_line_delete_preview(id: int, _: Net):
+    """Окно удаления участка: паспорт, оборудование, парная труба П/О."""
+    try:
+        async with acquire_conn() as conn:
+            return await line_delete_preview(conn, id)
+    except Exception as e:
+        raise _topology_http_error(e, "line delete preview")
+
+
+@router.post("/api/v1/topology/node/{id}/dissolve")
+async def api_dissolve_node(id: int, req: DissolveRequest, user: Net):
+    """Убрать узел, соединив его трубы (две трубы или две пары П/О) в одну; dry_run — план и причины."""
+    if not req.dry_run:
+        require_topology_mutations_enabled()
+    # узел исчезает, одна труба продлевается, вторая снимается
+    await _guard_node(user, id, "delete")
+    lines = await _incident_lines(id)
+    if lines:
+        await _guard(user, "line", "move", {"linesobj": lines})
+        await _guard(user, "line", "delete", {"linesobj": lines})
+    try:
+        return await dissolve_node(id, dry_run=req.dry_run, expected_version=req.expected_version, actor=user.username)
+    except Exception as e:
+        raise _topology_http_error(e, f"dissolving node {id}")
 
 
 @router.post("/api/topology/split-line")

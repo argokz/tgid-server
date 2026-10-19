@@ -55,7 +55,7 @@ def test_delete_line_proceeds_when_section_matches():
     conn = FakeConn([_lock_rule({LINE: (0, TS, "1")}), *_refs()])
     res, *_ = _run(lambda: delete_line(LINE, expected_section_id=SECTION), conn)
     assert res["line_id"] == LINE
-    assert [c[2][0] for c in conn.executed("UPDATE linesobj")] == [LINE]
+    assert [c[2][0] for c in conn.executed("UPDATE linesobj")] == [[LINE]]
 
 
 def test_delete_line_without_expectation_keeps_old_behaviour():
