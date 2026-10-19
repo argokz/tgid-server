@@ -39,7 +39,7 @@ from database.topology import (
     ground_length_sql,
     name_new_nodes,
 )
-from database.node_types import check_node_type, insert_node_card
+from database.node_types import check_card_values, check_node_type, insert_node_card
 from database.topology_transfer import SPLIT_TRANSFER_RULES
 
 # Новая точка ближе этого к узлу — это тот же узел (иначе «почти совпадающие» узлы рвут сеть).
@@ -128,6 +128,10 @@ def normalize_points(points: list[dict]) -> list[dict]:
             if kind != "new":
                 raise ValueError(f"Точка {i + 1}: тип узла задаётся только новому узлу")
             p["node_type"] = check_node_type(p["node_type"])
+        if p.get("card"):
+            if kind != "new":
+                raise ValueError(f"Точка {i + 1}: поля карточки задаются только новому узлу")
+            p["card"] = check_card_values(p.get("node_type") or "US", p["card"])
         p["index"] = i
         prev = result[-1] if result else None
         if prev is not None and _same_point(prev, p):
@@ -513,7 +517,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         await name_new_nodes(conn, [new_id])
         node_type = check_node_type(p.get("node_type") or "US")
         if node_type != "US":
-            await insert_node_card(conn, op.journal, new_id, node_type)
+            await insert_node_card(conn, op.journal, new_id, node_type, p.get("card"))
         point_node[i] = new_id
         created_nodes.append(new_id)
 

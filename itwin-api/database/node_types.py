@@ -43,6 +43,14 @@ NEW_CARD_VALUES: dict[str, dict[str, object]] = {
     "IS": {"tn_1": 8.0, "tn_5": -32.0},
 }
 CONSUMER_TYPES = frozenset({"PR", "PO"})
+# Текстовые поля, которые можно задать новой карточке сразу (ввод в здание: подпись и номер дома).
+# Улица (realConsumers.streetID) не пишется: справочник улиц в базах пуст, адрес хранят в имени.
+CARD_TEXT_FIELDS: dict[str, frozenset[str]] = {
+    "PR": frozenset({"name", "housenumber"}),
+    "PO": frozenset({"name"}),
+    "IS": frozenset({"name"}),
+    "HS": frozenset({"name"}),
+}
 
 NODE_FLAGS: dict[str, str] = {"setpress": "setpressnodes", "refill": "refillnodes"}
 NODE_FLAG_LABELS: dict[str, str] = {"setpress": "Узел с заданным напором", "refill": "Узел подпитки"}
@@ -56,6 +64,23 @@ def check_node_type(node_type: str) -> str:
     if t not in NODE_TYPES:
         raise ValueError(f"Неизвестный тип узла: {node_type}")
     return t
+
+
+def check_card_values(node_type: str, values: Optional[dict]) -> dict:
+    """Поля новой карточки: только CARD_TEXT_FIELDS типа, строки без пустых."""
+    if not values:
+        return {}
+    allowed = CARD_TEXT_FIELDS.get(node_type, frozenset())
+    result: dict[str, str] = {}
+    for k, v in values.items():
+        if k not in allowed:
+            raise ValueError(f"Поле {k} не задаётся карточке «{NODE_TYPE_LABELS.get(node_type, node_type)}» при создании")
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            result[k] = text
+    return result
 
 
 async def _existing_tables(conn, tables) -> set[str]:
@@ -96,14 +121,28 @@ async def node_cards(conn, node_id: int) -> dict:
     }
 
 
-async def insert_node_card(conn, journal, node_id: int, node_type: str) -> Optional[dict]:
-    """Карточка типа для узла (умолчания десктопа); None — у типа нет таблицы."""
+async def insert_node_card(
+    conn, journal, node_id: int, node_type: str, card_values: Optional[dict] = None,
+) -> Optional[dict]:
+    """Карточка типа для узла (умолчания десктопа + card_values); None — у типа нет таблицы."""
     table = NODE_TYPES[node_type]
+    extra = check_card_values(node_type, card_values)
     if not table:
         return None
     if table not in await _existing_tables(conn, [table]):
         raise ValueError(f"В базе нет таблицы {table} — тип «{NODE_TYPE_LABELS[node_type]}» недоступен")
-    values = {"nodeid": node_id, **NEW_CARD_VALUES.get(node_type, {})}
+    if extra:
+        limits = {r["column_name"]: r["len"] for r in await conn.fetch(
+            "SELECT column_name, character_maximum_length AS len FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = $1 AND column_name = ANY($2::text[])",
+            table, list(extra),
+        )}
+        for k, v in extra.items():
+            if k not in limits:
+                raise ValueError(f"В таблице {table} нет поля {k}")
+            if limits[k] and len(v) > limits[k]:
+                raise ValueError(f"{k}: не длиннее {limits[k]} символов (сейчас {len(v)})")
+    values = {"nodeid": node_id, **NEW_CARD_VALUES.get(node_type, {}), **extra}
     cols = list(values)
     placeholders = ", ".join(f"${i + 1}" for i in range(len(cols)))
     card_id = await conn.fetchval(
@@ -111,7 +150,7 @@ async def insert_node_card(conn, journal, node_id: int, node_type: str) -> Optio
         *values.values(),
     )
     journal.created(table, card_id)
-    return {"table": table, "type": node_type, "id": card_id}
+    return {"table": table, "type": node_type, "id": card_id, **({"values": extra} if extra else {})}
 
 
 async def _inner_scheme(conn, node_id: int) -> dict:

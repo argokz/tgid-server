@@ -11,6 +11,12 @@ from auth import AuthUser, require_mutations_enabled, require_roles
 from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
+from database.line_types import (
+    LINE_TYPE_LABELS,
+    LINE_TYPES,
+    change_line_type,
+    line_cards,
+)
 from database.node_types import (
     NODE_FLAG_LABELS,
     NODE_TYPE_LABELS,
@@ -27,6 +33,7 @@ from database.topology import (
     create_node,
     delete_line,
     delete_node,
+    find_pair_line,
     get_line_geometry,
     get_line_ref,
     get_versions,
@@ -74,6 +81,18 @@ class NodeTypeRequest(BaseModel):
     node_type: NodeTypeField
     dry_run: bool = False
     expected_version: VersionField = None
+
+
+class LineTypeRequest(BaseModel):
+    # вид линии (database/line_types.LINE_TYPES): line — участок, damper — задвижка, pump — насос…
+    line_type: Literal[
+        "line", "pump", "pressregulator", "consregulator", "damper", "regarmature",
+        "bypass", "diaphragm", "pressdropregulator", "reversevalve",
+    ]
+    dry_run: bool = False
+    expected_version: VersionField = None
+    # парная труба (подача ↔ обратка) меняет тип вместе, как двухтрубная линия десктопа
+    include_pair: bool = True
 
 
 class NodeFlagRequest(BaseModel):
@@ -134,6 +153,8 @@ class ChainPoint(BaseModel):
     lat: Optional[float] = None
     # тип нового узла (только kind=new): карточка типа создаётся в той же операции
     node_type: Optional[NodeTypeField] = None
+    # поля новой карточки (ввод в здание: name, housenumber — database/node_types.CARD_TEXT_FIELDS)
+    card: Optional[dict[str, Optional[str]]] = None
 
 
 class ChainRequest(BaseModel):
@@ -419,6 +440,54 @@ async def api_set_node_flag(
         )
     except Exception as e:
         raise _topology_http_error(e, "setting node flag")
+
+
+@router.get("/api/v1/topology/line/{id}/type")
+async def api_line_type(
+    id: int,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Тип линии (участок или оборудование), её карточки, парная труба и версия."""
+    try:
+        async with acquire_conn() as conn:
+            row = await conn.fetchrow(
+                "SELECT internalnodeid, externalsignlineid FROM linesobj WHERE id = $1 AND COALESCE(removed, 0) = 0", id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"Участок {id} не найден или удалён")
+            info = await line_cards(conn, id)
+            pair = await find_pair_line(conn, id)
+        versions = await get_versions([], [id])
+        return {
+            "line_id": id,
+            **info,
+            "label": LINE_TYPE_LABELS.get(info["kind"], info["kind"]),
+            "inner": bool(row["internalnodeid"]),
+            "sign": row["externalsignlineid"],
+            "pair_line_id": pair["line_id"] if pair else None,
+            "types": [{"value": k, "title": LINE_TYPE_LABELS[k]} for k in LINE_TYPES],
+            "version": (versions.get("lines") or {}).get(str(id), {}).get("version"),
+        }
+    except Exception as e:
+        raise _topology_http_error(e, "reading line type")
+
+
+@router.post("/api/v1/topology/line/{id}/type")
+async def api_change_line_type(
+    id: int,
+    req: LineTypeRequest,
+    user: Annotated[AuthUser, Depends(require_roles("admin", cap="network_struct"))],
+):
+    """Смена типа линии — участок ↔ оборудование (как «Изменить тип объекта» десктопа); dry_run — что удалится."""
+    if not req.dry_run:
+        require_topology_mutations_enabled()
+    try:
+        return await change_line_type(
+            id, req.line_type, dry_run=req.dry_run, expected_version=req.expected_version,
+            include_pair=req.include_pair, actor=user.username,
+        )
+    except Exception as e:
+        raise _topology_http_error(e, "changing line type")
 
 
 @router.delete("/topology/node/{id}")
