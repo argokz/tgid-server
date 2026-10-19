@@ -160,6 +160,11 @@ class DbRoleMiddleware:
 
 app.add_middleware(DbRoleMiddleware)
 
+# Журнал действий пользователей (activity.py): правки, расчёты, выгрузки, выходы — после ответа
+from activity import ActivityMiddleware  # noqa: E402
+
+app.add_middleware(ActivityMiddleware)
+
 
 @app.exception_handler(asyncpg.exceptions.InsufficientPrivilegeError)
 async def _pg_privilege_error(request: Request, exc: asyncpg.exceptions.InsufficientPrivilegeError):

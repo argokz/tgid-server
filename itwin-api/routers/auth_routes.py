@@ -7,6 +7,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 
+import activity
 import cities as city_access
 import login_guard
 from app_logging import get_logger
@@ -59,14 +60,20 @@ async def auth_login(body: LoginRequest, request: Request):
 
     ip = login_guard.client_ip(request)
     login_guard.check(ip, body.username)
+    agent = request.headers.get("user-agent", "")
     try:
         result = await _verify_login(body)
     except HTTPException as exc:
         if exc.status_code == 401:
             login_guard.record_failure(ip, body.username)
             logger.warning("Неудачный вход: логин %r, адрес %s", body.username[:64], ip)
+            # журнал действий: логин попытки, без пароля
+            await activity.write(username=body.username[:64], action="LOGIN_FAIL", method="POST",
+                                 path=request.url.path, status=401, ip=ip, user_agent=agent)
         raise
     login_guard.record_success(ip, body.username)
+    await activity.write(username=result.username, action="LOGIN", method="POST", path=request.url.path,
+                         status=200, ip=ip, user_agent=agent, details={"role": result.role})
     return result
 
 
