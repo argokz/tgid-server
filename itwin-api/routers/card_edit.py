@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated, Any, Literal, Optional
 
 from asyncpg.exceptions import UndefinedColumnError
@@ -26,6 +27,8 @@ from database import typed_edit as te
 from database.connect import acquire_conn
 from database.db import create_select_line, create_select_node
 from database.sql_ident import UnknownIdentifierError
+from database.sql_ident import resolve_table
+from database.topology_journal import OperationJournal
 from permissions import PermissionDenied, ensure_can, ensure_targets, table_kind
 from routers.group_setters import _audit_writer
 
@@ -35,6 +38,38 @@ router = APIRouter(tags=["card-edit"])
 # Право проверяется по виду объектов правки (_guard_*): у режимщика — потребители и оборудование и т. п.
 Editor = Annotated[AuthUser, Depends(get_current_user)]
 PREFIX = "/api/v1/card-edit"
+
+_TABLE_TITLES = {"heatpipesections": "паспорт участка", "linesobj": "участок", "nodes": "узел",
+                 "realconsumers": "потребитель", "generalizedconsumers": "обобщённый потребитель",
+                 "heatsources": "источник", "pumpstations": "насосная станция",
+                 "setpressnodes": "заданный напор", "refillnodes": "подпитка"}
+
+
+def card_edit_summary(rows: list[dict]) -> dict:
+    """Запись журнала для правки карточки: что изменено (для «Истории» и подписи «Отменить»)."""
+    from utils.russian_names import russian_names_manager
+
+    def label(table: str, field: str) -> str:
+        # подпись поля как в карточке (rus_names десктопа); нет — имя колонки
+        try:
+            name = russian_names_manager.get_russian_name(f"{table}|{field}")[0]
+        except Exception:  # noqa: BLE001
+            name = ""
+        return name if name and name.lower() != field.lower() else field
+
+    fields = []
+    for r in rows:
+        for field, ch in (r.get("changed") or {}).items():
+            fields.append({"table": r.get("table"), "id": r.get("key"), "field": field,
+                           "label": label(str(r.get("table") or ""), field),
+                           "old": ch.get("old"), "new": ch.get("new")})
+    first = rows[0]
+    table = str(first.get("table") or "").lower()
+    what = f"{_TABLE_TITLES.get(table, table)} {first.get('key')}"
+    shown = ", ".join(f"{f['label']}: {f['old']} → {f['new']}" for f in fields[:3])
+    more = f" и ещё {len(fields) - 3}" if len(fields) > 3 else ""
+    return {"text": f"{what} — {shown}{more}", "fields": fields[:50], "table": table, "id": first.get("key")}
+
 
 # Вид карточки → вид объекта в правах (permissions.KINDS)
 CARD_PERM_KIND: dict[str, str] = {
@@ -396,8 +431,20 @@ async def card_edit_save(body: SaveBody, user: Editor):
     async with acquire_conn() as conn:
         try:
             async with conn.transaction():
+                # общая история отмены с правкой сети: образы строк до правки (Ctrl+Z, «История»)
+                journal = await OperationJournal.open(conn, dry_run=body.dry_run)
+                if journal.enabled:
+                    for table, ids in rows.items():
+                        await journal.capture_ids(conn, await resolve_table(conn, table), ids)
                 result = await ce.save_card(conn, [c.model_dump() for c in body.changes], body.versions,
                                             audit_row=_audit_writer(user), dry_run=body.dry_run)
+                changed_rows = [r for r in result["rows"] if r.get("changed")]
+                if journal.enabled and changed_rows:
+                    result["operation_id"] = await journal.commit(
+                        conn, actor=user.username, operation="CARD_EDIT",
+                        group_id=str(changed_rows[0].get("change_group_id") or uuid.uuid4()),
+                        summary=card_edit_summary(changed_rows),
+                    )
         except (te.TypedEditError, UnknownIdentifierError) as exc:
             raise _http(exc)
     if not body.dry_run and any(r.get("changed") for r in result["rows"]):

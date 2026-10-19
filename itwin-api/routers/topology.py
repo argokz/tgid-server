@@ -12,6 +12,7 @@ from database.connect import acquire_conn
 from database.topology_cad import ChainValidationError, convert_point, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
 from database.topology_dissolve import dissolve_node, line_delete_preview, node_delete_preview
+from database.topology_history import operation_history, undo_to
 from database.bends import line_bends
 from database.line_types import (
     LINE_TYPE_LABELS,
@@ -829,6 +830,23 @@ async def api_undo(
         return await undo_last_operation(user.username, operation_id=req.operation_id)
     except Exception as e:
         raise _topology_http_error(e, "undoing topology operation")
+
+
+class UndoToRequest(BaseModel):
+    operation_id: int = Field(..., ge=1)
+
+
+@router.get("/api/v1/topology/history")
+async def api_history(user: Net, limit: int = Query(30, ge=1, le=200)):
+    """«История»: последние операции пользователя (сеть и карточки), новые сверху; bbox — «Показать»."""
+    return {"items": await operation_history(user.username, limit)}
+
+
+@router.post("/api/v1/topology/undo-to")
+async def api_undo_to(req: UndoToRequest, user: Net):
+    """Откатить свои операции от последней до выбранной включительно; первая неотменяемая — стоп."""
+    require_topology_mutations_enabled()
+    return await undo_to(user.username, req.operation_id)
 
 
 @router.get("/api/v1/topology/redo")
