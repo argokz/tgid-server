@@ -130,11 +130,11 @@ def test_prepare_items_reports_row_errors_and_requires_mapping():
         ni.prepare_items(src, {**params, "mapping": {"key": "nope", "x": "X", "y": "Y"}})
 
 
-def test_lines_only_from_shp_and_multipart_rejected():
+def test_table_lines_need_xy_and_multipart_rejected():
     from shapely.geometry import MultiLineString
 
     table = ni.parse_upload([("n.csv", b"a;b\n1;2\n")])
-    with pytest.raises(ValueError, match="только из SHP"):
+    with pytest.raises(ValueError, match="X / долгота точки"):
         ni.prepare_items(table, {"mode": "lines", "mapping": {}})
     content = _shp_zip([MultiLineString([[(0, 0), (1, 1)], [(2, 2), (3, 3)]])], {"DU": [100]})
     src = ni.parse_upload([("l.zip", content)])

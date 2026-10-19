@@ -661,3 +661,40 @@ async def snap_data(
             if r["geojson"]
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Ввод точки по координатам (этап F): WGS84, местная система (9998, м), десктоп (x/y узлов, см)
+# ---------------------------------------------------------------------------
+
+POINT_CRS = ("wgs84", "local", "desktop")
+
+
+async def convert_point(conn, x: float, y: float, crs: str) -> dict:
+    """Точка в одной системе → во всех трёх: {lng, lat, local: {x, y}, desktop: {x, y}}.
+
+    Пересчёт — PostGIS по spatial_ref_sys базы (в Шатуре под 9998 — свой Меркатор), без
+    определений в коде. Десктоп: сантиметры местной системы, Y с обратным знаком (nodes.x/y).
+    """
+    from database.network_import import point_to_source_xy
+
+    if crs not in POINT_CRS:
+        raise ValueError(f"Система координат — одна из: {', '.join(POINT_CRS)}")
+    sx, sy, srid = point_to_source_xy(float(x), float(y), crs)
+    row = await conn.fetchrow(
+        """
+        WITH p AS (SELECT ST_SetSRID(ST_MakePoint($1, $2), $3) AS g),
+             w AS (SELECT ST_Transform(g, 4326) AS g4, ST_Transform(g, 9998) AS g9 FROM p)
+        SELECT ST_X(g4) AS lng, ST_Y(g4) AS lat, ST_X(g9) AS lx, ST_Y(g9) AS ly FROM w
+        """,
+        sx, sy, srid,
+    )
+    lng, lat = float(row["lng"]), float(row["lat"])
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90) or lng != lng or lat != lat:
+        raise ValueError("Координаты вне области проекции")
+    lx, ly = float(row["lx"]), float(row["ly"])
+    return {
+        "lng": lng, "lat": lat,
+        "local": {"x": round(lx, 3), "y": round(ly, 3)},
+        "desktop": {"x": round(lx * 100.0, 1), "y": round(-ly * 100.0, 1)},
+    }

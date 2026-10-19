@@ -24,6 +24,10 @@
 Координаты: WGS84 (долгота/широта), местная система (SRID 9998, метры) или координаты
 десктопа (nodes.x/y: сантиметры местной системы, Y с обратным знаком). SHP с .prj
 перепроецируется в WGS84 сам; без .prj система указывается явно.
+
+Исполнительная съёмка (этап F плана CAD): трассы участков — ещё из GPX (треки, маршруты; WGS84),
+DXF (LINE/LWPOLYLINE/POLYLINE, система — по выбору, можно фильтровать слои) и таблицы точек
+съёмки (X/Y по порядку строк; колонка «трасса» делит точки на линии) — см. database/survey_formats.
 """
 
 from __future__ import annotations
@@ -40,12 +44,14 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from database.outage_simulation import invalidate_outage_cache
+from database.survey_formats import parse_dxf, parse_gpx
 from database.topology import (
     _capture_incident_lines,
     _create_line_passport,
     _new_node_reference,
     _run,
     ground_length_sql,
+    name_new_nodes,
 )
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -56,6 +62,9 @@ LOCAL_SRID = 9998
 
 MODES = ("nodes", "lines", "coords")
 SOURCE_CRS = ("auto", "wgs84", "local", "desktop")
+# источники с геометрией (остальное — таблицы X/Y); GPX и DXF — только линии
+GEOMETRY_KINDS = ("shp", "gpx", "dxf")
+LINE_ONLY_KINDS = ("gpx", "dxf")
 
 # Поля назначения по режимам: ключ → (подпись, обязательное)
 TARGET_FIELDS: dict[str, dict[str, tuple[str, bool]]] = {
@@ -68,6 +77,9 @@ TARGET_FIELDS: dict[str, dict[str, tuple[str, bool]]] = {
         "elevation": ("Отметка земли, м", False),
     },
     "lines": {
+        "x": ("X / долгота точки съёмки (для таблицы)", True),
+        "y": ("Y / широта точки съёмки (для таблицы)", True),
+        "trace": ("Трасса: номер линии (точки одной линии — подряд)", False),
         "regnum": ("Рег. номер участка", False),
         "diameter": ("Внутренний диаметр, мм", False),
         "length": ("Длина, м (иначе по геометрии)", False),
@@ -89,6 +101,7 @@ _SUGGEST: dict[str, tuple[str, ...]] = {
     "diameter": ("d", "dn", "du", "ду", "диаметр", "diameter", "diam", "d_mm"),
     "length": ("l", "len", "length", "длина", "l_m"),
     "key": ("id", "node_id", "nodeid", "sys", "code", "kod", "код", "код узла", "externalnodename", "узел"),
+    "trace": ("trace", "line", "line_id", "линия", "трасса", "№ линии", "номер линии", "участок"),
 }
 
 
@@ -110,7 +123,7 @@ class _RowError(Exception):
 
 @dataclass
 class ParsedSource:
-    kind: str  # "shp" | "table"
+    kind: str  # "shp" | "gpx" | "dxf" | "table"
     columns: list[str]
     rows: list[dict[str, Any]]
     # номер строки для отчёта: строка Excel/CSV (с заголовком) или номер объекта SHP с 1
@@ -306,16 +319,27 @@ def parse_upload(
     if exts & {".zip", ".shp"}:
         return _parse_shp(files, encoding)
     if len(files) != 1:
-        raise ValueError("Excel/CSV загружается одним файлом")
+        raise ValueError("Excel/CSV, GPX и DXF загружаются одним файлом")
     name, content = files[0]
     ext = os.path.splitext(name.lower())[1]
+    if ext in (".gpx", ".dxf"):
+        kind = ext[1:]
+        rows, geoms, warnings = (parse_gpx if kind == "gpx" else parse_dxf)(content)
+        columns = list(rows[0].keys())
+        if kind == "dxf":
+            warnings.append("Система координат в DXF не записана — выберите её (местная, десктоп или WGS84)")
+        return ParsedSource(
+            kind, columns, rows, list(range(1, len(rows) + 1)), geometries=geoms, geometry_type="LineString",
+            crs="WGS84 (GPX)" if kind == "gpx" else None, geometry_srid=4326 if kind == "gpx" else None,
+            warnings=warnings,
+        )
     if ext in (".xlsx", ".xlsm"):
         return _parse_xlsx(content, sheet)
     if ext in (".csv", ".txt"):
         return _parse_csv(content, encoding)
     if ext == ".xls":
         raise ValueError("Формат .xls (Excel 97–2003) не поддерживается — сохраните файл как .xlsx или CSV")
-    raise ValueError(f"Неподдерживаемый файл {name}: нужен .zip/.shp, .xlsx или .csv")
+    raise ValueError(f"Неподдерживаемый файл {name}: нужен .zip/.shp, .xlsx, .csv, .gpx или .dxf")
 
 
 def _norm(name: str) -> str:
@@ -339,8 +363,16 @@ def suggest_mapping(mode: str, columns: list[str], has_geometry: bool) -> dict[s
     return result
 
 
+def _layer_counts(src: ParsedSource) -> list[dict]:
+    counts: dict[str, int] = {}
+    for r in src.rows:
+        name = str(r.get("layer") or "0")
+        counts[name] = counts.get(name, 0) + 1
+    return [{"layer": k, "count": v} for k, v in sorted(counts.items())]
+
+
 def describe_source(src: ParsedSource, mode: str) -> dict:
-    has_geometry = src.kind == "shp"
+    has_geometry = src.kind in GEOMETRY_KINDS
     return {
         "kind": src.kind,
         "columns": src.columns,
@@ -358,6 +390,8 @@ def describe_source(src: ParsedSource, mode: str) -> dict:
             if not (has_geometry and k in ("x", "y"))
         ],
         "suggested_mapping": suggest_mapping(mode, src.columns, has_geometry),
+        # слои DXF: можно взять только нужные (params.layers)
+        "layers": _layer_counts(src) if src.kind == "dxf" else [],
     }
 
 
@@ -429,22 +463,28 @@ def prepare_items(src: ParsedSource, params: dict) -> list[_Item]:
     if unknown:
         raise ValueError(f"Нет колонок в файле: {', '.join(unknown)}")
     fields = TARGET_FIELDS[mode]
-    use_geometry = src.kind == "shp"
+    use_geometry = src.kind in GEOMETRY_KINDS
+    if src.kind in LINE_ONLY_KINDS and mode != "lines":
+        raise ValueError(f"{src.kind.upper()} — трассы участков: выберите режим «Участки»")
     for key, (label, required) in fields.items():
         if use_geometry and key in ("x", "y"):
             continue
         if required and not mapping.get(key):
             raise ValueError(f"Не сопоставлено обязательное поле «{label}»")
-    if mode == "lines" and not use_geometry:
-        raise ValueError("Участки импортируются только из SHP с линиями")
     source_crs = params.get("source_crs") or "auto"
-    if use_geometry and src.geometry_srid is None and source_crs in ("auto", "desktop"):
-        raise ValueError("У SHP нет .prj: укажите систему координат (WGS84 или местная)")
+    if use_geometry and src.geometry_srid is None and source_crs == "auto":
+        raise ValueError(f"В {src.kind.upper()} нет системы координат: укажите её (WGS84, местная или десктоп)")
     if not use_geometry and source_crs == "auto":
         raise ValueError("Укажите систему координат колонок X/Y")
+    if mode == "lines" and not use_geometry:
+        return _prepare_table_traces(src, mapping, source_crs)
+    layers = params.get("layers")
+    wanted_layers = {str(x) for x in layers} if layers else None
 
     items: list[_Item] = []
     for idx, (row, number) in enumerate(zip(src.rows, src.row_numbers)):
+        if wanted_layers is not None and str(row.get("layer") or "0") not in wanted_layers:
+            continue
         item = _Item(row=number, attrs={k: row.get(col) for k, col in mapping.items() if col})
         try:
             if use_geometry:
@@ -453,6 +493,12 @@ def prepare_items(src: ParsedSource, params: dict) -> list[_Item]:
                     raise ValueError("нет геометрии")
                 if src.geometry_srid is not None:
                     item.srid = src.geometry_srid
+                elif source_crs == "desktop":
+                    # десктоп: сантиметры местной системы, Y с обратным знаком
+                    from shapely.ops import transform
+
+                    geom = transform(lambda x, y, z=None: (x / 100.0, -y / 100.0), geom)
+                    item.srid = LOCAL_SRID
                 else:
                     item.srid = 4326 if source_crs == "wgs84" else LOCAL_SRID
                 if mode == "lines":
@@ -495,6 +541,54 @@ def prepare_items(src: ParsedSource, params: dict) -> list[_Item]:
     return items
 
 
+def _prepare_table_traces(src: ParsedSource, mapping: dict[str, str], source_crs: str) -> list[_Item]:
+    """Таблица точек съёмки → трассы: точки по порядку строк, колонка «трасса» делит их на линии.
+
+    Строка-элемент импорта — первая строка трассы; атрибуты участка (рег. номер, Ду, длина) — из неё.
+    Ошибка в любой точке — ошибка всей трассы (с номером строки).
+    """
+    groups: dict[str, list[tuple[int, dict]]] = {}
+    for row, number in zip(src.rows, src.row_numbers):
+        key = _text(row.get(mapping["trace"])) if mapping.get("trace") else None
+        groups.setdefault(key or "1", []).append((number, row))
+    items: list[_Item] = []
+    for key, rows in groups.items():
+        first_number, first = rows[0]
+        item = _Item(row=first_number, attrs={k: first.get(col) for k, col in mapping.items() if col and k not in ("x", "y")})
+        item.attrs["trace"] = key
+        try:
+            pts: list[tuple[float, float]] = []
+            srid = None
+            for number, row in rows:
+                try:
+                    x = to_float(row.get(mapping["x"]))
+                    y = to_float(row.get(mapping["y"]))
+                    if x is None or y is None:
+                        raise ValueError("нет координат X/Y")
+                    px, py, srid = point_to_source_xy(x, y, source_crs)
+                except ValueError as e:
+                    raise ValueError(f"строка {number}: {e}") from e
+                if not pts or (px, py) != pts[-1]:
+                    pts.append((px, py))
+            if len(pts) < 2:
+                raise ValueError(f"в трассе «{key}» меньше двух разных точек")
+            item.srid = srid
+            item.wkt = "LINESTRING(" + ", ".join(f"{px!r} {py!r}" for px, py in pts) + ")"
+            for k in ("diameter", "length"):
+                if k in item.attrs:
+                    item.attrs[k] = to_float(item.attrs[k])
+            if item.attrs.get("diameter") is not None and not (0 < item.attrs["diameter"] <= 2000):
+                raise ValueError("диаметр вне 0…2000 мм")
+            if item.attrs.get("length") is not None and not (0 < item.attrs["length"] <= 100000):
+                raise ValueError("длина вне 0…100 000 м")
+            if "regnum" in item.attrs:
+                item.attrs["regnum"] = _text(item.attrs["regnum"])
+        except ValueError as e:
+            item.error = str(e)
+        items.append(item)
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Импорт в транзакции
 # ---------------------------------------------------------------------------
@@ -523,7 +617,7 @@ async def _insert_node(conn, lng: float, lat: float, fileid: int, attrs: dict) -
     ref = await _new_node_reference(conn, lng, lat, fileid, None, None)
     if ref["externalcodeid"] is None:
         raise _RowError(f"у фрагмента {fileid} нет кода (externalcodes) — узел не попадёт в расчёт")
-    return await conn.fetchval(
+    node_id = await conn.fetchval(
         """
         INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
                            fileid, externalcodeid, externalsignid, internalnodeid,
@@ -532,7 +626,7 @@ async def _insert_node(conn, lng: float, lat: float, fileid: int, attrs: dict) -
           ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
           ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
           -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
-          0, $3, 1,
+          0, $3, 13,
           $4, $5, $6, NULL,
           $7, $8, $9, $10
         ) RETURNING id
@@ -541,6 +635,9 @@ async def _insert_node(conn, lng: float, lat: float, fileid: int, attrs: dict) -
         ref["fileid"], ref["externalcodeid"], ref["externalsignid"],
         attrs.get("code"), attrs.get("name"), attrs.get("regnum"), attrs.get("elevation"),
     )
+    # как addNodeUS десктопа: вид «неустановленный» (13), без кода — имя «Узел_<id>»
+    await name_new_nodes(conn, [node_id])
+    return node_id
 
 
 async def _fragment_exists(conn, fileid: Optional[int]) -> None:
@@ -652,12 +749,12 @@ async def _import_lines(conn, op, items: list[_Item], params: dict, report: dict
                     """
                     WITH g AS (SELECT ST_Transform(ST_Force2D(ST_SetSRID(ST_GeomFromText($3), $4)), 9998) AS g)
                     INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate, fileid,
-                                          internalnodeid, registnum)
+                                          internalnodeid, registnum, externalsignlineid)
                     SELECT $1, $2,
                            ST_SetPoint(
                              ST_SetPoint(g.g, 0, (SELECT shape FROM nodes WHERE id = $1)),
                              ST_NumPoints(g.g) - 1, (SELECT shape FROM nodes WHERE id = $2)),
-                           0, $5, $6, NULL, $7
+                           0, $5, $6, NULL, $7, 1
                     FROM g
                     RETURNING id
                     """,
@@ -854,6 +951,9 @@ def validate_params(params: dict) -> dict:
         raise ValueError(f"source_crs — одно из {', '.join(SOURCE_CRS)}")
     if params.get("match_by", "code") not in ("id", "code"):
         raise ValueError("match_by — id или code")
+    layers = params.get("layers")
+    if layers is not None and (not isinstance(layers, list) or not all(isinstance(x, str) for x in layers)):
+        raise ValueError("layers — список имён слоёв DXF")
     tol = float(params.get("snap_tolerance_m", 1.0))
     if not (0 <= tol <= MAX_SNAP_TOLERANCE_M):
         raise ValueError(f"Допуск привязки — 0…{MAX_SNAP_TOLERANCE_M:g} м")

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app_logging import get_logger
 from auth import AuthUser, require_mutations_enabled, require_roles
 from database.connect import acquire_conn
-from database.topology_cad import ChainValidationError, create_chain, snap_data
+from database.topology_cad import ChainValidationError, convert_point, create_chain, snap_data
 from database.topology_diagnostics import get_topology_diagnostics
 from database.bends import line_bends
 from database.line_types import (
@@ -156,6 +156,13 @@ class ChainPoint(BaseModel):
     node_type: Optional[NodeTypeField] = None
     # поля новой карточки (ввод в здание: name, housenumber — database/node_types.CARD_TEXT_FIELDS)
     card: Optional[dict[str, Optional[str]]] = None
+
+
+class ConvertPointRequest(BaseModel):
+    # wgs84 — долгота/широта; local — местная система (SRID 9998), м; desktop — x/y узлов десктопа, см
+    crs: Literal["wgs84", "local", "desktop"]
+    x: float
+    y: float
 
 
 class ChainRequest(BaseModel):
@@ -471,6 +478,19 @@ async def api_line_type(
         }
     except Exception as e:
         raise _topology_http_error(e, "reading line type")
+
+
+@router.post("/api/v1/topology/convert-point")
+async def api_convert_point(
+    req: ConvertPointRequest,
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+):
+    """Точка по координатам → WGS84, местная система и координаты десктопа (ввод точки трассы)."""
+    try:
+        async with acquire_conn() as conn:
+            return await convert_point(conn, req.x, req.y, req.crs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/api/v1/topology/line/{id}/bends")

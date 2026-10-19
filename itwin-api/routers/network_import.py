@@ -44,7 +44,7 @@ async def _read_files(files: list[UploadFile]) -> list[tuple[str, bytes]]:
 @router.post("/api/v1/import/inspect")
 async def import_inspect(
     user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))],
-    files: list[UploadFile] = File(..., description="zip с shapefile, файлы .shp/.shx/.dbf/.prj/.cpg, .xlsx или .csv"),
+    files: list[UploadFile] = File(..., description="zip с shapefile, файлы .shp/.shx/.dbf/.prj/.cpg, .xlsx, .csv, .gpx или .dxf"),
     mode: str = Form("nodes", description="nodes | lines | coords"),
     encoding: Optional[str] = Form(None),
     sheet: Optional[str] = Form(None),
@@ -66,7 +66,7 @@ async def import_run(
     user: Annotated[AuthUser, Depends(require_roles("editor", cap="network_struct"))],
     files: list[UploadFile] = File(...),
     params: str = Form(..., description="JSON: mode, fileid, source_crs, mapping, match_by, snap_tolerance_m, "
-                                        "recalc_lengths, build_missing_lines, skip_errors, encoding, sheet"),
+                                        "recalc_lengths, build_missing_lines, skip_errors, encoding, sheet, layers (DXF)"),
     dry_run: bool = Form(True),
 ):
     """Превью (dry_run) или применение импорта; ошибки строк при применении без skip_errors — 422."""
