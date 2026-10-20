@@ -166,14 +166,30 @@ async def get_fragments():
         raise HTTPException(status_code=500, detail="Ошибка при получении фрагментов")
 
 
-# Охват фрагментов (WGS84) по действующим узлам — выбор фрагмента центрирует карту (QA F25).
+# Охват фрагментов (WGS84) по действующим узлам — выбор фрагмента и «Домой» центрируют карту (QA F25).
 # Узлы внутренних схем не в счёт: их координаты условные, охват уходил бы за город.
+# Охват — по каждому фрагменту отдельно и без случайных далёких узлов (узел без координат у 0°, 0°:
+# в Шатуре у «Петербурга» их 28 — карта уходила бы на пол-Земли): «ядро» фрагмента — 2–98 % узлов
+# по долготе и широте, к нему — все узлы не дальше трёх размеров ядра (и не меньше ~20 км) от его краёв.
+# Охват выбранных фрагментов — объединение охватов фрагментов (Шатура и Москва — обе на экране).
 FRAGMENTS_EXTENT_SQL = """
-    SELECT ST_XMin(e) AS min_lng, ST_YMin(e) AS min_lat, ST_XMax(e) AS max_lng, ST_YMax(e) AS max_lat
-      FROM (SELECT ST_Extent(ST_Transform(n.shape, 4326)) AS e
-              FROM nodes n
-             WHERE n.fileid = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL
-               AND n.internalnodeid IS NULL) s
+    WITH p AS (
+      SELECT n.fileid, ST_X(t.g) AS x, ST_Y(t.g) AS y
+        FROM nodes n, LATERAL (SELECT ST_Transform(n.shape, 4326) AS g) t
+       WHERE n.fileid = ANY($1::int[]) AND COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL
+         AND n.internalnodeid IS NULL
+    ), core AS (
+      SELECT fileid,
+             percentile_cont(0.02) WITHIN GROUP (ORDER BY x) AS x0, percentile_cont(0.98) WITHIN GROUP (ORDER BY x) AS x1,
+             percentile_cont(0.02) WITHIN GROUP (ORDER BY y) AS y0, percentile_cont(0.98) WITHIN GROUP (ORDER BY y) AS y1
+        FROM p GROUP BY fileid
+    ), kept AS (
+      SELECT p.x, p.y
+        FROM p JOIN core c USING (fileid)
+       WHERE p.x BETWEEN c.x0 - greatest(3 * (c.x1 - c.x0), 0.3) AND c.x1 + greatest(3 * (c.x1 - c.x0), 0.3)
+         AND p.y BETWEEN c.y0 - greatest(3 * (c.y1 - c.y0), 0.2) AND c.y1 + greatest(3 * (c.y1 - c.y0), 0.2)
+    )
+    SELECT min(x) AS min_lng, min(y) AS min_lat, max(x) AS max_lng, max(y) AS max_lat FROM kept
 """
 
 

@@ -40,3 +40,10 @@ def test_extent_empty_and_required(monkeypatch):
     client = _client(monkeypatch, _Conn({"min_lng": None, "min_lat": None, "max_lng": None, "max_lat": None}))
     assert client.get("/api/v1/fragments/extent", params={"fragment_id": 5}).json()["bbox"] is None
     assert client.get("/api/v1/fragments/extent").status_code == 422
+
+
+def test_extent_sql_per_fragment_without_far_outliers():
+    # охват по фрагменту: «ядро» 2–98 % узлов, далёкие узлы (без координат, у 0°, 0°) не в счёт
+    sql = core.FRAGMENTS_EXTENT_SQL
+    assert "GROUP BY fileid" in sql and "percentile_cont(0.02)" in sql and "percentile_cont(0.98)" in sql
+    assert "n.internalnodeid IS NULL" in sql
