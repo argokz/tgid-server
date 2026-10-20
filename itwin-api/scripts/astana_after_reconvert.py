@@ -5,9 +5,12 @@
   - нет функций tg_format* — слои GeoServer uzel/heatpipesections падают, карта пустая;
   - нет индекса nodes_internalnodeid_idx (знак камеры на карте) и таблиц миграций API.
 
-Скрипт проверяет базу и, если чего-то нет, применяет sql/astana/*.sql и sql/migrations/*.sql одной
-транзакцией (все скрипты идемпотентные). Пока конвертер работает — базы нет, нет таблиц сети или в
-ней идёт запись, — ничего не делает и выходит с кодом 0: следующий запуск из планировщика повторит.
+С 22.10.2026 это делает сам API (database/city_schema.py — при запуске и раз в 10 минут), отдельная
+задача планировщика не нужна; скрипт — для ручной проверки (--check) и применения.
+
+Скрипт проверяет базу и применяет SQL только недостающих пунктов (у каждого свой идемпотентный файл
+из sql/) одной транзакцией. Пока конвертер работает — базы нет, нет таблиц сети или в ней идёт
+запись, — ничего не делает и выходит с кодом 0: следующий запуск повторит.
 
   python scripts/astana_after_reconvert.py --db astanagid_2026_09_22            проверить и применить
   python scripts/astana_after_reconvert.py --db astanagid_2026_09_22 --check    только проверить
@@ -29,84 +32,22 @@ import psycopg2
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-# SRID 9998 по городам: (скрипт, проверка «описан правильно», система, без которой база не готова)
-SRID_9998 = {
-    'astana': (ROOT / 'sql' / 'astana' / '01_srid_9998.sql',
-               "select coalesce((select proj4text like '%+lon_0=72 %' from spatial_ref_sys where srid = 9998), false)",
-               9995),
-    'shatura': (ROOT / 'sql' / 'shatura' / '01_srid_9998.sql',
-                "select coalesce((select proj4text like '+proj=merc %' and srtext like '%Shatura%'"
-                " from spatial_ref_sys where srid = 9998), false)",
-                3857),
-}
-COMMON_SQL = [
-    ROOT / 'sql' / 'astana' / '02_tg_format_functions.sql',
-    ROOT / 'sql' / 'astana' / '03_nodes_internalnodeid_idx.sql',
-    ROOT / 'sql' / 'migrations' / '20260927_topology_undo_log.sql',
-    ROOT / 'sql' / 'migrations' / '20260928_heat_losses_report_out.sql',
-    ROOT / 'sql' / 'migrations' / '20261015_calculation_protocol.sql',
-    ROOT / 'sql' / 'migrations' / '20261017_card_template.sql',
-    ROOT / 'sql' / 'migrations' / '20261018_topology_redo.sql',
-]
+sys.path.insert(0, str(ROOT))
+from database.city_schema import BUSY_SQL, CITIES, city_items, ready_sql  # noqa: E402
 
-# что должно быть в базе: название → запрос, возвращающий true
-COMMON_CHECKS = {
-    'функции tg_format*': (
-        "select count(*) >= 8 from pg_proc where pronamespace = 'public'::regnamespace and proname like 'tg\\_format%'"),
-    'индекс nodes_internalnodeid_idx': "select to_regclass('public.nodes_internalnodeid_idx') is not null",
-    'таблица topology_undo_log': "select to_regclass('public.topology_undo_log') is not null",
-    'таблица heatlosses_report_out': "select to_regclass('public.heatlosses_report_out') is not null",
-    'таблица calculation_protocol': "select to_regclass('public.calculation_protocol') is not null",
-    'таблица card_template': "select to_regclass('public.card_template') is not null",
-    'повтор операций топологии': "select exists (select 1 from information_schema.columns where table_name = 'topology_undo_log' and column_name = 'after_rows')",
-}
-
-# база готова: конвертер создал таблицы сети и систему координат Астаны
-READY = (
-    "select to_regclass('public.nodes') is not null and to_regclass('public.linesobj') is not null"
-    " and to_regclass('public.heatpipesections') is not null and to_regclass('public.externalcodes') is not null"
-    " and exists (select 1 from spatial_ref_sys where srid = {base})"
-    " and exists (select 1 from spatial_ref_sys where srid = 9998)")
-
-SQL_FILES: list[Path] = []
-CHECKS: dict[str, str] = {}
+# Пункты (проверка → SQL) и готовность базы — общие с API (database/city_schema.py): API доводит
+# базу сам при запуске и раз в 10 минут; скрипт — для ручной проверки и применения.
+ITEMS: list = []
+CITY = 'astana'
 
 
-# только для города: (скрипты, проверки)
-CITY_EXTRA = {
-    'shatura': (
-        [ROOT / 'sql' / 'shatura' / '02_linesobj_internalnodeid.sql'],
-        {
-            # конвертер Шатуры не создаёт linesobj.internalnodeid — без неё падают привязка, отключения
-            'колонка linesobj.internalnodeid': (
-                "select exists (select 1 from information_schema.columns where table_schema = 'public'"
-                " and table_name = 'linesobj' and column_name = 'internalnodeid')"),
-            'триггер linesobj_internalnodeid': (
-                "select exists (select 1 from pg_trigger where tgname = 'linesobj_internalnodeid'"
-                " and tgrelid = 'public.linesobj'::regclass)"),
-        },
-    ),
-}
+def use_city(city: str) -> None:
+    global CITY
+    CITY = city
+    ITEMS[:] = city_items(city)
 
 
-def use_city(city: str) -> int:
-    """Скрипты и проверки города; → SRID, который должен быть в базе (основа описания 9998)"""
-    script, check, base = SRID_9998[city]
-    extra_sql, extra_checks = CITY_EXTRA.get(city, ([], {}))
-    SQL_FILES[:] = [script, *COMMON_SQL, *extra_sql]
-    CHECKS.clear()
-    CHECKS[f'SRID 9998 ({city})'] = check
-    CHECKS.update(COMMON_CHECKS)
-    CHECKS.update(extra_checks)
-    return base
-
-# в базе идёт запись (конвертер ещё работает)
-BUSY = r"""
-select count(*) from pg_stat_activity
- where datname = current_database() and pid <> pg_backend_pid() and backend_type = 'client backend'
-   and (state like 'idle in transaction%'
-        or (state = 'active' and query ~* '^\s*(insert|copy|create|alter|update|delete|drop|truncate|vacuum)'))
-"""
+BUSY = BUSY_SQL
 
 
 def log(msg: str) -> None:
@@ -122,16 +63,16 @@ def connect(db: str):
     return conn
 
 
-def missing(cur) -> list[str]:
+def missing(cur) -> list:
     out = []
-    for name, sql in CHECKS.items():
-        cur.execute(sql)
+    for item in ITEMS:
+        cur.execute(item.check)
         if not cur.fetchone()[0]:
-            out.append(name)
+            out.append(item)
     return out
 
 
-def run(db: str, check_only: bool, dry_run: bool, quiet: bool, base: int = 9995) -> int:
+def run(db: str, check_only: bool, dry_run: bool, quiet: bool) -> int:
     try:
         conn = connect(db)
     except (psycopg2.OperationalError, UnicodeDecodeError) as e:
@@ -142,16 +83,16 @@ def run(db: str, check_only: bool, dry_run: bool, quiet: bool, base: int = 9995)
     try:
         conn.autocommit = True
         cur = conn.cursor()
-        cur.execute(READY.format(base=base))
+        cur.execute(ready_sql(CITY))
         if not cur.fetchone()[0]:
-            log(f'{db}: нет таблиц сети или SRID {base}/9998 — конвертация не закончена, повторю позже')
+            log(f'{db}: нет таблиц сети или системы координат — конвертация не закончена, повторю позже')
             return 0
         todo = missing(cur)
         if not todo:
             if not quiet:
                 log(f'{db}: всё на месте')
             return 0
-        log(f'{db}: нет — {", ".join(todo)}')
+        log(f'{db}: нет — {", ".join(i.name for i in todo)}')
         if check_only:
             return 1
         cur.execute(BUSY)
@@ -164,19 +105,21 @@ def run(db: str, check_only: bool, dry_run: bool, quiet: bool, base: int = 9995)
         # не ждать долго блокировок (CREATE INDEX на nodes): лучше повторить при следующем запуске
         cur.execute("set local lock_timeout = '30s'")
         cur.execute("set local statement_timeout = '15min'")
-        for path in SQL_FILES:
+        # только недостающее: у каждого пункта свой идемпотентный SQL
+        files = [path for item in todo for path in item.files]
+        for path in files:
             cur.execute(path.read_text(encoding='utf-8-sig'))
         left = missing(cur)
         if left:
             conn.rollback()
-            log(f'{db}: после применения всё ещё нет — {", ".join(left)}; откат')
+            log(f'{db}: после применения всё ещё нет — {", ".join(i.name for i in left)}; откат')
             return 2
         if dry_run:
             conn.rollback()
             log(f'{db}: --dry-run — применилось бы без ошибок, откат')
             return 0
         conn.commit()
-        log(f'{db}: применено ({len(SQL_FILES)} скриптов)')
+        log(f'{db}: применено ({len(files)} скриптов)')
         return 0
     except psycopg2.errors.LockNotAvailable:
         conn.rollback()
@@ -198,11 +141,11 @@ def main() -> int:
     ap.add_argument('--check', action='store_true', help='только проверить, код 1 — чего-то нет')
     ap.add_argument('--dry-run', action='store_true', help='применить и откатить')
     ap.add_argument('--quiet', action='store_true', help='не писать «всё на месте» (для планировщика)')
-    ap.add_argument('--city', choices=sorted(SRID_9998), default='astana', help='город базы (система координат)')
+    ap.add_argument('--city', choices=sorted(CITIES), default='astana', help='город базы (система координат)')
     args = ap.parse_args()
     load_dotenv(ROOT / '.env')
-    base = use_city(args.city)
-    return max(run(db, args.check, args.dry_run, args.quiet, base) for db in args.db)
+    use_city(args.city)
+    return max(run(db, args.check, args.dry_run, args.quiet) for db in args.db)
 
 
 if __name__ == '__main__':

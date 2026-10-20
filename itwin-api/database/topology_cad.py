@@ -42,7 +42,7 @@ from database.topology import (
 )
 from database.node_types import check_card_values, check_node_type, insert_node_card
 from database.topology_transfer import SPLIT_TRANSFER_RULES
-from database.net_srid import net_srid
+from database.net_srid import line_inner_sql, lines_have_inner, net_srid
 
 # Новая точка ближе этого к узлу — это тот же узел (иначе «почти совпадающие» узлы рвут сеть).
 ALMOST_NODE_M = 0.3
@@ -255,7 +255,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
                  l AS (SELECT * FROM linesobj WHERE id = $1),
                  q AS (SELECT ST_LineInterpolatePoint(l.shape, ST_LineLocatePoint(l.shape, c.g)) AS p,
                               ST_Distance(l.shape, c.g) AS off FROM l, c)
-            SELECT l.id, l.nodeid1, l.nodeid2, COALESCE(l.fileid, n1.fileid) AS fileid, l.internalnodeid,
+            SELECT l.id, l.nodeid1, l.nodeid2, COALESCE(l.fileid, n1.fileid) AS fileid, {line_inner_sql("l")} AS internalnodeid,
                    n1.externalcodeid, n1.externalsignid, n1.fileid AS n1_fileid,
                    EXISTS (SELECT 1 FROM heatpipesections h WHERE h.lineid = l.id) AS is_pipe,
                    ST_X(q.p) AS x, ST_Y(q.p) AS y, q.off,
@@ -429,7 +429,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
                        ST_Y(ST_Transform(ST_PointOnSurface(ST_Intersection(l.shape, s.g)), 4326)) AS lat
                 FROM linesobj l, s
                 WHERE COALESCE(l.removed, 0) = 0 AND l.shape IS NOT NULL
-                  AND l.fileid = $3 AND l.internalnodeid IS NOT DISTINCT FROM $4
+                  AND l.fileid = $3 AND {line_inner_sql("l")} IS NOT DISTINCT FROM $4
                   AND ST_Intersects(l.shape, s.g)
                   AND l.id <> ALL($5::int[])
                   AND NOT (l.nodeid1 = ANY($6::int[]) OR l.nodeid2 = ANY($6::int[]))
@@ -539,17 +539,18 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
     for s in plan:
         n1, n2 = point_node[s["a"]], point_node[s["b"]]
         for sign in s["signs"]:
+            inner_col, inner_val = (", internalnodeid", ", $8") if lines_have_inner() else ("", "")
             line_id = await conn.fetchval(
                 f"""
                 INSERT INTO linesobj (nodeid1, nodeid2, externalsignlineid, shape, removed,
-                                      archivechangedate, fileid, internalnodeid)
+                                      archivechangedate, fileid{inner_col})
                 SELECT $3, $4, $5,
                        ST_SetPoint(ST_SetPoint({_segment_geom()}, 0, n1.shape), -1, n2.shape),
-                       0, $6, $7, $8
+                       0, $6, $7{inner_val}
                 FROM nodes n1, nodes n2 WHERE n1.id = $3 AND n2.id = $4
                 RETURNING id
                 """,
-                s["xs"], s["ys"], n1, n2, sign, now, ctx_fileid, ctx_inner,
+                s["xs"], s["ys"], n1, n2, sign, now, ctx_fileid, *([ctx_inner] if inner_col else []),
             )
             op.journal.created("linesobj", line_id)
             passport = await _create_line_passport(conn, line_id, n1, n2)
@@ -657,7 +658,7 @@ async def snap_data(
                    ST_AsGeoJSON(ST_Transform(l.shape, 4326), 8) AS geojson
             FROM linesobj l
             LEFT JOIN nodes n1 ON n1.id = l.nodeid1
-            WHERE COALESCE(l.removed, 0) = 0 AND l.internalnodeid IS NULL AND l.shape IS NOT NULL
+            WHERE COALESCE(l.removed, 0) = 0 AND {line_inner_sql("l")} IS NULL AND l.shape IS NOT NULL
               AND l.shape && {env}
               AND ($5::int[] IS NULL OR COALESCE(l.fileid, n1.fileid) = ANY($5::int[]))
             ORDER BY l.id LIMIT $6

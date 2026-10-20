@@ -5,6 +5,7 @@
 справочники, русские названия), CORS и сборка приложения.
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -45,11 +46,25 @@ from utils.ini import storage  # noqa: E402
 from utils.russian_names import russian_names_manager  # noqa: E402
 
 
+def _start_db_upkeep():
+    """Доводка базы города (database/city_schema.py) — при запуске и периодически, в фоне."""
+    from cities import current_city
+    from database.city_schema import upkeep_interval_s, upkeep_loop
+    from database.connect import get_pool
+
+    interval = upkeep_interval_s()
+    if not interval:
+        logger.info("Доводка базы города выключена (DB_UPKEEP_INTERVAL_S=0)")
+        return None
+    return asyncio.create_task(upkeep_loop(get_pool(), current_city(), interval))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Старт приложения...")
     assert_production_auth_safe()
     await init_db_pool()
+    upkeep = _start_db_upkeep()
     try:
         await init_users_db_pool()
     except Exception as exc:  # noqa: BLE001
@@ -68,6 +83,8 @@ async def lifespan(app: FastAPI):
         logger.error(f"Ошибка при инициализации русских названий: {str(e)}")
 
     yield
+    if upkeep is not None:
+        upkeep.cancel()
     logger.info("Завершение приложения...")
     await close_users_db_pool()
     await close_db_pool()

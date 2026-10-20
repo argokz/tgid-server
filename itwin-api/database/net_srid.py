@@ -17,6 +17,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_NET_SRID = 9998
 
 _net_srid = DEFAULT_NET_SRID
+# есть ли linesobj.internalnodeid (в Шатуре конвертер её не создаёт; city_schema добавляет)
+_lines_inner = True
+
+
+def line_inner_sql(alias: str = "l") -> str:
+    """SQL «схема участка» (узел-владелец внутренней схемы, NULL — основная сеть).
+
+    Без колонки linesobj.internalnodeid — по начальному узлу участка, как её и заполняют
+    (sql/shatura/02_linesobj_internalnodeid.sql): привязка и проверки трассы работают и в базе,
+    которую ещё не довели.
+    """
+    if _lines_inner:
+        return f"{alias}.internalnodeid"
+    return f"(SELECT nn.internalnodeid FROM nodes nn WHERE nn.id = {alias}.nodeid1)"
+
+
+def lines_have_inner() -> bool:
+    """Есть ли колонка linesobj.internalnodeid (писать её в новые участки)."""
+    return _lines_inner
+
+
+def set_lines_inner(present: bool) -> None:
+    global _lines_inner
+    _lines_inner = bool(present)
 
 
 def net_srid() -> int:
@@ -39,4 +63,12 @@ async def load_net_srid(conn) -> int:
     if srid and int(srid) > 0:
         set_net_srid(int(srid))
         logger.info("SRID геометрии сети: %s", _net_srid)
+    try:
+        set_lines_inner(await conn.fetchval(
+            "SELECT exists (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'"
+            " AND table_name = 'linesobj' AND column_name = 'internalnodeid')"))
+        if not _lines_inner:
+            logger.warning("В linesobj нет internalnodeid — схема участка берётся по начальному узлу")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Колонки linesobj не прочитаны: %s", e)
     return _net_srid
