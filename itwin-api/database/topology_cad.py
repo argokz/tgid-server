@@ -273,9 +273,15 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
     contexts = {(r["fileid"], r["internalnodeid"]) for r in nodes.values()}
     contexts |= {(r["fileid"], r["internalnodeid"]) for r in taps.values()}
     if len(contexts) > 1:
+        # кто где: «узел 12 — фрагмент 41; участок 7 — фрагмент 42» (внутренняя схема — отдельно)
+        where = [
+            f"{what} {i} — фрагмент {r['fileid']}" + (" (внутренняя схема)" if r["internalnodeid"] is not None else "")
+            for what, rows in (("узел", nodes), ("участок", taps))
+            for i, r in rows.items()
+        ]
         issues.append(_issue(
             "error", "mixed_context",
-            "Узлы и трубы цепочки из разных фрагментов или схем: участок соединяет объекты одного фрагмента",
+            "Начальный и конечный узлы участка должны быть в одном фрагменте: " + "; ".join(where),
         ))
     if contexts:
         ctx_fileid, ctx_inner = sorted(contexts, key=lambda c: (c[0] is None, c))[0]

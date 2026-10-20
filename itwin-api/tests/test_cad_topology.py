@@ -583,6 +583,8 @@ def test_chain_short_selfcrossing_and_mixed_fragments():
     res = _run_cad(lambda: create_chain(_TWO_NODES, dry_run=True),
                    _chain_conn(nodes={1: (74, 25, 1), 2: (75, 25, 1)}))
     assert "mixed_context" in {i["code"] for i in res["issues"]} and res["ok"] is False
+    mixed = next(i for i in res["issues"] if i["code"] == "mixed_context")
+    assert "узел 1 — фрагмент 74" in mixed["message"] and "узел 2 — фрагмент 75" in mixed["message"]
 
 
 def test_chain_new_node_near_existing_is_error_and_crossing_is_warning():
