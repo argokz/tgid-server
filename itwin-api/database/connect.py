@@ -91,6 +91,10 @@ async def init_db_pool():
             ),
         )
         logger.info("✅ Пул успешно инициализирован")
+        # SRID колонок shape сети (9998 в Алматы и Шатуре, 9995 в Астане) — для запросов правки сети
+        from database.net_srid import load_net_srid
+        async with pool.acquire() as conn:
+            await load_net_srid(conn)
     except socket.gaierror as e:
         logger.error(f"❌ Не удалось разрешить хост {DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}: {e}")
         raise DatabaseConnectionError(f"Не удалось подключиться к основной базе данных: хост {DATABASE_CONFIG['host']} недоступен")

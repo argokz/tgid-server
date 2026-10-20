@@ -42,6 +42,7 @@ from database.topology import (
 )
 from database.node_types import check_card_values, check_node_type, insert_node_card
 from database.topology_transfer import SPLIT_TRANSFER_RULES
+from database.net_srid import net_srid
 
 # Новая точка ближе этого к узлу — это тот же узел (иначе «почти совпадающие» узлы рвут сеть).
 ALMOST_NODE_M = 0.3
@@ -172,10 +173,11 @@ async def _capture_split(conn, op, line_id: int) -> None:
             continue
 
 
-_SEGMENT_GEOM = (
-    "ST_MakeLine(ARRAY(SELECT ST_SetSRID(ST_MakePoint(t.x, t.y), 9998) "
-    "FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(x, y, i) ORDER BY t.i))"
-)
+def _segment_geom() -> str:
+    return (
+        f"ST_MakeLine(ARRAY(SELECT ST_SetSRID(ST_MakePoint(t.x, t.y), {net_srid()}) "
+        "FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(x, y, i) ORDER BY t.i))"
+    )
 
 
 async def create_chain(
@@ -248,8 +250,8 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         if p["kind"] != "tap":
             continue
         row = await conn.fetchrow(
-            """
-            WITH c AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), 9998) AS g),
+            f"""
+            WITH c AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), {net_srid()}) AS g),
                  l AS (SELECT * FROM linesobj WHERE id = $1),
                  q AS (SELECT ST_LineInterpolatePoint(l.shape, ST_LineLocatePoint(l.shape, c.g)) AS p,
                               ST_Distance(l.shape, c.g) AS off FROM l, c)
@@ -322,7 +324,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         rows = await conn.fetch(
             "SELECT t.i, ST_X(g) AS x, ST_Y(g) AS y FROM unnest($1::float8[], $2::float8[]) "
             "WITH ORDINALITY AS t(lng, lat, i), "
-            "LATERAL (SELECT ST_Transform(ST_SetSRID(ST_MakePoint(t.lng, t.lat), 4326), 9998) AS g) s",
+            f"LATERAL (SELECT ST_Transform(ST_SetSRID(ST_MakePoint(t.lng, t.lat), 4326), {net_srid()}) AS g) s",
             [p["lng"] for p in free], [p["lat"] for p in free],
         )
         by_i = {int(r["i"]): r for r in rows}
@@ -357,11 +359,11 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
                 ))
         elif p["kind"] == "new" and ctx_fileid is not None:
             close = await conn.fetchrow(
-                """
-                SELECT id, ST_Distance(shape, ST_SetSRID(ST_MakePoint($1, $2), 9998)) AS d
+                f"""
+                SELECT id, ST_Distance(shape, ST_SetSRID(ST_MakePoint($1, $2), {net_srid()})) AS d
                 FROM nodes
                 WHERE COALESCE(removed, 0) = 0 AND fileid = $3 AND internalnodeid IS NOT DISTINCT FROM $4
-                  AND ST_DWithin(shape, ST_SetSRID(ST_MakePoint($1, $2), 9998), $5)
+                  AND ST_DWithin(shape, ST_SetSRID(ST_MakePoint($1, $2), {net_srid()}), $5)
                 ORDER BY d LIMIT 1
                 """,
                 p["x"], p["y"], ctx_fileid, ctx_inner, ALMOST_NODE_M,
@@ -389,7 +391,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         signs = line_signs(pipe_mode, end_sign(pts[b]))
         geo = await conn.fetchrow(
             f"SELECT {ground_length_sql('g')} AS length, ST_IsSimple(g) AS simple "
-            f"FROM (SELECT {_SEGMENT_GEOM} AS g) s",
+            f"FROM (SELECT {_segment_geom()} AS g) s",
             xs, ys,
         )
         length = float(geo["length"] or 0.0)
@@ -421,7 +423,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
             boundary_nodes = [e for e in ends if e is not None]
             for r in await conn.fetch(
                 f"""
-                WITH s AS (SELECT {_SEGMENT_GEOM} AS g)
+                WITH s AS (SELECT {_segment_geom()} AS g)
                 SELECT l.id,
                        ST_X(ST_Transform(ST_PointOnSurface(ST_Intersection(l.shape, s.g)), 4326)) AS lng,
                        ST_Y(ST_Transform(ST_PointOnSurface(ST_Intersection(l.shape, s.g)), 4326)) AS lat
@@ -514,10 +516,10 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
         if p["kind"] != "new":
             continue
         new_id = await conn.fetchval(
-            """
+            f"""
             INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
                                fileid, externalcodeid, externalsignid, internalnodeid)
-            VALUES (ST_SetSRID(ST_MakePoint($1, $2), 9998), $1 * 100.0, -$2 * 100.0, 0, $3,
+            VALUES (ST_SetSRID(ST_MakePoint($1, $2), {net_srid()}), $1 * 100.0, -$2 * 100.0, 0, $3,
                     CASE WHEN COALESCE($7::int, 0) = 0 THEN 13 END,
                     $4, $5, $6, $7)
             RETURNING id
@@ -542,7 +544,7 @@ async def _chain_body(conn, op, pts, pipe_mode, fileid, versions, review, dry_ru
                 INSERT INTO linesobj (nodeid1, nodeid2, externalsignlineid, shape, removed,
                                       archivechangedate, fileid, internalnodeid)
                 SELECT $3, $4, $5,
-                       ST_SetPoint(ST_SetPoint({_SEGMENT_GEOM}, 0, n1.shape), -1, n2.shape),
+                       ST_SetPoint(ST_SetPoint({_segment_geom()}, 0, n1.shape), -1, n2.shape),
                        0, $6, $7, $8
                 FROM nodes n1, nodes n2 WHERE n1.id = $3 AND n2.id = $4
                 RETURNING id
@@ -623,12 +625,12 @@ async def snap_data(
     async with pool.acquire() as conn:
         size = await conn.fetchrow(
             "SELECT ST_XMax(e) - ST_XMin(e) AS w, ST_YMax(e) - ST_YMin(e) AS h "
-            "FROM (SELECT ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 9998) AS e) s",
+            f"FROM (SELECT ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), {net_srid()}) AS e) s",
             min_lng, min_lat, max_lng, max_lat,
         )
         if max(float(size["w"]), float(size["h"])) > SNAP_MAX_SIDE_M:
             return {"too_large": True, "max_side_m": SNAP_MAX_SIDE_M, "nodes": [], "lines": [], "truncated": False}
-        env = "ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 9998)"
+        env = f"ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), {net_srid()})"
         node_rows = await conn.fetch(
             f"""
             SELECT n.id, n.fileid, n.externalsignid,
@@ -693,9 +695,9 @@ async def convert_point(conn, x: float, y: float, crs: str) -> dict:
         raise ValueError(f"Система координат — одна из: {', '.join(POINT_CRS)}")
     sx, sy, srid = point_to_source_xy(float(x), float(y), crs)
     row = await conn.fetchrow(
-        """
+        f"""
         WITH p AS (SELECT ST_SetSRID(ST_MakePoint($1, $2), $3) AS g),
-             w AS (SELECT ST_Transform(g, 4326) AS g4, ST_Transform(g, 9998) AS g9 FROM p)
+             w AS (SELECT ST_Transform(g, 4326) AS g4, ST_Transform(g, {net_srid()}) AS g9 FROM p)
         SELECT ST_X(g4) AS lng, ST_Y(g4) AS lat, ST_X(g9) AS lx, ST_Y(g9) AS ly FROM w
         """,
         sx, sy, srid,

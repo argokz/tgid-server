@@ -53,12 +53,12 @@ from database.topology import (
     ground_length_sql,
     name_new_nodes,
 )
+from database.net_srid import net_srid
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_ROWS = 5000
 MAX_ACTIONS_IN_REPORT = 500
 MAX_SNAP_TOLERANCE_M = 50.0
-LOCAL_SRID = 9998
 
 MODES = ("nodes", "lines", "coords")
 SOURCE_CRS = ("auto", "wgs84", "local", "desktop")
@@ -438,9 +438,9 @@ def point_to_source_xy(x: float, y: float, source_crs: str) -> tuple[float, floa
             raise ValueError("долгота/широта вне диапазона WGS84")
         return x, y, 4326
     if source_crs == "local":
-        return x, y, LOCAL_SRID
+        return x, y, net_srid()
     if source_crs == "desktop":
-        return x / 100.0, -y / 100.0, LOCAL_SRID
+        return x / 100.0, -y / 100.0, net_srid()
     raise ValueError("Укажите систему координат (WGS84, местная или десктоп)")
 
 
@@ -498,9 +498,9 @@ def prepare_items(src: ParsedSource, params: dict) -> list[_Item]:
                     from shapely.ops import transform
 
                     geom = transform(lambda x, y, z=None: (x / 100.0, -y / 100.0), geom)
-                    item.srid = LOCAL_SRID
+                    item.srid = net_srid()
                 else:
-                    item.srid = 4326 if source_crs == "wgs84" else LOCAL_SRID
+                    item.srid = 4326 if source_crs == "wgs84" else net_srid()
                 if mode == "lines":
                     if geom.geom_type == "MultiLineString":
                         if len(geom.geoms) != 1:
@@ -595,7 +595,7 @@ def _prepare_table_traces(src: ParsedSource, mapping: dict[str, str], source_crs
 
 async def _to_wgs84(conn, items: list[_Item]) -> None:
     """Точки местной системы → WGS84 одним запросом (x, y, srid заменяются на lon/lat 4326)."""
-    local = [it for it in items if it.error is None and it.x is not None and it.srid == LOCAL_SRID]
+    local = [it for it in items if it.error is None and it.x is not None and it.srid == net_srid()]
     if not local:
         return
     rows = await conn.fetch(
@@ -605,7 +605,7 @@ async def _to_wgs84(conn, items: list[_Item]) -> None:
              LATERAL (SELECT ST_Transform(ST_SetSRID(ST_MakePoint(t.x, t.y), $3), 4326) AS g) p
         ORDER BY t.i
         """,
-        [it.x for it in local], [it.y for it in local], LOCAL_SRID,
+        [it.x for it in local], [it.y for it in local], net_srid(),
     )
     for it, r in zip(local, rows):
         it.x, it.y, it.srid = float(r["lng"]), float(r["lat"]), 4326
@@ -618,14 +618,14 @@ async def _insert_node(conn, lng: float, lat: float, fileid: int, attrs: dict) -
     if ref["externalcodeid"] is None:
         raise _RowError(f"у фрагмента {fileid} нет кода (externalcodes) — узел не попадёт в расчёт")
     node_id = await conn.fetchval(
-        """
+        f"""
         INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
                            fileid, externalcodeid, externalsignid, internalnodeid,
                            externalnodename, nodename, registnumber, geomarknodearea)
         VALUES (
-          ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
-          ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
-          -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
+          ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}),
+          ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
+          -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
           0, $3, 13,
           $4, $5, $6, NULL,
           $7, $8, $9, $10
@@ -691,8 +691,8 @@ async def _import_nodes(conn, op, items: list[_Item], params: dict, report: dict
 
 async def _snap_or_create_node(conn, op, lng: float, lat: float, fileid: int, tolerance: float) -> tuple[int, bool]:
     near = await conn.fetchrow(
-        """
-        WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998) AS g)
+        f"""
+        WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}) AS g)
         SELECT n.id, n.externalcodeid FROM nodes n, p
         WHERE COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL AND n.fileid = $3
           AND n.internalnodeid IS NULL AND ST_DWithin(n.shape, p.g, $4)
@@ -723,7 +723,7 @@ async def _import_lines(conn, op, items: list[_Item], params: dict, report: dict
                          w AS (SELECT ST_Transform(g, 4326) AS g FROM src)
                     SELECT ST_X(ST_StartPoint(w.g)) AS x1, ST_Y(ST_StartPoint(w.g)) AS y1,
                            ST_X(ST_EndPoint(w.g)) AS x2, ST_Y(ST_EndPoint(w.g)) AS y2,
-                           {ground_length_sql('ST_Transform(w.g, 9998)')} AS len
+                           {ground_length_sql(f'ST_Transform(w.g, {net_srid()})')} AS len
                     FROM w
                     """,
                     it.wkt, it.srid,
@@ -746,8 +746,8 @@ async def _import_lines(conn, op, items: list[_Item], params: dict, report: dict
                 if dup:
                     raise _RowError(f"между узлами {n1} и {n2} уже есть участок {dup}")
                 line_id = await conn.fetchval(
-                    """
-                    WITH g AS (SELECT ST_Transform(ST_Force2D(ST_SetSRID(ST_GeomFromText($3), $4)), 9998) AS g)
+                    f"""
+                    WITH g AS (SELECT ST_Transform(ST_Force2D(ST_SetSRID(ST_GeomFromText($3), $4)), {net_srid()}) AS g)
                     INSERT INTO linesobj (nodeid1, nodeid2, shape, removed, archivechangedate, fileid,
                                           internalnodeid, registnum, externalsignlineid)
                     SELECT $1, $2,
@@ -866,17 +866,17 @@ async def _import_coords(conn, op, items: list[_Item], params: dict, report: dic
         await op.journal.capture_ids(conn, "nodes", [node_id])
         await _capture_incident_lines(conn, op, [node_id])
         old = await conn.fetchrow(
-            "SELECT ST_Distance(shape, ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), 9998)) AS shift, "
+            f"SELECT ST_Distance(shape, ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), {net_srid()})) AS shift, "
             "shape IS NULL AS had_no_shape FROM nodes WHERE id = $1",
             node_id, it.x, it.y,
         )
         now = datetime.now()
         await conn.execute(
-            """
+            f"""
             UPDATE nodes SET
-              shape = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
-              x = ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
-              y = -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
+              shape = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}),
+              x = ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
+              y = -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
               archivechangedate = $4
             WHERE id = $3
             """,

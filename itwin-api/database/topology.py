@@ -44,6 +44,7 @@ from database.topology_transfer import (
     reversed_external_sign,
     transfer_dependents,
 )
+from database.net_srid import net_srid
 
 logger = logging.getLogger(__name__)
 
@@ -97,13 +98,15 @@ PASSPORT_TEMPLATE_COLUMNS: tuple[str, ...] = (
 # Длина участка в метрах на земле. SRID 9998 — местная метрическая СК (Алматы, Астана):
 # плоская ST_Length, как в десктопе. В Шатуре под 9998 лежит Web Mercator: плоская длина там
 # завышена примерно в 1,7 раза (широта 55,6°), поэтому — длина по эллипсоиду.
-MERCATOR_9998_SQL = "(SELECT proj4text LIKE '+proj=merc%' FROM spatial_ref_sys WHERE srid = 9998)"
+def mercator_srid_sql() -> str:
+    """true, если под SRID сети базы лежит Меркатор (Шатура)."""
+    return f"(SELECT proj4text LIKE '+proj=merc%' FROM spatial_ref_sys WHERE srid = {net_srid()})"
 
 
 def ground_length_sql(geom: str) -> str:
-    """SQL-выражение длины геометрии в SRID 9998, м на земле (см. MERCATOR_9998_SQL)."""
+    """SQL-выражение длины геометрии в SRID 9998, м на земле (см. mercator_srid_sql)."""
     return (
-        f"(CASE WHEN {MERCATOR_9998_SQL} THEN ST_Length(ST_Transform({geom}, 4326)::geography) "
+        f"(CASE WHEN {mercator_srid_sql()} THEN ST_Length(ST_Transform({geom}, 4326)::geography) "
         f"ELSE ST_Length({geom}) END)"
     )
 
@@ -424,11 +427,11 @@ async def move_node(
         await _capture_incident_lines(conn, op, [node_id])
         now = datetime.now()
         await conn.execute(
-            """
+            f"""
             UPDATE nodes SET
-              shape = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
-              x = ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
-              y = -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
+              shape = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}),
+              x = ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
+              y = -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
               archivechangedate = $4
             WHERE id = $3
             """,
@@ -577,8 +580,8 @@ async def _new_node_reference(
     if ref is None or (fileid is not None and ref["fileid"] != fileid):
         # ближайший узел каждого фрагмента в радиусе (без fileid — чтобы заметить неоднозначность)
         nearest = await conn.fetch(
-            """
-            WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998) AS g)
+            f"""
+            WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}) AS g)
             SELECT * FROM (
               SELECT DISTINCT ON (n.fileid) n.id, n.fileid, n.externalcodeid, n.externalsignid,
                      n.internalnodeid, ST_Distance(n.shape, p.g) AS distance
@@ -648,13 +651,13 @@ async def create_node(
     async def body(conn, op):
         ref = await _new_node_reference(conn, lng, lat, fileid, near_node_id, near_line_id)
         new_id = await conn.fetchval(
-            """
+            f"""
             INSERT INTO nodes (shape, x, y, removed, archivechangedate, nodetypeid,
                                fileid, externalcodeid, externalsignid, internalnodeid)
             VALUES (
-              ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998),
-              ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
-              -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 9998)) * 100.0,
+              ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()}),
+              ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
+              -ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), {net_srid()})) * 100.0,
               0,
               $3,
               CASE WHEN COALESCE($7::int, 0) = 0 THEN 13 END, -- вид: неустановленный узел
@@ -968,11 +971,11 @@ async def _split_line_body(
     # 1. Locate the clicked point on the original geometry. The fraction is
     # reused for both halves so intermediate vertices are preserved.
     old_line = await conn.fetchrow(
-        """
+        f"""
         SELECT nodeid1, nodeid2,
                ST_LineLocatePoint(
                  shape,
-                 ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), 9998)
+                 ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), {net_srid()})
                ) AS split_fraction
         FROM linesobj
         WHERE id = $1 AND removed = 0 AND shape IS NOT NULL
@@ -1500,8 +1503,8 @@ async def update_line_geometry(
         # Концы новой геометрии должны лежать у узлов участка (или у прежних концов):
         # иначе геометрия «отрывается» от топологии. Принятые концы прижимаются к узлам.
         ends = await conn.fetchrow(
-            """
-            WITH g AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), 9998) AS geom),
+            f"""
+            WITH g AS (SELECT ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), {net_srid()}) AS geom),
                  l AS (SELECT shape FROM linesobj WHERE id = $1)
             SELECT
                 ST_Distance(ST_StartPoint(g.geom), n1.shape) AS d_start_node,
@@ -1530,7 +1533,7 @@ async def update_line_geometry(
             f"""
             UPDATE linesobj l
             SET shape = ST_SetPoint(
-                    ST_SetPoint(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), 9998), 0, n1.shape),
+                    ST_SetPoint(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($2), 4326), {net_srid()}), 0, n1.shape),
                     -1, n2.shape),
                 archivechangedate = $3
             FROM nodes n1, nodes n2

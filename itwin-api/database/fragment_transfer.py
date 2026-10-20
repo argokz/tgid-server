@@ -41,6 +41,7 @@ import zipfile
 from typing import Any, Optional
 
 from database.topology_transfer import _ident
+from database.net_srid import net_srid
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 SECTION = "-------------------------"
@@ -384,7 +385,7 @@ async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int]) -> d
     nodes_done = 0
     if node_ids:
         status = await conn.execute(
-            "UPDATE nodes SET shape = ST_SetSRID(ST_MakePoint(x / 100.0, -y / 100.0), 9998) "
+            f"UPDATE nodes SET shape = ST_SetSRID(ST_MakePoint(x / 100.0, -y / 100.0), {net_srid()}) "
             "WHERE id = ANY($1::int[]) AND x IS NOT NULL AND y IS NOT NULL AND (x <> 0 OR y <> 0)",
             node_ids,
         )
@@ -392,8 +393,8 @@ async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int]) -> d
     lines_done = 0
     if line_ids:
         status = await conn.execute(
-            r"""
-            UPDATE linesobj l SET shape = ST_SetSRID(ST_MakeLine(pts.p), 9998)
+            rf"""
+            UPDATE linesobj l SET shape = ST_SetSRID(ST_MakeLine(pts.p), {net_srid()})
               FROM (
                 SELECT l2.id,
                        ARRAY[ST_MakePoint(n1.x / 100.0, -n1.y / 100.0)]

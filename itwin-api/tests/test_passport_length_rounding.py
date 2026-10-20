@@ -4,7 +4,8 @@
 import re
 from pathlib import Path
 
-from database.topology import MERCATOR_9998_SQL, ground_length_sql
+from database.net_srid import set_net_srid
+from database.topology import ground_length_sql, mercator_srid_sql
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +25,17 @@ def test_pipesectlength_writes_are_rounded():
 
 def test_ground_length_uses_geography_only_for_mercator_9998():
     sql = ground_length_sql("l.shape")
-    assert MERCATOR_9998_SQL in sql
+    assert mercator_srid_sql() in sql and "srid = 9998" in sql
     assert "ST_Length(ST_Transform(l.shape, 4326)::geography)" in sql
     assert "ELSE ST_Length(l.shape) END" in sql
+
+
+def test_network_srid_from_database_goes_into_sql():
+    # Астана: колонки shape — SRID 9995; запросы правки сети берут SRID базы, а не жёсткий 9998
+    set_net_srid(9995)
+    try:
+        assert "srid = 9995" in ground_length_sql("l.shape")
+        from database.topology_cad import _segment_geom
+        assert "9995" in _segment_geom() and "9998" not in _segment_geom()
+    finally:
+        set_net_srid(9998)
