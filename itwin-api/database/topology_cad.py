@@ -623,9 +623,13 @@ async def snap_data(
     fragments = list(fragment_ids or []) or None
     pool = get_pool()
     async with pool.acquire() as conn:
+        # стороны окна — в метрах на земле: в Шатуре под SRID сети Меркатор, его «метры» на широте
+        # 55,6° длиннее земных в 1,77 раза, и привязка выключалась бы уже на окне ~3,4 км
         size = await conn.fetchrow(
-            "SELECT ST_XMax(e) - ST_XMin(e) AS w, ST_YMax(e) - ST_YMin(e) AS h "
-            f"FROM (SELECT ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), {net_srid()}) AS e) s",
+            "SELECT ST_Distance(ST_SetSRID(ST_MakePoint($1, ($2 + $4) / 2), 4326)::geography,"
+            "                   ST_SetSRID(ST_MakePoint($3, ($2 + $4) / 2), 4326)::geography) AS w,"
+            "       ST_Distance(ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,"
+            "                   ST_SetSRID(ST_MakePoint($1, $4), 4326)::geography) AS h",
             min_lng, min_lat, max_lng, max_lat,
         )
         if max(float(size["w"]), float(size["h"])) > SNAP_MAX_SIDE_M:

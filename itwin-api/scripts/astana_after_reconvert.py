@@ -72,13 +72,32 @@ SQL_FILES: list[Path] = []
 CHECKS: dict[str, str] = {}
 
 
+# только для города: (скрипты, проверки)
+CITY_EXTRA = {
+    'shatura': (
+        [ROOT / 'sql' / 'shatura' / '02_linesobj_internalnodeid.sql'],
+        {
+            # конвертер Шатуры не создаёт linesobj.internalnodeid — без неё падают привязка, отключения
+            'колонка linesobj.internalnodeid': (
+                "select exists (select 1 from information_schema.columns where table_schema = 'public'"
+                " and table_name = 'linesobj' and column_name = 'internalnodeid')"),
+            'триггер linesobj_internalnodeid': (
+                "select exists (select 1 from pg_trigger where tgname = 'linesobj_internalnodeid'"
+                " and tgrelid = 'public.linesobj'::regclass)"),
+        },
+    ),
+}
+
+
 def use_city(city: str) -> int:
     """Скрипты и проверки города; → SRID, который должен быть в базе (основа описания 9998)"""
     script, check, base = SRID_9998[city]
-    SQL_FILES[:] = [script, *COMMON_SQL]
+    extra_sql, extra_checks = CITY_EXTRA.get(city, ([], {}))
+    SQL_FILES[:] = [script, *COMMON_SQL, *extra_sql]
     CHECKS.clear()
     CHECKS[f'SRID 9998 ({city})'] = check
     CHECKS.update(COMMON_CHECKS)
+    CHECKS.update(extra_checks)
     return base
 
 # в базе идёт запись (конвертер ещё работает)

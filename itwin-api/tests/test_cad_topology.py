@@ -667,14 +667,14 @@ def test_router_maps_chain_validation_to_422_and_exposes_paths():
 
 
 def test_snap_data_rejects_large_window():
-    conn = FakeConn([("ST_XMax(e)", {"w": 9000.0, "h": 100.0})])
+    conn = FakeConn([("::geography) AS h", {"w": 9000.0, "h": 100.0})])
     res = _run_cad(lambda: topology_cad.snap_data((76.0, 43.0, 77.0, 43.5)), conn)
     assert res["too_large"] is True and res["nodes"] == []
 
 
 def test_snap_data_returns_nodes_and_lines_and_truncation():
     conn = FakeConn([
-        ("ST_XMax(e)", {"w": 900.0, "h": 600.0}),
+        ("::geography) AS h", {"w": 900.0, "h": 600.0}),
         ("FROM nodes n", [{"id": 1, "fileid": 74, "externalsignid": 1, "lng": 76.912345678, "lat": 43.2}] * 3),
         ("FROM linesobj l", [{"id": 5, "nodeid1": 1, "nodeid2": 2, "externalsignlineid": 1, "fileid": 74,
                               "pipe": True,
