@@ -672,6 +672,15 @@ def test_snap_data_rejects_large_window():
     assert res["too_large"] is True and res["nodes"] == []
 
 
+def test_snap_data_size_params_are_typed():
+    # арифметика над $N без типа в PostgreSQL: "operator is not unique: unknown + unknown" (22.10, прод)
+    import inspect
+    import re
+    src = inspect.getsource(topology_cad.snap_data)
+    assert not re.search(r"\$\d+ *[-+*/]", src), "параметр в арифметике без ::тип"
+    assert "($2::float8 + $4::float8) / 2" in src
+
+
 def test_snap_data_returns_nodes_and_lines_and_truncation():
     conn = FakeConn([
         ("::geography) AS h", {"w": 900.0, "h": 600.0}),

@@ -626,10 +626,11 @@ async def snap_data(
         # стороны окна — в метрах на земле: в Шатуре под SRID сети Меркатор, его «метры» на широте
         # 55,6° длиннее земных в 1,77 раза, и привязка выключалась бы уже на окне ~3,4 км
         size = await conn.fetchrow(
-            "SELECT ST_Distance(ST_SetSRID(ST_MakePoint($1, ($2 + $4) / 2), 4326)::geography,"
-            "                   ST_SetSRID(ST_MakePoint($3, ($2 + $4) / 2), 4326)::geography) AS w,"
-            "       ST_Distance(ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,"
-            "                   ST_SetSRID(ST_MakePoint($1, $4), 4326)::geography) AS h",
+            # параметры — с типом: без него сумма широт — «оператор не уникален: unknown + unknown»
+            "SELECT ST_Distance(ST_SetSRID(ST_MakePoint($1::float8, ($2::float8 + $4::float8) / 2), 4326)::geography,"
+            "                   ST_SetSRID(ST_MakePoint($3::float8, ($2::float8 + $4::float8) / 2), 4326)::geography) AS w,"
+            "       ST_Distance(ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography,"
+            "                   ST_SetSRID(ST_MakePoint($1::float8, $4::float8), 4326)::geography) AS h",
             min_lng, min_lat, max_lng, max_lat,
         )
         if max(float(size["w"]), float(size["h"])) > SNAP_MAX_SIDE_M:
