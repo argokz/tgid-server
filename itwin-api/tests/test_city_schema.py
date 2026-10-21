@@ -99,3 +99,11 @@ def test_every_item_sql_file_exists():
         for item in cs.city_items(city):
             for path in item.files:
                 assert path.exists(), path
+
+
+def test_mercator_kz_cities_need_no_own_srid():
+    for city in ("taraz", "aktobe", "shymkent"):
+        names = [i.name for i in cs.city_items(city)]
+        assert not any("SRID" in n for n in names)
+        assert "колонка linesobj.internalnodeid" not in names and "функции tg_format*" in names
+        assert "srid = 3857" in cs.ready_sql(city)

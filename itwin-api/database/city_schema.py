@@ -97,6 +97,11 @@ CITIES: dict[str, City] = {
              (SQL_DIR / "shatura" / "01_srid_9998.sql",)),
         _LINES_INNER,
     )),
+    # Конвертер записал сеть сразу в Web Mercator (колонки shape — SRID 3857): своя система не нужна,
+    # длины — по эллипсоиду (topology.ground_length_sql); linesobj.internalnodeid есть, как в Алматы
+    "taraz": City(base_srid=3857),
+    "aktobe": City(base_srid=3857),
+    "shymkent": City(base_srid=3857),
 }
 
 

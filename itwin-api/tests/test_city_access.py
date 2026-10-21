@@ -57,7 +57,7 @@ def _bearer(token):
 
 
 def test_catalog_default_and_custom(monkeypatch):
-    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana", "shatura"]
+    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent"]
     assert cities.cities_catalog()[1] == {"code": "astana", "label": "Астана", "path": "/tgid/astana/"}
     monkeypatch.setenv("TGID_CITIES", "almaty:Алматы, shymkent:Шымкент:/shym/, bad code:x, almaty:дубль")
     assert cities.cities_catalog() == [
@@ -115,7 +115,7 @@ def test_all_cities_user_and_master(client, monkeypatch):
     _status(monkeypatch, None)
     token = create_access_token(username="ivanov", role="editor", subject="5")
     me = client.get("/auth/me", headers=_bearer(token)).json()
-    assert me["all_cities"] is True and len(me["cities"]) == 3
+    assert me["all_cities"] is True and len(me["cities"]) == len(cities.city_codes())
     master = client.get("/auth/me", headers=_bearer(master_token())).json()
     assert master["all_cities"] is True and master["is_master"] is True
 
@@ -183,7 +183,7 @@ def test_admin_list_has_catalog(client, monkeypatch):
 
     monkeypatch.setattr(admin, "list_users", fake_list)
     body = client.get("/api/v1/admin/users", headers=_bearer(master_token())).json()
-    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana", "shatura"]
+    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent"]
 
 
 @pytest.mark.asyncio
@@ -243,3 +243,18 @@ def test_shatura_city_and_workspace(monkeypatch):
     assert cities.current_city() == "shatura" and cities.city_label() == "Шатура"
     assert cities.workspace_city("ShaturaGIS") == "shatura"
     assert "Шатура" in cities.geoserver_denied(["almaty"], "/geoserver/ShaturaGIS/wms?layers=ShaturaGIS:uzel")
+
+
+@pytest.mark.parametrize("db,code,label,ws", [
+    ("tarazgid", "taraz", "Тараз", "TarazGIS"),
+    ("aktobegid", "aktobe", "Актобе", "AktobeGIS"),
+    ("shymkentgid", "shymkent", "Шымкент", "ShymkentGIS"),
+])
+def test_kz_cities_by_db_name_and_workspace(monkeypatch, db, code, label, ws):
+    monkeypatch.delenv("TGID_CITY", raising=False)
+    monkeypatch.delenv("TGID_CITIES", raising=False)
+    monkeypatch.setenv("DB_NAME", db)
+    assert cities.current_city() == code and cities.city_label() == label
+    assert cities.workspace_city(ws) == code
+    assert label in cities.geoserver_denied(["almaty"], f"/geoserver/{ws}/wms?layers={ws}:uzel")
+    assert cities.geoserver_denied([code], f"/geoserver/{ws}/wms?layers={ws}:uzel") is None

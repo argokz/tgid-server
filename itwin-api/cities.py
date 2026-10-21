@@ -6,7 +6,7 @@
 
   TGID_CITIES="almaty:Алматы,astana:Астана,shatura:Шатура" — справочник: код:название[:путь веба], путь по умолчанию /tgid/<код>/
   TGID_CITY="astana"                         — код города этого API; без него — из DB_NAME
-                                               (almatygid → almaty, astanagid_2026_09_22 → astana, shatura → shatura)
+                                               (almatygid → almaty, astanagid_2026_09_22 → astana, shatura → shatura, tarazgid → taraz)
 Мастер-учётке доступны все города. Пользователи PostgreSQL (AUTH_BACKEND=pg) городом не ограничиваются:
 им доступ к базе города даёт сам PostgreSQL (GRANT CONNECT).
 """
@@ -17,7 +17,7 @@ import os
 import re
 from typing import Iterable, Optional
 
-DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура"
+DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент"
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
 
 
@@ -111,7 +111,8 @@ def denied_detail(city: Optional[str] = None) -> str:
 
 # --- GeoServer: город по рабочей области ---
 # GeoServer общий для всех городов; рабочая область города начинается с его кода
-# (AlmatyGIS, Almaty1, Almaty2 → almaty; AstanaGIS, Astana1, Astana2 → astana; ShaturaGIS → shatura). Рабочие области других
+# (AlmatyGIS, Almaty1, Almaty2 → almaty; AstanaGIS, Astana1, Astana2 → astana; ShaturaGIS → shatura;
+# TarazGIS, AktobeGIS, ShymkentGIS — по коду). Рабочие области других
 # проектов (не начинаются с кода города) городом не ограничиваются — нужен только вход.
 # Сервисы без рабочей области в пути (/geoserver/wms, /geoserver/gwc/...): город — по слоям в параметрах.
 GEOSERVER_GLOBAL_SEGMENTS = frozenset({

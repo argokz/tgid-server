@@ -22,7 +22,7 @@ import json
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from database.sql_ident import quote_ident, resolve_column, resolve_table
 
@@ -123,11 +123,18 @@ TARGETS: dict[str, Target] = {
     "nodes": Target("nodes", "Узлы", "nodes", None, _NODE_NAME.format(a="b")),
 }
 
-# Вычисляемые значения (алиас обновляемой таблицы — t). Только константы кода.
-EXPRESSIONS: dict[str, str] = {
-    # как topology.update_line_geometry: ST_Length в SRID 9998 (метры)
-    "line_length": "(SELECT round(ST_Length(l.shape)::numeric, 2)::float8 FROM linesobj l"
-                   " WHERE l.id = t.lineid AND l.shape IS NOT NULL)",
+def _line_length_sql() -> str:
+    # как topology.update_line_geometry: длина в метрах на земле (в базах на Меркаторе — по эллипсоиду)
+    from database.topology import ground_length_sql
+
+    return (f"(SELECT round({ground_length_sql('l.shape')}::numeric, 2)::float8 FROM linesobj l"
+            " WHERE l.id = t.lineid AND l.shape IS NOT NULL)")
+
+
+# Вычисляемые значения (алиас обновляемой таблицы — t). Только код: SQL строится при вызове
+# (SRID сети базы известен после открытия пула).
+EXPRESSIONS: dict[str, Callable[[], str]] = {
+    "line_length": _line_length_sql,
 }
 
 _RC, _GC, _HP = "realconsumers", "generalizedconsumers", "heatpipesections"
@@ -245,7 +252,7 @@ _SETTERS_LIST: tuple[SetterSpec, ...] = (
     SetterSpec("length", "Установить длины по геометрии", _U, "pipes", "computed",
                (Write(_HP, "lineid", (Column("pipesectlength", "expr:line_length"),)),),
                "gid8 aSetLength / gid6 OnSetLength", affects_calc=True, field_label="Длина, м",
-               note="Длина = ST_Length(linesobj.shape) в метрах (SRID 9998), как правка вершин; "
+               note="Длина геометрии участка в метрах на земле, как правка вершин; "
                     "участки без геометрии не меняются."),
     # --- Участки ПТС (паспорта): heatpipesections.magistralsite / distsite ---
     SetterSpec("pts_site_ms", "Назначить участок МС (ПТС)", _PTS, "pipes", "ref",
@@ -686,7 +693,7 @@ async def _plans(conn, spec: SetterSpec, value: Any, ref_row: Optional[dict[str,
                 plan.args.append(ref_row[col.source[4:]])
                 new = f"${len(plan.args)}::{cast}"
             elif col.source.startswith("expr:"):
-                new = EXPRESSIONS[col.source[5:]]
+                new = EXPRESSIONS[col.source[5:]]()
                 plan.guard_sql.append(f"{new} IS NOT NULL")
             elif col.source == "null":
                 new = f"NULL::{cast}"
