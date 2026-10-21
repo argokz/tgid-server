@@ -106,6 +106,7 @@ CITIES: dict[str, City] = {
     "taraz": City(base_srid=3857),
     "aktobe": City(base_srid=3857),
     "shymkent": City(base_srid=3857),
+    "karaganda": City(base_srid=3857),
 }
 
 

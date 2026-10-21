@@ -17,7 +17,7 @@ import os
 import re
 from typing import Iterable, Optional
 
-DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент"
+DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент,karaganda:Караганда"
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
 
 
