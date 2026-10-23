@@ -66,6 +66,10 @@ COMMON: tuple[Item, ...] = (
     Item("таблица calculation_protocol",
          "select to_regclass('public.calculation_protocol') is not null",
          (_m("20261015_calculation_protocol.sql"),)),
+    Item("колонка calculation_protocol.ai_summary",
+         "select to_regclass('public.calculation_protocol') is null or exists (select 1 from information_schema.columns"
+         " where table_schema = 'public' and table_name = 'calculation_protocol' and column_name = 'ai_summary')",
+         (_m("20261023_calculation_protocol_ai_summary.sql"),)),
     Item("таблица card_template",
          "select to_regclass('public.card_template') is not null",
          (_m("20261017_card_template.sql"),)),
