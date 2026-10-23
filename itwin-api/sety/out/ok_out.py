@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу OK_OUT расходы через обратные клапаны для расчета calculationid
+# (старые строки расчета удаляются).
 def out_OK_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

@@ -10,6 +10,7 @@ except ImportError:
     from scipy.linalg import MatrixRankWarning
 
 
+# [Claude 2026-10-18] Отладочная печать первых max_rows строк разреженной системы A*x=b с решением t.
 def dump_system(A, b, t, max_rows=10):
     A = A.tocoo()  # переводим в удобный формат (строка, столбец, значение)
     rows = A.shape[0]
@@ -22,6 +23,7 @@ def dump_system(A, b, t, max_rows=10):
         cols = A.col[mask]
         vals = A.data[mask]
 
+        # [Claude 2026-10-18] Форматирует число в 10 позиций (f или e).
         def form(d):
             if d == 0.00000000001:
                 return f'{'e':>10}'
@@ -48,6 +50,7 @@ def dump_system(A, b, t, max_rows=10):
         print(f"{i:4d}| B:{b_val_text}| t:{form(t_val)} | {row_str}")
 
 
+# [Claude 2026-10-18] Печатает наличие NaN/Inf и мин/макс среди ненулевых элементов разреженной матрицы.
 def check_nonzero_values(matrix):
     data = matrix.data  # только ненулевые элементы
 
@@ -63,6 +66,7 @@ def check_nonzero_values(matrix):
     print("Минимальное ненулевое:", data.min())
     print("Максимальное ненулевое:", data.max())
 
+# [Claude 2026-10-18] Печатает наличие NaN/Inf и мин/макс значения вектора b.
 def check_vector(b):
     if b.size == 0:
         print("Вектор пустой")
@@ -77,6 +81,7 @@ def check_vector(b):
     print("Максимальное значение:", b.max())
 
 
+# [Claude 2026-10-18] Возвращает индексы нулевых строк и столбцов разреженной матрицы.
 def _find_zero_rows_cols(A):
     """Найти нулевые строки и столбцы для matrix/array форматов."""
     if hasattr(A, "getnnz"):  # csr_matrix / csc_matrix
@@ -88,6 +93,8 @@ def _find_zero_rows_cols(A):
     return zero_rows, zero_cols
 
 
+# [Claude 2026-10-18] Решает A*x=b через spsolve, перехватывая MatrixRankWarning и проверяя NaN/Inf в решении.
+# Возвращает (x, True если решение корректно). Подробная диагностика отключена (if False).
 def safe_spsolve(A, b, max_dense_size=200):
     """Решает Ax=b через spsolve и делает диагностику сингулярности."""
     if not issparse(A):

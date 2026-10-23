@@ -18,6 +18,9 @@ from sety.out.podpitka import n_ras
 #------------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Формирует SQL UPDATE generalizedconsumers с суммарными нагрузками param_sum по узлам с заданным напором
+# (для записи в обобщенные потребители магистрального фрагмента), сохраняет его во временный .sql файл
+# и пишет имя этого файла в out_file. Ничего не делает, если out_file пуст.
 def write_po(G, param_sum, out_file):
     if out_file == '':
         return
@@ -115,6 +118,9 @@ where n.id=generalizedconsumers.nodeid and n.removed = 0
 
 # Ищем откуда идет вода 
 
+# [Claude 2026-10-18] Для каждого узла с заданным напором (граница фрагмента) по графу направлений потоков находит ближайшие
+# участки и потребителей и суммирует в param_sum[узел] тепловые потери участков и нагрузки потребителей
+# по схемам (отопление, вентиляция, ГВС pr/ps/pw/sm/открытое) с расчетными температурами. Возвращает param_sum.
 def make_G2(G, param_sum):
 #    print('Проверяем фрагмент')
     GG = nx.MultiDiGraph()
@@ -324,13 +330,14 @@ def make_G2(G, param_sum):
 #                '''
                 itog2 = dict()
 
+                # [Claude 2026-10-18] Код схемы отопления: 1 - зависимая элеваторная, 2 - зависимая безэлеваторная, 3 - независимая.
                 def num(otopln, otoplz, isEl):
                     if otoplz > 0 and isEl: return 1
                     if otoplz > 0 and not isEl: return 2
                     return 3
 
 
-                otop, vent, gv, rez, isEl = '', '', '', '', False
+                otop, vent, gv, rez = '', '', '', ''   # исправлено Claude, 2026-10-20 (ревью п. 1.3): isEl здесь затирался до num(), cx никогда не был 1
                 cx = num(otopln, otoplz, isEl)
 
                 vv = consumption.type_of_cons(cxema)
@@ -440,13 +447,13 @@ def make_G2(G, param_sum):
 
                     if otoplz > 0:
                         itog2['otopl_tp_zco'] += otopl_tp
-                        itog2['Tr_tv_zco'] = Tr_tv_co
+                        itog2['Tr_tv_co_zco'] = Tr_tv_co   # исправлено Claude, 2026-10-20 (ревью п. 1.3): было 'Tr_tv_zco' - читается 'Tr_tv_co_zco'
 
                     if otopln > 0:
                         itog2['otopl_tp_nco'] += otopl_tp
-                        itog2['Tr_tv_nco'] = Tr_tv_co
+                        itog2['Tr_tv_co_nco'] = Tr_tv_co   # исправлено Claude, 2026-10-20 (ревью п. 1.3): было 'Tr_tv_nco'
 
-                    itog2['Tr_gvs_'] = Tr_gvs_oo_op
+                    itog2['Tr_gvs_oo_op'] = Tr_gvs_oo_op   # исправлено Claude, 2026-10-20 (ревью п. 1.3): было 'Tr_gvs_'
 
 
 
@@ -528,6 +535,8 @@ def make_G2(G, param_sum):
 
 
 
+# [Claude 2026-10-18] Летний режим: для узлов с заданным напором считает сопротивление (Pпод-Pобр)/Gin^2 и формирует
+# SQL UPDATE hydroResCloseSysSummer обобщенных потребителей во временный файл (имя - в out_file).
 def make_G2_leto(G, out_file):
 #    print('Проверяем фрагмент')
     GG = nx.MultiDiGraph()

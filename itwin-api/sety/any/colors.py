@@ -11,6 +11,7 @@ from sety import config
 #color_yes = True
 color_yes = False
 
+# [Claude 2026-10-18] Заглушка: возвращает текст без изменений (замена пробелов на &nbsp; отключена).
 def nbsp(text):
 #    if config.args.g_color:
 #        return text.replace(' ', '&nbsp;')
@@ -18,6 +19,7 @@ def nbsp(text):
     return text
 
 
+# [Claude 2026-10-18] True, если включен цветной (HTML) вывод (config.args.g_color).
 def is_color():
     return config.args.g_color
 
@@ -34,23 +36,27 @@ class Color(Enum):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] ANSI-последовательность для цвета текста RGB.
 def start_color(r, g, b):
     return f'\033[38;2;{r};{g};{b}m'
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Разбирает код цвета 0xRRGGBB в (r, g, b).
 def code_to_rgb(code):
     r, g, b = (code >> 16) & 0xFF, (code >> 8) & 0xFF, code & 0xFF
     return r, g, b
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] ANSI-последовательность цвета по коду 0xRRGGBB.
 def start_color_code(code):
     r, g, b = code_to_rgb(code)
     return start_color(r, g, b)
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Закрывающий тег цветного фрагмента ('</span>').
 def end_color():
     return '</span>'
 #    return '\033[0m'
@@ -130,6 +136,7 @@ map_color = {
 }
 
 
+# [Claude 2026-10-18] Заменяет метки [red], [b], [-] и т.п. на HTML-теги (при g_color) или удаляет их.
 def parse_colors(x):
 #    x = x.replace('[-]', end_color())
 
@@ -142,6 +149,7 @@ def parse_colors(x):
     return x
 
 
+# [Claude 2026-10-18] print с разбором цветовых меток в строках; при g_color и color оборачивает вывод в <span> цвета.
 def cprint(*objects, sep=' ', end='\n', file=sys.stdout, flush=False, color=None):
     objects = map(lambda x:  x if not isinstance(x, str) else parse_colors(x), objects)
 

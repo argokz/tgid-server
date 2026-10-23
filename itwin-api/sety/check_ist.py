@@ -6,6 +6,8 @@ from sety.any.colors import nbsp
 
 from sety.w_print import make_link
 
+# [Claude 2026-10-18] Проверка источников: ищет узлы фрагментов fileID, у которых источник, полученный в расчете calculationid (US_OUT),
+# не совпадает с источником, заданным в расчетной схеме (externalcodes). Печатает список для уточнения.
 def check_ist(conn, fileID, calculationid):
 
     q = f'''

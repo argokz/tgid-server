@@ -32,6 +32,7 @@ from sety.any.colors import nbsp
 
 import consumption
 
+# [Claude 2026-10-18] Печать строки баланса (копия print_bal из pt_out).
 def print_bal(text, v1, v2):
     if v1 is None: v1 = 0
     if v2 is None: v2 = 0
@@ -47,6 +48,7 @@ def print_bal(text, v1, v2):
         cprint(s)
 
 
+# [Claude 2026-10-18] Копия n_ras из pt_out: сумма расходов по всем ветвям узла.
 def n_ras(G, n, nO):
     nP = G.nodes[n]
 
@@ -73,6 +75,9 @@ def n_ras(G, n, nO):
 
 
 
+# [Claude 2026-10-18] Запись в PT_OUT для детализированного фактического расчета: сначала собирает расходы по видам нагрузки
+# из ветвей внутренних схем потребителей (TO, EL/SO, VN, OP/OO, UT рециркуляции) в узел потребителя,
+# затем считает тепло и пишет в PT_OUT как out_PT_OUT.
 def out_PT_OUT3(G, conn, calculationid, Tn, delete):
 
 #    print('-----------------------')
@@ -311,7 +316,7 @@ def out_PT_OUT3(G, conn, calculationid, Tn, delete):
             GP, GZ1 = n_ras(G, (id, 1), (id, 2))
             GO, GZ2 = n_ras(G, (id, 2), (id, 1))
 
-            if abs(GP) < 1e-8 and abs(GO):
+            if abs(GP) < 1e-8 and abs(GO) < 1e-8:   # исправлено Claude, 2026-10-20 (ревью п. 1.6): было abs(GO) без < 1e-8
 #            if abs(GP) < 1e-8 or abs(GO) < 1e-8:
 #                print(nP.get('name', '???'), GP, GO, GZ1, GZ2)
 #                exit(1)
@@ -421,6 +426,9 @@ def out_PT_OUT3(G, conn, calculationid, Tn, delete):
                         Qotoplz = Qotopl
                 else:
                     print(cxema, Qotopl, vv)
+                    # исправлено Claude, 2026-10-20 (ревью п. 1.7В): схема не распознана - считаем отопление зависимым, иначе оставались значения предыдущего потребителя
+                    Qotopln = 0
+                    Qotoplz = Qotopl
 
 
 
@@ -435,7 +443,7 @@ def out_PT_OUT3(G, conn, calculationid, Tn, delete):
 
             Qfact = 0
 
-            if not Qotopl is None and Qotopl > 0:
+            if not Qotopl is None:   # исправлено Claude, 2026-10-20 (ревью п. 1.7А): было еще 'and Qotopl > 0' - без отопления и летом Qfact = 0
                 Qsum_z = Qotopl + Qvent + Qkond + Qgvz       + Qrez   # !!!!!!!!!!
                 Qfact = Qotopl + Qvent + Qkond + Qgvz + Qgvop + Qgvoo + Qrez
 
@@ -580,7 +588,10 @@ def out_PT_OUT3(G, conn, calculationid, Tn, delete):
             v_ot = read_tg.get_tg(heatSourceID, Tn_otop)
             if not v_ot is None:
                 tv1, tv2, tv3, tv = v_ot
-                ut = (tv1 - tv3) / (tv3 - tv2)
+                if tv3 == tv2:   # исправлено Claude, 2026-10-20 (ревью п. 1.7Г): деление на ноль, проверка как в pt_out.py
+                    ut = 0
+                else:
+                    ut = (tv1 - tv3) / (tv3 - tv2)
 
 
     #        insert.db_write('pih', pih)      # Пьезометрический напор       

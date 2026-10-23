@@ -7,6 +7,9 @@ from sety.dross.w_print import w_print
 H_DOPUST  = 3.0  # /* допустимый остаток располагаемого напора */
 H_DOPUST1 = 2.0  # /* мин.допустимый гасимый напор на головной диаф.*/
 
+# [Claude 2026-10-18] Расчет дросселирования для потребителя со ступенью 4 (только ГВС из подающего и циркуляция):
+# подбирает ограничительную диафрагму на входе подающего трубопровода ГВС, результаты в dr_out b33-b35.
+# Возвращает признак ошибки ferr. Большинство параметров не используются (единая сигнатура drvary*).
 def drvary4(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
             gvpr, gvsm, gvps, gvpw, gvop, gvoo, rez, fss,
              ho, hv, hgv, ptr_name):
@@ -14,6 +17,7 @@ def drvary4(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
 #    double   hrc, ggv, hoost, hogrost, hgvost, hvost, h_3mm
 #    int     n_3mm, ferr = 0
 
+    ferr = False   # исправлено Claude, 2026-10-20 (ревью п. 1.11Б): иначе UnboundLocalError на return ferr при ggv > 0 или hrc <= 0
     hoost = hvost = hgvost = ggv = hogrost = 0.
     ggv = otopl + vn + gvpr + gvsm + gvps + gvpw + gvoo
 

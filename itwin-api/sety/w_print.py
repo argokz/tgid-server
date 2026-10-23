@@ -7,12 +7,14 @@ eps = 0.00000000001
 
 #G_main = None
 
+# [Claude 2026-10-18] Запоминает основной граф G_main; дальше node_names берет имена узлов из него.
 def setG(G):
     global G_main
     G_main = G
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Печатает подпись txt и элементы вектора b с 3 знаками.
 def print_b(txt, b):
     print(txt, end=': ', flush=True)
     for n in b:
@@ -21,6 +23,7 @@ def print_b(txt, b):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] При цветном выводе оборачивает текст s в HTML-ссылку <a name=typ id=id>.
 def make_link(s, typ, id):
     if colors.is_color():
 #        s = f'<a href=\'{s}\'>{s}</a>'
@@ -28,6 +31,7 @@ def make_link(s, typ, id):
         return s
     return s
 
+# [Claude 2026-10-18] Как make_link, но с двумя id (для ветви между двумя узлами).
 def make_link2(s, typ, id1, id2):
     if colors.is_color():
 #        s = f'<a href=\'{s}\'>{s}</a>'
@@ -38,6 +42,7 @@ def make_link2(s, typ, id1, id2):
 
 
 #def print_matrix(matrix, beta, x):
+# [Claude 2026-10-18] Отладочная печать структуры матрицы символами (. 1 n + -) и вектора beta.
 def print_matrix(matrix, beta):
     row, col = matrix.shape
 
@@ -69,6 +74,7 @@ def print_matrix(matrix, beta):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Отладочная печать матрицы числами (6.2f) и вектора beta.
 def print_matrix2(matrix, beta):
     row, col = matrix.shape
 
@@ -91,6 +97,7 @@ def print_matrix2(matrix, beta):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Имя фрагмента, к которому относится узел n.
 def node_fragment(G, n):
     nn = G.nodes.get(n, None)
     if nn is None: return f'???? {n}'
@@ -102,6 +109,8 @@ def node_fragment(G, n):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Описание узла n: (id, фрагмент, родитель, код, имя, 'П'/'О'). Для внутренних узлов (internalNodeID)
+# родитель - описание внешнего узла. Если вызывался setG, используется G_main, а не переданный G.
 def node_names(G, n):
 
     if 'G_main' in globals():
@@ -136,6 +145,7 @@ def node_names(G, n):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Текстовое имя узла '[код имя П/О]' (с фрагментом и родителем), при link - в виде ссылки.
 def node_name(G, n, fileID_on, link=True):
     id, fragment, parent, kod, name, po = node_names(G, n)
 
@@ -161,6 +171,7 @@ def node_name(G, n, fileID_on, link=True):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Текстовое имя ветви между узлами n1 и n2 '[код1 имя1 П - код2 имя2 О]', при link - ссылка.
 def line_name_n1_n2(G, n1, n2, link=True):
     '''
     s1 = node_name(G, n1, False)
@@ -189,6 +200,7 @@ def line_name_n1_n2(G, n1, n2, link=True):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Имя ветви lineID по id узлов и признаку линии externalSignLineID (определяет подачу/обратку концов).
 def line_name(G, lineID, nodeID1, nodeID2, externalSignLineID):
     p1 = 1 if externalSignLineID in {1, 2, 4} else 2
     p2 = 1 if externalSignLineID in {1, 2, 5} else 2 

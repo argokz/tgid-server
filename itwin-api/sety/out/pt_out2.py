@@ -32,6 +32,7 @@ from sety.any.colors import nbsp
 
 import consumption
 
+# [Claude 2026-10-18] Печать строки баланса (копия print_bal из pt_out, без учета HTML-тегов в длине).
 def print_bal(text, v1, v2):
     if v1 is None: v1 = 0
     if v2 is None: v2 = 0
@@ -47,6 +48,7 @@ def print_bal(text, v1, v2):
         cprint(s)
 
 
+# [Claude 2026-10-18] Копия n_ras из pt_out: сумма расходов по всем ветвям узла.
 def n_ras(G, n, nO):
     nP = G.nodes[n]
 
@@ -72,6 +74,9 @@ def n_ras(G, n, nO):
     return GGG, GZ
 
 
+# [Claude 2026-10-18] Запись в PT_OUT для фактического (эквивалентного) расчета: проходит по ветвям-потребителям типа consumers,
+# распределяет фактический расход ветви по видам нагрузки пропорционально расчетным, считает тепло
+# и пишет те же поля, что out_PT_OUT. При delete сначала удаляет старые строки расчета.
 def out_PT_OUT2(G, conn, calculationid, Tn, consumers, delete):
     
     cursor = conn.cursor()
@@ -338,6 +343,9 @@ def out_PT_OUT2(G, conn, calculationid, Tn, consumers, delete):
                         Qotoplz = Qotopl
                 else:
                     print(cxema, Qotopl, vv)
+                    # исправлено Claude, 2026-10-20 (ревью п. 1.7В): схема не распознана - считаем отопление зависимым, иначе оставались значения предыдущего потребителя
+                    Qotopln = 0
+                    Qotoplz = Qotopl
 
 
 #                print('r', t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo)
@@ -365,7 +373,9 @@ def out_PT_OUT2(G, conn, calculationid, Tn, consumers, delete):
 
 #            if nn2.get('name', '') == 'ATMOSPHERE': continue
 
-            if not Qotopl is None and Qotopl > 0:
+            Qfact = 0   # исправлено Claude, 2026-10-20 (ревью п. 1.7Б): не обнулялся - NameError или значение предыдущего потребителя
+
+            if not Qotopl is None:   # исправлено Claude, 2026-10-20 (ревью п. 1.7А): было еще 'and Qotopl > 0' - без отопления и летом Qfact = 0
                 Qsum_z = Qotopl + Qvent + Qkond + Qgvz     + Qrez   # !!!!!!!!!!
                     
 
@@ -517,7 +527,10 @@ def out_PT_OUT2(G, conn, calculationid, Tn, consumers, delete):
             v_ot = read_tg.get_tg(heatSourceID, Tn_otop)
             if not v_ot is None:
                 tv1, tv2, tv3, tv = v_ot
-                ut = (tv1 - tv3) / (tv3 - tv2)
+                if tv3 == tv2:   # исправлено Claude, 2026-10-20 (ревью п. 1.7Г): деление на ноль, проверка как в pt_out.py
+                    ut = 0
+                else:
+                    ut = (tv1 - tv3) / (tv3 - tv2)
 #                print(f'===({tv1}-{tv3})/({tv3}-{tv2}) =  {(tv1 - tv3) / (tv3 - tv2)}==')
 
             if ras_z != 0:
@@ -564,6 +577,8 @@ def out_PT_OUT2(G, conn, calculationid, Tn, consumers, delete):
 
 # старые dr_out -> новые
 
+# [Claude 2026-10-18] Переносит результаты расчета дроссельных устройств (DR_OUT) последнего расчета фрагмента
+# на новый расчет calculationid.
 def dr_out_to_new(conn, calculationid):
     cursor = conn.cursor()
 

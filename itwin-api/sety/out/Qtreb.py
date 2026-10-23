@@ -9,6 +9,9 @@ from sety.teplo.t import getS28
 from sety.teplo.otopl import getUFpr
 
 
+# [Claude 2026-10-18] Требуемые (нормативные) нагрузки реального потребителя при наружной температуре Tn: отопление зав./незав.,
+# вентиляция, ГВС закрытое/открытое, рециркуляция (с учетом параметра -GWS2), плюс необходимый напор Gneob
+# и теплообеспеченность. Результат пишется в pt_out и возвращается.
 def write_Qtreb(pr, pt_out, Tn):
     #  double Qras_ot, Qras_ven, Qras_gvs_o, Qras_gvs_z
 #    double Qras_ven, Qras_gvs_z
@@ -127,6 +130,7 @@ def write_Qtreb(pr, pt_out, Tn):
     return pt_out
 
 
+# [Claude 2026-10-18] То же, что write_Qtreb, для обобщенного потребителя (нагрузки по типам схем отопления и ГВС).
 def write_Qtreb_po(pr, pt_out, Tn):
 
     debug = False
@@ -170,14 +174,13 @@ def write_Qtreb_po(pr, pt_out, Tn):
         koef = 1            
         koef_rez = 0.85
     elif config.args.GWS2 == 1:  
-        koef = pr.get('gvs_max', 0)  
+        koef = pr.get('gvs_max_o', 0)   # исправлено Claude, 2026-10-20 (ревью п. 1.12): было gvs_max - у обобщенного потребителя его нет, koef был 0
         koef_rez = 0    
     elif config.args.GWS2 == 2:  
         koef = 0            
         koef_rez = 1
 
-    koef = 1            
-    koef_rez = 0.85
+    # исправлено Claude, 2026-10-20 (ревью п. 1.12): здесь стояли koef = 1, koef_rez = 0.85 - выбор по -GWS2 не действовал
 
     ngws = N_GWS(pr)
 
@@ -253,6 +256,7 @@ def write_Qtreb_po(pr, pt_out, Tn):
 
 # Теплообеспеченность
 
+# [Claude 2026-10-18] Теплообеспеченность (%): общая, по отоплению/вентиляции и по ГВС - факт/требуемое. Пишет в pt_out.
 def teploobesp(pr, pt_out):
 
     ''' Теплообеспеченность
@@ -322,6 +326,8 @@ def teploobesp(pr, pt_out):
     return pt_out
 
 
+# [Claude 2026-10-18] Необходимый располагаемый напор на вводе потребителя (м) по схеме отопления (элеватор/безэлеваторная/
+# независимая) и схеме ГВС (добавляются потери в подогревателях a22, a23).
 def get_gneob(n, pr):
     gneob = 10
 

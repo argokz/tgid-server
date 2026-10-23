@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу RS_OUT результаты по регуляторам давления и расхода для расчета calculationid
+# (расход a11, параметры a12-a19, dx, ссылка на импульсный узел kod3/uzel3/pr3).
 def out_RS_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

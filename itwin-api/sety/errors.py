@@ -4,6 +4,7 @@ from sety.any.colors import cprint
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Ищет в графе первый узел с атрибутом typ == typ; возвращает ключ узла или None.
 def find_type(G, typ):
     for n in G.nodes:
         t = G.nodes[n].get('typ', None)
@@ -14,6 +15,8 @@ def find_type(G, typ):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Сообщает об ошибке 1234 (вода не течет через источник) для узла nP: печатает фрагмент и источник тепла.
+# Расчет не прерывает (exit закомментирован).
 def error_1234(G, nP):
     id, fragment, parent, kod, name, po = w_print.node_names(G, nP)
 

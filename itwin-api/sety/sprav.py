@@ -26,6 +26,7 @@ map_s07 = {}
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Читает из БД справочник 39 (нормы тепловых потерь) в look[(дата, прокладка)][диаметр] = набор норм.
 def read_tab_s39(conn, tn: str, look) -> None:
     cursor = conn.cursor()
 
@@ -75,6 +76,7 @@ def read_tab_s39(conn, tn: str, look) -> None:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] То же, что read_tab_s39, но из CSV-файла sprav/<tn>.csv (разделитель ';').
 def read_csv_s39(tn: str, look) -> None:
     tn2 = w_data.map_tn.get(tn , tn)
 
@@ -120,6 +122,8 @@ def read_csv_s39(tn: str, look) -> None:
 
 
 
+# [Claude 2026-10-18] Загружает справочники 30, 28, 07, 39 из базы 'sprav' (на том же сервере), а если подключиться
+# не удалось - из CSV-файлов в каталоге sprav.
 def read_sprav(conn_str):
 
     conn_str_sprav = conn_str.copy()

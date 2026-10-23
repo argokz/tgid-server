@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу ANY_OUT расходы по регулирующей арматуре и диафрагмам для расчета calculationid
+# (предварительно удаляет старые строки этого расчета).
 def out_ANY_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

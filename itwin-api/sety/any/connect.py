@@ -10,6 +10,7 @@ from pyodbc import Connection
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Имя в двойных кавычках в нижнем регистре (для SQL-идентификаторов).
 def br_text(text):
 #    return f'"[{text}]"'
     return f'"{text.lower()}"'
@@ -17,6 +18,7 @@ def br_text(text):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Конвертер ODBC для типа -151 (geometry/hierarchyid MS SQL): всегда возвращает '0', чтобы чтение не падало.
 def HandleHierarchyId(v: Any) -> str:
 #    print(str(v))
     return str(0)
@@ -25,6 +27,8 @@ def HandleHierarchyId(v: Any) -> str:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Подключение к PostgreSQL через ODBC-драйвер 'PostgreSQL Unicode'. Возвращает соединение или None
+# (ошибка не печатается для базы sprav).
 def connect_pg(**conn_str: Any) -> Connection | None:
     driver = 'PostgreSQL ODBC Driver(Unicode)'
 
@@ -58,6 +62,8 @@ def connect_pg(**conn_str: Any) -> Connection | None:
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Подключение к БД: для rdbms='postgreSQL' - connect_pg, иначе MS SQL (ODBC Driver 17);
+# при пустом пароле - Windows-аутентификация. Возвращает соединение или None.
 def connect(**conn_str: Any) -> Connection | None:
     _rdbms = conn_str.get('rdbms', )
 

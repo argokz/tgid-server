@@ -19,6 +19,8 @@ from sety.out.podpitka import n_ras
 from sety.any.colors import nbsp
 from sety.any.colors import cprint
 
+# [Claude 2026-10-18] Обход источников тепла (подающий узел): проверяет, что через источник идет вода, и считает суммарные
+# расход G0 и отпуск тепла Q0. Предупреждения печатает, но в БД ничего не пишет и ничего не возвращает.
 def out_IS_OUT(G, conn, calculationid):
     t1 = 0
     t2 = 0

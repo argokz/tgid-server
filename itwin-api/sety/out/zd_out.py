@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу ZD_OUT результаты по задвижкам (dampers) для расчета calculationid;
+# фактически заполняется только расход a9, остальные колонки пустые.
 def out_ZD_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

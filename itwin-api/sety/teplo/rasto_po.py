@@ -8,6 +8,9 @@ from sety.ct import get_ct
 
 
 #PR* pr, PT_G* pt_G
+# [Claude 2026-10-18] Строит из обобщенного потребителя po 'виртуального' реального потребителя (pr, pt_G) для части нагрузки
+# typ: TPR/TPS/TPW/TSM - ГВС с отоплением по схеме, TZZ/TNN - отопление зав./незав. без ГВС,
+# TVV - вентиляция, TKN - кондиционирование, TOP/TOO - открытое ГВС.
 def setPR(node, po, typ, debug):
     is_leto2 = 0
 
@@ -386,6 +389,9 @@ def setPR(node, po, typ, debug):
 #def rasTO_po(node, po, pt_G, G, t, double& t2, double& Qotoplz1, double& Qotopln1, double& Qvent1, double& Qkond1, double& Qgvz1, double& Qgvop1, double& Qgvoo1, double Tn):
 
 
+# [Claude 2026-10-18] Тепловой расчет обобщенного потребителя: по очереди считает его части (ГВС pr/ps/pw/sm с отоплением,
+# вентиляцию, кондиционирование, отопление зав./незав.) через rasTO_pr2 и смешивает температуры обратки
+# по расходам. Возвращает (t2, Qotoplz, Qotopln, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 #t2, Qotoplz1, Qotopln1, Qvent1, Qkond1, Qgvz1, Qgvop1, Qgvoo1
 
@@ -598,7 +604,7 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         pr, pt_G2 = setPR(node, po, 'TKN', debug)
         t2v, tvv, = rasVENT(pr, pt_G.get('G_kondiz', 0) * 1000, pr.get('ventil', 0) * 1e6, t, Tn, debug)
         qq_k = gvent * (t - t2v)
-        Qkond1 += qq_v / 1e6
+        Qkond1 += qq_k / 1e6   # исправлено Claude, 2026-10-20 (ревью п. 1.4): было qq_v - тепло вентиляции
         qq_k2 = pt_G.get('G_kondiz', 0) * t2v * 1000
 
 

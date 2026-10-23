@@ -13,6 +13,8 @@ from sety.any.insert2 import Insert
 
 from sety.out.pt_out import print_bal
 
+# [Claude 2026-10-18] Записывает в таблицу ANY2_OUT элементы внутри узлов (TO, EL, SO, VN, DR, ZD, UT): место, сопротивление,
+# расход, источник - для расчета calculationid (старые строки удаляются).
 def out_ANY2_OUT(G, conn, calculationid):
     cursor = conn.cursor()
 

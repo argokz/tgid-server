@@ -7,6 +7,7 @@ from sety import config
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Утечка в узле n для режима ZULU: 0.25% (/2) от объема присоединенных участков трубопроводов.
 def getLinePoteri(G, n):
 
 #    if (!getGlobal()->is_ZULU) return 0;
@@ -29,6 +30,7 @@ def getLinePoteri(G, n):
 
 
 
+# [Claude 2026-10-18] Только для ZULU: добавляет к отбору каждого узла (G и Gout) утечку из getLinePoteri и сохраняет ее в 'utechka'.
 def line_poteri(G):
     if not config.args.is_ZULU:
         return

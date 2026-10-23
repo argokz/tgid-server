@@ -6,6 +6,8 @@ from sety.teplo.f import getEp
 # Расчет теплообменников
 
 
+# [Claude 2026-10-18] Расчет теплообменника потребителя по типу typ: 12 - отопление (rasTT2), 10/11 - ГВС I/II ступени.
+# G и QQ переводятся в кг/с и Вт. Возвращает температуру сетевой воды на выходе t2.
 def rasTO(nIin, pr, typ, tr, G, GG0, QQ, t, Tn, debug):
 #    double tv, tx, tg
 #    double& t2, double& qq, double* x, double* temp, 

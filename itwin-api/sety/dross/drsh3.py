@@ -1,6 +1,9 @@
 import math
 
 
+# [Claude 2026-10-18] Подбор диаметра шайбы по расходу kn и гасимому напору hrc.
+# Если расчетный диаметр меньше минимального diam_sh - берется diam_sh и пересчитывается напор (ferr=True).
+# Возвращает (ferr, hrc, dsh). Параметр diam_fl не используется.
 def drsh3(kn, diam_sh, diam_fl, hrc):
     ferr = False
 

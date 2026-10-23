@@ -1277,6 +1277,7 @@ tab_standardpumps = {
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Копия словаря с ключами в нижнем регистре (имена колонок БД -> внутренние имена полей).
 def lower_key(m):
     m = {k.lower(): v for k,v in m.items()} 
     return m
@@ -1442,6 +1443,7 @@ map_tn = {
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Список колонок таблицы tn из tab_list для SELECT в виде 'prefix.col1,prefix.col2,...' ('' если таблицы нет).
 def str_for_sql(tn: str, prefix: str) -> str:
     s = ''
     tab = tab_list.get(tn, None)

@@ -13,6 +13,8 @@ from sety.any.insert2 import Insert
 
 from sety.out.pt_out import print_bal
 
+# [Claude 2026-10-18] Записывает в таблицу UT_OUT результаты по участкам теплопроводов с ненулевым расходом для расчета calculationid:
+# длина, диаметр, расход, потери напора, тепловые потери, температуры, нормы потерь и др.
 def out_UT_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

@@ -5,6 +5,8 @@ from collections import defaultdict
 map_b5 = defaultdict(set)
 
 
+# [Claude 2026-10-18] Разбирает строку b5.txt (11 полей через запятую) и добавляет запись в map_b5[схема].
+# Строки с другим числом полей молча пропускаются; параметр id не используется.
 def read_b5_line(line, id):
     words = re.split(',', line)
 
@@ -16,6 +18,7 @@ def read_b5_line(line, id):
 #        if name2 == '':
 #            exit(0)
 
+# [Claude 2026-10-18] Возвращает множество записей b5 для схемы cxema или None.
 def get_b5(cxema):
     s = map_b5.get(cxema, None)
     return s
@@ -25,6 +28,7 @@ def get_b5(cxema):
 #    return sorted(s)
 
 
+# [Claude 2026-10-18] Читает b5.txt (cp1251) из каталога модуля и заполняет map_b5.
 def open_b5():
     parent_dir = os.path.dirname(os.path.abspath(__file__))  # Получаем путь к текущему файлу
 #    print(parent_dir)

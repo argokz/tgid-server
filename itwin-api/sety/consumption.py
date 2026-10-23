@@ -14,6 +14,8 @@ from sety.read_zn import ec_ist
 
 # Проверяем расход из обратки
 
+# [Claude 2026-10-18] Если расход ГВС из обратки gO больше расхода в закрытых системах gZ - предупреждает (один раз на потребителя)
+# и ограничивает gO = gZ - 0.1. Возвращает скорректированный gO.
 def check_GO(po, pr_out, gO, gZ):
     
     if gZ < gO:
@@ -27,6 +29,7 @@ def check_GO(po, pr_out, gO, gZ):
 
     return gO
 
+# [Claude 2026-10-18] Имя потребителя для сообщений: 'код_расчетной_схемы имя_узла'.
 def get_pt_name(pr):
 
     externalNodeName = pr.get('name', '')
@@ -51,6 +54,7 @@ def get_pt_name(pr):
     return pt_name
 
 
+# [Claude 2026-10-18] Расчетные температуры потребителя по kodtr; если не заданы - сообщение и выход из программы.
 def get_tr(pr):
     tr = pr.get('kodtr', None)
 
@@ -65,6 +69,7 @@ def get_tr(pr):
     return tr
 
 
+# [Claude 2026-10-18] Удельные расходы потребителя по kodur; если не заданы и расчет не по ТГ - сообщение и выход.
 def get_ur(pr):
     ur = pr.get('kodur', None)
 
@@ -78,6 +83,7 @@ def get_ur(pr):
 
     return ur
 
+# [Claude 2026-10-18] Коэффициенты вариации потребителя по kodkv (или None).
 def get_kv(pr):
     kv = pr.get('kodkv', None)
 
@@ -89,6 +95,8 @@ def get_kv(pr):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Разбор номера расчетной схемы 'N1.N2': возвращает (отопление 'z'/'n'/'', вентиляция '0'/'1',
+# тип ГВС pr/sm/ps/pw/op/oo, рециркуляция '0'/'1', элеваторная ли схема) или None при ошибке разбора.
 def type_of_cons(cxema):
     isEl = True
 
@@ -143,6 +151,7 @@ def type_of_cons(cxema):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] True для безэлеваторных схем (1.1, 1.2 и N.1-N.4 для N > 1).
 def is_bezelevator(cxema):
     try:
         part = cxema.split('.')
@@ -163,6 +172,7 @@ def is_bezelevator(cxema):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] True, если в схеме есть рециркуляция ГВС (N1 > 2 и четный N2).
 def is_rez(cxema):
     try:
         part = cxema.split('.')
@@ -180,6 +190,7 @@ def is_rez(cxema):
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Коэффициент балансовой нагрузки ГВС для параллельной схемы - константа 1.15.
 def get_beta_pr(pr):
     return 1.15
     '''
@@ -198,6 +209,7 @@ def get_beta_pr(pr):
     '''
 
 
+# [Claude 2026-10-18] Коэффициент балансовой нагрузки ГВС для смешанной схемы - константа 1.1.
 def get_beta_sm(pr):
     return 1.1
 
@@ -213,11 +225,13 @@ def get_beta_sm(pr):
     return beta
     '''
 
+# [Claude 2026-10-18] Печатает 'Error tp' и завершает программу.
 def error_tp(p):
     print('Error tp', p)
     exit(1)
     pass
 
+# [Claude 2026-10-18] Однократное предупреждение о несоизмеримых тепловых потерях на входе потребителя p.
 def error_tp2(num, p, pt_name):
 #    print('Error tp2', num, p)
 #    cprint(f'Ошибка tp2 {num} в потребителе [{pt_name}]', color='red')
@@ -230,14 +244,17 @@ def error_tp2(num, p, pt_name):
 
 #    exit(1)
 
+# [Claude 2026-10-18] Печатает 'Фатальная ошибка' и завершает программу.
 def fatal_error():
-    print('Fatal error', p)
+    print('Фатальная ошибка')   # исправлено Claude, 2026-10-20 (ревью п. 1.14): было print('Fatal error', p) - p не определена, NameError
     exit(1)
     pass
 
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Источник тепла для расчетной схемы externalCodeID (из схемы или по магистрали ec_ist); иначе - выход.
+# Возвращает (источник, id источника).
 def get_ist(externalCodeID):
     rs = read_gid.map_rs.get(externalCodeID)
 
@@ -260,6 +277,7 @@ def get_ist(externalCodeID):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Имя расчетной схемы по externalCodeID; если схемы нет - выход.
 def get_rs_name(externalCodeID):
     rs = read_gid.map_rs.get(externalCodeID)
     if rs is None:
@@ -272,6 +290,7 @@ def get_rs_name(externalCodeID):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Имя узла источника heatSourceID для сообщений.
 def ist_node_name(G, heatSourceID):
     nodeID = read_gid.map_ist2.get(heatSourceID, None)
 
@@ -288,6 +307,9 @@ def ist_node_name(G, heatSourceID):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Расчетные расходы сетевой воды потребителя по температурному графику источника: отопление зав./незав.
+# (с учетом тепловых потерь до потребителя), вентиляция, ГВС pr/sm/ps/pw (в точке излома графика),
+# открытое ГВС и рециркуляция. Возвращает словарь G_*.
 def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
     is_leto = False
     is_leto = config.args.is_leto
@@ -297,10 +319,11 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
     if externalNodeName == 'Тестовый':
         debug = True
 
+#    if pr.get('name') in ('Узел_37457774'):
 
-    if pr.get('name') == 'ТК4=':
+#    if pr.get('name') in ('*74532',):
 #        print(pr)
-        debug = True
+#        debug = True
 
     s28_ps = 1.25   #  1.25
     s28_pw = 1.25   #  1.25
@@ -414,6 +437,9 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
     pr_Tr_gvs_oo_op = pr.get('Tr_gvs_oo_op', pr_Tr_gvs)
 
+
+
+
 #    tn_dt2_co = 0
     dt = 0
 
@@ -436,11 +462,18 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
     is_teplopoter = not config.args.no_teplopoter
 
+
+    qpot = 0
+
     if is_teplopoter:
+#        if debug:
+#            print('==== Теплопотери =====')
         nodeID = pr.get('nodeID', -1)
         nP = G.nodes.get((nodeID, 1), None)
         nO = G.nodes.get((nodeID, 2), None)
+        qpot = pr.get('tpotepi__pod', 0)
         
+
         if nP and nO:
             ist = read_gid.map_ist.get(heatSourceID, None)
             nIst = G.nodes.get((heatSourceID, 1), None)
@@ -449,15 +482,24 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
             tP = nP.get('t', None)
 
-            if debug:
+
+#            if debug:
 #                print(nP)
-                print(f'< {tP=} {t1=}')
+#                print(f'< {tP=} {t1=}')
 
 
             if not tP is None:
     #            print(tP, t1)
                 dt = t1-tP
                 t1 = tP
+
+
+                if debug:
+                    print(f'{tP=} {t1=} {dt=}')
+            
+            else:
+                if debug:
+                    print(f'{tP=}')
 
         else:
             cprint(f'Какая-то странная ошибка, не должно быть такого {nodeID}', color='red')
@@ -491,11 +533,27 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
        '''
     dt = 0
 
+#    if debug:
+#        print('=============', pt_otoplz)
+
 
 #---------------------------
 
+
+    pt_kondiz = 0
+    ot_v = pt_otoplz + pt_otopln + pt_ventil + pt_kondiz
+    ot_zn = pt_otoplz + pt_otopln
+
+
     if pt_otoplz > 0 and not is_leto: # /* 14.10.2014 */) {
         G_otoplz = (pt_otoplz - otopl_tp) * 1000 / (t1 - t2)
+        if qpot != 0:
+            G_otoplz = (pt_otoplz + qpot * pt_otoplz / ot_v - otopl_tp * pt_otoplz / ot_zn) * 1000 / (t1 - t2)
+
+
+#        pt_G->G_otoplz = (otoplz + qpot * otoplz / ot_v - otopl_tp * otoplz / ot) * 1000 / (t1 - t2);
+
+
 #        print(f'=!=!= {pr.get('name')} {G_otoplz=:.4f} {t1=:.2f} {t2=:.2f}')
 
 
@@ -517,6 +575,10 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 #            exit(1)
 #            print('otoplz=', pt_otoplz, 't1=', t1, 't2=', t2)
             G_otoplz = (pt_otoplz - otopl_tp) * 1000 / (t1_1 - t2)
+            if qpot != 0:
+                G_otoplz = (pt_otoplz + qpot * pt_otoplz / ot_v - otopl_tp * pt_otoplz / ot_zn) * 1000 / (t1_1 - t2)
+
+#            pt_G->G_otoplz = (otoplz + qpot * otoplz / ot_v - otopl_tp * otoplz / ot) * 1000 / (t1_1 - t2);
 
 
 #---------------------------
@@ -525,14 +587,19 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
         G_otopln = (pt_otopln - otopl_tp) * 1000 / (t1 - dt - (t2 + tn_dt2_co))
 
-        if debug:
-            print(f'{G_otopln=} = ({pt_otopln=} - {otopl_tp=}) * 1000 / ({t1=} - {dt=} - ({t2=} + {tn_dt2_co=}))')
+        if qpot != 0:
+            G_otopln = (pt_otopln + qpot * pt_otopln / ot_v - otopl_tp * pt_otopln / ot_zn) * 1000 / (t1 - dt - (t2 + tn_dt2_co))
+
+#        pt_G->G_otopln = (otopln + qpot * otopln / ot_v - otopl_tp * otopln / ot) * 1000 / (t1 - dt - (t2 + tn->dt2_co));
 
 
 
         if debug:
+            print(externalNodeName, f'{G_otopln=} = ({pt_otopln=} - {otopl_tp=}) * 1000 / ({t1=} - {dt=} - ({t2=} + {tn_dt2_co=}))')
+
+#        if debug:
 #            print(f' dt = {dt} pt_otopln={pt_otopln} otopl_tp={otopl_tp} t1={t1} dt={dt} t2={t2} tn_dt2_co={tn_dt2_co}')
-            print(f'>>  t1={t1} dt={dt} t2={t2} tn_dt2_co={tn_dt2_co} G_otopln = {G_otopln} ')
+#            print(f'>>  t1={t1} dt={dt} t2={t2} tn_dt2_co={tn_dt2_co} G_otopln = {G_otopln} ')
 
         if G_otopln < 0 and not is_leto:
             '''
@@ -551,6 +618,8 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
 
 #            error_tp(pr)
             G_otopln = (pt_otopln - otopl_tp) * 1000 / (t1_1 - (t2 + tn_dt2_co))
+            if qpot != 0:
+                G_otopln = (pt_otopln + qpot * pt_otopln / ot_v - otopl_tp * pt_otopln / ot_zn) * 1000 / (t1_1 - dt - (t2 + tn_dt2_co))
             #      fatal_error()
             # Убрал 4.06.2020
 
@@ -598,6 +667,14 @@ def consumption_tg(G, pr, pr_out, externalCodeID, externalNodeName):
             
             k = 1
             G_ventil = pt_ventil * 1000 / (t1 - t2)  # t1 - текущее
+            if qpot != 0:
+                G_ventil = (pt_ventil + qpot*pt_ventil / ot_v) * 1000 / (t1 - t2)  # t1 - текущее
+
+#                pt_G->G_ventil = (pt->ventil_cv + (qpot)*pt->ventil_cv / ot_v) * 1000 / (t1 - t2);  // t1 - текущее
+                
+
+
+
       # добавил 04.06.2020
             if G_ventil < 0 and not is_leto:
 #                print(f'Вениляция t1={t1} t2={t2}')
@@ -814,14 +891,18 @@ G_gvsm=9.158192978482445
     # Почему-то в свое время только по подаче, непонятно почему
 
 #        G_rez = (pt_gvop) * pr['rez'] * 1000 / t_ost / 100.
-        G_rez = (pt_gvop + pt_gvoo) * pr.get('rez', 0) * 1000 / t_ost / 100.
- #       print(f'{G_rez}')
 
-        if G_rez > 0 and t_ost <= 0:
+        # исправлено Claude, 2026-10-20 (ревью п. 1.14): проверка до деления (было после: при t_ost == 0 деление на ноль,
+        # при t_ost < 0 G_rez < 0 и условие G_rez > 0 не срабатывало); сообщения - до выхода (были после fatal_error)
+        if t_ost <= 0 and (pt_gvop + pt_gvoo) * pr.get('rez', 0) > 0:
+            cprint(f'Температура в рециркуляционном трубопроводе воды потребителя {pt_name}', color='red')
+            cprint(f'выше температуры на входе приборов ГВС: Tr_gvs={pr_Tr_gvs} tx={ct_tx} T_pot_rez={T_pot_rez}', color='red')
+            cprint(f'Недопустимый режим', color='red')
             fatal_error()
-            print(f'Температура в рециркуляционном трубопроводе воды потребителя {pt_name}')
-            print(f'выше температуры на входе приборов ГВС')
-            print(f'Недопустимый режим')
+
+        if t_ost != 0:
+            G_rez = (pt_gvop + pt_gvoo) * pr.get('rez', 0) * 1000 / t_ost / 100.
+ #       print(f'{G_rez}')
 
     pr_out2 = {}
 
@@ -858,6 +939,8 @@ G_gvsm=9.158192978482445
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Умножает нагрузки потребителя (реального и обобщенного) на коэффициенты вариации kv
+# (общий kvpot или по видам нагрузки). Ничего не делает при no_kv или отсутствии kv.
 def set_kv(G, pr, kv, no_kv):
 
     if no_kv or kv is None: return pr
@@ -967,6 +1050,8 @@ def set_kv(G, pr, kv, no_kv):
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Расходы потребителя: по температурному графику (consumption_tg) или как нагрузка * удельный расход ur.
+# None, если удельные расходы не заданы.
 def kv_ur(G, pr, pr_out, ur, kv, externalCodeID, externalNodeName, is_tg, no_kv):
 
     if is_tg:
@@ -1007,9 +1092,16 @@ def kv_ur(G, pr, pr_out, ur, kv, externalCodeID, externalNodeName, is_tg, no_kv)
     return pr_out
 
 #-----------------------------------------------
+# [Claude 2026-10-18] Расходы и нагрузки реального потребителя: применяет коэффициенты вариации, считает расходы по видам
+# нагрузки (kv_ur), суммарные расходы в закрытой системе gZ, из подачи gP, из обратки gO.
+# Возвращает (gZ, gP, gO, Qz, Qp, Qo, pr_out, pr); для отключенного - нули.
 def consumption_pr(G, pr, externalCodeID, externalNodeName, kv_yes, debug=False):
 #    if debug:
 #        print('1-----', pr)
+
+#    if externalNodeName in ('*74532', 'Узел_37457774'):
+#        print('PR', externalNodeName)
+
 
     tr = get_tr(pr)
     ur = get_ur(pr)
@@ -1161,6 +1253,7 @@ def po_to_pr(po):
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Переносит нагрузки схемы typ1 обобщенного потребителя в схему typ2 (отопление, ГВС, рециркуляция).
 def set_po_typ(po, typ1, typ2):
     if typ1 != typ2:
         if po.get(f'gv_{typ1}', 0) != 0 or po.get(f'otopl_{typ1}', 0) != 0:
@@ -1178,6 +1271,8 @@ def set_po_typ(po, typ1, typ2):
 
     return po
 
+# [Claude 2026-10-18] Переносит отопление обобщенного потребителя из зав./незав. (typ1) в typ2 и выставляет схему
+# присоединения отопления для всех схем ГВС.
 def set_po_otopl_typ(po, typ1, typ2):
     if po.get(f'otopl_{typ1}co', 0) != 0:
         po[f'otopl_{typ2}co'] = po.get(f'otopl_{typ1}co', 0)
@@ -1194,7 +1289,15 @@ def set_po_otopl_typ(po, typ1, typ2):
 
 
 
+# [Claude 2026-10-18] То же, что consumption_pr, для обобщенного потребителя: нагрузки по схемам ГВС и отопления,
+# расходы через kv_ur, распределение расхода отопления между схемами пропорционально нагрузкам.
+# Возвращает (gZ, gP, gO, Qz, Qp, Qo, pr_out, po).
 def consumption_po(G, po, externalCodeID, externalNodeName, kv_yes, debug=False):
+
+#    if externalNodeName in ('*74532', 'Узел_37457774'):
+#        print('PO', externalNodeName)
+
+
 
     tr = get_tr(po)
     ur = get_ur(po)

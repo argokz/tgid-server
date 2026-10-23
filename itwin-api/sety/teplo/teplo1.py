@@ -41,6 +41,7 @@ from sety.safe_spsolvefile import dump_system
 import inspect
 
 class LineNo:
+    # [Claude 2026-10-18] Возвращает номер строки места вызова (для отладочной печати через __line__).
     def __str__(self):
         return str(inspect.currentframe().f_back.f_lineno)
 
@@ -138,6 +139,9 @@ def Y(l):
 '''
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Тепловой расчет обобщенного потребителя через rasTO_po; для схем с отоплением без нагрузки ГВС
+# временно подставляет крошечную нагрузку ГВС (1e-12), чтобы выбрать нужную схему, потом восстанавливает.
+# Возвращает (t2, Qotoplz, Qotopln, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_po2(po, G, t, Tn, debug):
 
     gv_ps = po.get('gv_ps', 0)
@@ -199,6 +203,7 @@ def potrebitel(nodeP, GG, debug):
 """
 
 
+# [Claude 2026-10-18] Грубая оценка температуры обратки: t1 - (Tr_co_1_zco - Tr_co_2_zco) по расчетным температурам потребителя.
 def get_t2(pr, t1):
     tr = get_tr(pr)
     
@@ -211,7 +216,11 @@ def get_t2(pr, t1):
 
 #-----------------------------------------------------------------------------------
 
-def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
+# [Claude 2026-10-18] Строит систему уравнений теплового баланса узлов по расходам x: для каждого узла сумма G*t втекающих
+# потоков минус потери/отборы (участки, потребители, элементы внутренних схем) = t узла * сумма вытекающих;
+# для источников (и узлов с заданным напором, если источников нет) - заданная температура.
+# Возвращает (матрица csc, правая часть, число источников).
+def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False, node_edges=None):
 #    print(G)
     n_ist = 0
 
@@ -222,6 +231,24 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
 
     dict_ist = {}
 
+    # вставлено Claude, 2026-10-20: температура грунта для ограничения тепловых потерь участков (см. ниже)
+    t_grunt = get_ct().get('tg_god', 0)
+
+    # [Claude, 2026-08-21] getZT(G, node, curT) для одного и того же узла в пределах
+    # одного вызова init_matrix_teplo всегда возвращает один и тот же результат (curT
+    # тут не меняется) — кэшируем по ключу узла, чтобы не пересчитывать по 2-5 раз
+    # на узел (см. вызовы ниже).
+    zt_cache = {}
+    _ZT_MISSING = object()
+
+    # [Claude 2026-10-18] Кэш getZT по ключу узла (температура источника/узла с заданным напором).
+    def cached_getZT(node_key, node_dict):
+        v = zt_cache.get(node_key, _ZT_MISSING)
+        if v is _ZT_MISSING:
+            v = getZT(G, node_dict, curT)
+            zt_cache[node_key] = v
+        return v
+
     tt1 = time.time()
 
 
@@ -231,7 +258,7 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
         t0 = node.get('t0', None)
         tn = node.get('typ', None)
 
-        t0 = getZT(G, node, curT)
+        t0 = cached_getZT(n, node)
 
         if tn == 'heatSources' and t0 is None and po1 == 1:
             name = w_print.node_name(G, n, False)
@@ -281,7 +308,20 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
 
 #    print('nn=', nn)
 
-    matrix = sp.sparse.lil_array((nn, nn))
+    # [Claude, 2026-08-21] Раньше матрица собиралась поэлементной записью в
+    # sp.sparse.lil_array (matrix[i, j] = v / += v) — это на порядок медленнее, чем
+    # накопление в обычном dict и одна сборка sparse-матрицы в конце (см. mset/madd
+    # ниже и сборку matrix перед return). Семантика "=" (перезапись) и "+="
+    # (накопление) сохранена как в исходном коде.
+    matrix_d = {}
+
+    # [Claude 2026-10-18] Установить элемент разреженной матрицы (i, j).
+    def mset(i, j, v):
+        matrix_d[(i, j)] = v
+
+    # [Claude 2026-10-18] Прибавить v к элементу разреженной матрицы (i, j).
+    def madd(i, j, v):
+        matrix_d[(i, j)] = matrix_d.get((i, j), 0) + v
 
     n_ist = 0
     ii = 0
@@ -325,11 +365,11 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
         po2 = (2 if po1 == 1 else 1)
 
         t0 = node.get('t0', None)
-        t0 = getZT(G, node, curT)
+        t0 = cached_getZT(n, node)
 
         is_ist = False
 
-        if t0:  
+        if t0:
             n_ist += 1
             is_ist = True
 
@@ -339,8 +379,9 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
         g = 0
         yes = False
 
-        t0 = node.get('t0', None)
-        t0 = getZT(G, node, curT)
+        # [Claude, 2026-08-21] t0 уже посчитан выше для этого же (node, curT) —
+        # cached_getZT просто вернёт закэшированное значение, не пересчитывая.
+        t0 = cached_getZT(n, node)
 
 #        if debug: print('n_nodes', n_nodes, 'n_ist', n_ist)
 
@@ -370,11 +411,15 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
             print(f'{B=:.4f}')
             pass
        
-        for k, (n1, n2, key) in itertools.chain(
+        # [Claude, 2026-08-21] node_edges приходит из calc_teplo, где считается один
+        # раз на все n_calc внутренних итераций (топология графа между ними не
+        # меняется). При вызове напрямую (без node_edges) считаем как раньше.
+        edges_n = node_edges[n] if node_edges is not None else itertools.chain(
                 zip(itertools.repeat(1), G.in_edges(n, keys=True)),
                 zip(itertools.repeat(2), G.out_edges(n, keys=True))
-                ): 
+                )
 
+        for k, (n1, n2, key) in edges_n:
 
             kkkk1 += 1
 
@@ -435,13 +480,13 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
                 i2 = nnode2['num']
 
                 t0 = nnode1.get('t0', None)
-                t0 = getZT(G, nnode1, curT)
+                t0 = cached_getZT(n1, nnode1)
 
                 if t0:  
                     nist = dict_ist.get(n1)
                     i1 = n_nodes + nist
 
-                matrix[ii, i1] += GG
+                madd(ii, i1, GG)
 
                 nodeID_pr = l.get('nodeID_pr', 0)
 
@@ -531,19 +576,19 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
                             nIin = G.nodes.get((nodeID0, po0), None)
 
 
-                            for k, (n1, n2, key) in itertools.chain(
+                            edges_nIin0 = node_edges[nIin0] if node_edges is not None else itertools.chain(
                                     zip(itertools.repeat(1), G.in_edges(nIin0, keys=True)),
                                     zip(itertools.repeat(2), G.out_edges(nIin0, keys=True))
-                                    ): 
+                                    )
 
-                                l = G.edges[n1, n2, key]
+                            # исправлено Claude, 2026-10-20 (ревью п. 1.2): свои имена переменных - раньше цикл
+                            # затирал l, n1, n2, k, k_l внешнего цикла и QQ ниже брался с чужой ветви
+                            for k_in, (n1_in, n2_in, key_in) in edges_nIin0:
 
-                                l_typ = l['typ']
+                                l_in = G.edges[n1_in, n2_in, key_in]
 
-                                k_l = l['num']
-
-                                GG1 = x[k_l]
-                                if k == 2:  
+                                GG1 = x[l_in['num']]
+                                if k_in == 2:
                                     GG1 = -GG1
 
                                 if GG1 > 0:
@@ -574,6 +619,15 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
 
                 else:
                     y = l.get('Y', 0)
+
+                    # вставлено Claude, 2026-10-20: потери Y постоянные, и при малом расходе падение Y*1000/GG
+                    # давало температуры в сотни градусов ниже нуля. Вода не может отдать больше, чем до
+                    # температуры окружающей среды (грунт, для надземной прокладки (тип 4) - наружный воздух).
+                    # Температура начала участка - с предыдущего прохода; на первом проходе - как раньше.
+                    t_in = node1.get('t', None)
+                    if y > 0 and t_in is not None:
+                        t_okr = Tn if l.get('name_typ', 0) == 4 else t_grunt
+                        y = max(0., min(y, GG * (t_in - t_okr) / 1000))
 
 #                    if l_typ == 'bypass':
 #                        print(f'{y=} {GG=}')
@@ -736,7 +790,7 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
                         name2 = w_print.node_name(G, n2, False)
                         print(f'* &lt;{k} {name1} {name2} {GG_Z=:.4f} {Gout=:.4f} {Qz=:.4f} {t=:.2f} {t2=:.2f}')
                     i1 = G.nodes[n1]['num']
-                    matrix[ii, i1] = GG_Z
+                    mset(ii, i1, GG_Z)
 
                     B += Qz*1000
 
@@ -764,8 +818,8 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
                     
 
 
-        if yes:    
-            matrix[ii, k_n1] = -g
+        if yes:
+            mset(ii, k_n1, -g)
             beta[ii] = B
             if debug: print(f'   << {n_in}  >> {n_out} {ii=} {k_n1=}  --   {g=:.4f}  {B=:.4f}\n')
         else:
@@ -773,7 +827,7 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
                 name = w_print.node_name(G, n, False)
                 print('     !!', name)
 
-            matrix[ii, k_n1] = 1
+            mset(ii, k_n1, 1)
             beta[ii] = 0   # Это температура узла, куда не идет вода
 
         ii += 1
@@ -796,10 +850,10 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
     for n in G.nodes:
         node = G.nodes[n]
         t0 = node.get('t0', None)
-        t0 = getZT(G, node, curT)
+        t0 = cached_getZT(n, node)  # [Claude, 2026-08-21] для узлов-источников уже посчитано выше — попадёт в кэш
 
-        if t0:  
-            matrix[ii, ii] = 1
+        if t0:
+            mset(ii, ii, 1)
             beta[ii] = t0
 
             if debug:
@@ -808,15 +862,37 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False):
 
             ii += 1
 
-    diag = matrix.diagonal()
-
     eps = 0.00000000001
 
-    for i in range(nn):
-        if diag[i] == 0:
-            matrix[i, i] = eps
+    # [Claude, 2026-08-24] Найден реальный случай (astanagid_2026_03_17, fileID 3165,
+    # фрагмент "без района"): два узла связаны только друг с другом крохотной
+    # проводимостью (~1.5e-4), без пути к остальной сети/источнику — их строки
+    # получаются [-c, c] и [c, -c], у диагонали ничего "ровно нулевого" нет, но у
+    # этого блока 2x2 определитель точно 0 (плавающая, "неподключенная к земле"
+    # пара — её сумма/разница температур определена, а абсолютный уровень — нет).
+    # Прежний фолбэк "diag==0 -> eps" такое не ловит: диагональ там ненулевая.
+    # DIAG_REG — небольшая добавка к диагонали КАЖДОГО узла (не только нулевых) —
+    # это как крохотная утечка тепла в фиксированную точку отсчёта у каждого узла,
+    # стандартный приём против именно такой "плавающей" вырожденности. Для обычных
+    # (связанных с остальной сетью) узлов ничего не меняет — там диагональ на
+    # порядки больше; для найденного вырожденного случая на реальных данных
+    # снимает "Matrix appears singular or ill-conditioned" и расчёт фрагмента
+    # больше не прерывается целиком из-за двух "бесхозных" узлов.
+    DIAG_REG = 1e-6
 
-    matrix = sp.sparse.csc_array(matrix)
+    for i in range(nn):
+        matrix_d[(i, i)] = matrix_d.get((i, i), 0) + DIAG_REG
+
+        if matrix_d[(i, i)] == 0:
+            matrix_d[(i, i)] = eps
+
+    if matrix_d:
+        rows_idx, cols_idx = zip(*matrix_d.keys())
+        data = list(matrix_d.values())
+    else:
+        rows_idx, cols_idx, data = (), (), ()
+
+    matrix = sp.sparse.coo_array((data, (rows_idx, cols_idx)), shape=(nn, nn)).tocsc()
 
 
 #    print(f'{tt4-tt3:.2f} ')
@@ -833,6 +909,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 
 
 
+# [Claude 2026-10-18] Тепловой расчет одного потребителя (реального или обобщенного) при его расходе; возвращает (узел, t2).
 def teplo_pt(nodeP, Tn, debug1):
     GG = nodeP.get('G', 0)
     Gout = nodeP.get('Gout', 0)
@@ -853,6 +930,7 @@ def teplo_pt(nodeP, Tn, debug1):
     return nodeP, t2
 
 
+# [Claude 2026-10-18] Отладка: тепловой расчет всех потребителей подряд и печать затраченного времени.
 def check_pt(G, x, Tn):
     cprint('Проверка потребителей', color='green')
 
@@ -909,6 +987,7 @@ def check_pt(G, x, Tn):
 
 
     # Функция для чанка (в отдельном файле или здесь)
+    # [Claude 2026-10-18] Расчет пачки потребителей (используется в закомментированном многопоточном варианте).
     def process_chunk(chunk):
         return [teplo_pt(edge, Tn, debug1) for edge in chunk]
 
@@ -966,6 +1045,8 @@ n_all_calc = 0
 
 
 
+# [Claude 2026-10-18] Тепловой расчет сети: 5 раз строит и решает систему init_matrix_teplo при расходах x и записывает
+# температуры в узлы ('t'). False - если нет источников или система не решается.
 def calc_teplo(G, x, Tn, curT, teploYes0):
 #    teploYes = False
     teploYes = True
@@ -978,6 +1059,18 @@ def calc_teplo(G, x, Tn, curT, teploYes0):
 
     n_calc = 5
 
+    # [Claude, 2026-08-21] Топология графа не меняется между n_calc внутренними
+    # итерациями — список входящих/исходящих рёбер на узел (G.in_edges/G.out_edges)
+    # можно посчитать один раз здесь и переиспользовать в init_matrix_teplo,
+    # вместо того чтобы пересоздавать view-объекты networkx на каждой из них.
+    node_edges = {
+        n: list(itertools.chain(
+            zip(itertools.repeat(1), G.in_edges(n, keys=True)),
+            zip(itertools.repeat(2), G.out_edges(n, keys=True)),
+        ))
+        for n in G.nodes
+    }
+
     for i in range(n_calc):
         if i == n_calc-1 and teploYes0:
             teploYes = True
@@ -988,19 +1081,14 @@ def calc_teplo(G, x, Tn, curT, teploYes0):
         debug_yes = (n_all_calc in (1, 21))
         debug_yes = False
 
-
 #        print(f'Шаг {i} Начали инициализацию ')
 
         tt1  = time.time()
-
-        ret = init_matrix_teplo(G, x, Tn, curT, teploYes, debug_yes)
-
+        ret = init_matrix_teplo(G, x, Tn, curT, teploYes, debug_yes, node_edges=node_edges)
         tt2  = time.time()
 
 
 #        print(f'Закончили инициализацию {tt2-tt1:.4f}')
-
-
 #        print(f'Шаг {i+1}')
 
         if ret is None:

@@ -3,6 +3,7 @@ import pyodbc
 from sety import config
 
 
+# [Claude 2026-10-18] Выполняет запрос q и печатает все строки результата в файл f (через пробел).
 def print_q(f, conn, q):
     cursor = conn.cursor()
     
@@ -26,6 +27,7 @@ def print_q(f, conn, q):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] True, если запрос q вернул хотя бы одну строку.
 def exists_q(conn, q):
     cursor = conn.cursor()
 
@@ -44,6 +46,8 @@ def exists_q(conn, q):
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Выполняет запрос (с параметрами vals) и возвращает первое поле первой строки или None.
+# При ошибке БД печатает запрос и завершает процесс (exit(1)).
 def read_q_value(cursor, q, vals=None):
     try:
 #        q = 'insert into calculation (fileID) values(58) SELECT SCOPE_IDENTITY()'
@@ -78,6 +82,8 @@ def read_q_value(cursor, q, vals=None):
 #-----------------------------------------------
 
 
+# [Claude 2026-10-18] Выполняет INSERT и возвращает id новой записи: для PostgreSQL дописывает 'returning id',
+# для MS SQL подставляет 'OUTPUT INSERTED.id' вместо метки $MS_SQL_OUTPUT$. Для других СУБД - None.
 def exec_insert(cursor, q, vals=None):
     if config.args.rdbms == 'postgreSQL':
         q = q.replace('$MS_SQL_OUTPUT$', '')

@@ -16,6 +16,8 @@ from sety.dross.w_print import w_print
 
 #short drsh2(double ot, double diam_so, double k_smes, double nap_ras, double *dc, double *hrc,double *nal,UZEL ptr)
 
+# [Claude 2026-10-18] Расчет элеватора (Апарцев 7.5, 7.2): диаметр сопла dc по расходу ot и напору hrc (не меньше diam_so,
+# иначе пересчет напора и ferr=1), диаметр горловины и номер элеватора nal (0..7). Возвращает (ferr, hrc, dc, nal).
 def drsh2(ot, diam_so, k_smes, nap_ras, hrc, ptr_name): # , UZEL ptr)
 
 #    dc, hrc, nal

@@ -36,6 +36,7 @@ from sety.any.colors import nbsp
 import consumption
 from consumption import get_pt_name
 
+# [Claude 2026-10-18] Гидравлическое сопротивление по перепаду dH и расходу G: |dH|/G^2 (0 при G=0 или dH<0 и G<=0).
 def soprPT(dH, G):
     if dH < 0 and G <= 0: return 0
 #    if dH < 0: return abs(getGlobal()->dH_zero) / G / G
@@ -45,6 +46,9 @@ def soprPT(dH, G):
 
 
 
+# [Claude 2026-10-18] Текст UPDATE для таблицы потребителей potr_name: записывает рассчитанные сопротивления (закрытая система,
+# лето, открытый водоразбор из подачи/обратки), при -save_uf_new - коэффициент смешения, а для PostgreSQL
+# еще и расчетные расходы. sopr_pr - строки VALUES. None, если sopr_pr пуст.
 def make_sql_potr(potr_name, sopr_pr):
     
     s_uf = ''
@@ -77,7 +81,7 @@ end,
 
 hydroResWDORet = 
 case when calcSignResWDORetID <> 2 then t.s3
-else hydroResWDOFlow
+else hydroResWDORet   -- исправлено Claude, 2026-10-20 (ревью п. 1.5): было hydroResWDOFlow
 end
 
 from {potr_name} rc
@@ -115,7 +119,7 @@ end,
 
 hydroResWDORet = 
 case when calcSignResWDORetID <> 2 then t.s3
-else hydroResWDOFlow
+else hydroResWDORet   -- исправлено Claude, 2026-10-20 (ревью п. 1.5): было hydroResWDOFlow
 end,
 
 calcExpendDep = t.calcExpendDep,
@@ -160,6 +164,7 @@ values {sopr_pr}
     return q
 
 
+# [Claude 2026-10-18] Печатает строку баланса: подпись с точками до 50 символов и два числа (нагрузка, расход); нули не печатаются.
 def print_bal(text, v1, v2):
     if v1 is None: v1 = 0
     if v2 is None: v2 = 0
@@ -178,6 +183,8 @@ def print_bal(text, v1, v2):
         cprint(s)
 
 
+# [Claude 2026-10-18] Сумма расходов G по всем входящим и исходящим ветвям узла n (без знака); второй результат всегда 0.
+# Параметр nO не используется.
 def n_ras(G, n, nO):
     nP = G.nodes[n]
 
@@ -204,6 +211,10 @@ def n_ras(G, n, nO):
 
 
 
+# [Claude 2026-10-18] Запись в PT_OUT результатов по потребителям (реальным и обобщенным) для планового расчета:
+# расходы по видам нагрузки, напоры, температуры, фактические и требуемые нагрузки, теплообеспеченность,
+# коэффициент смешения. Предупреждает об отрицательном располагаемом напоре. При -dross_yes пишет
+# рассчитанные сопротивления и расходы обратно в realconsumers/generalizedConsumers.
 def out_PT_OUT(G, conn, calculationid, Tn):
     
     cursor = conn.cursor()
@@ -438,6 +449,9 @@ def out_PT_OUT(G, conn, calculationid, Tn):
                         Qotoplz = Qotopl
                 else:
                     print(cxema, Qotopl, vv)
+                    # исправлено Claude, 2026-10-20 (ревью п. 1.7В): схема не распознана - считаем отопление зависимым, иначе оставались значения предыдущего потребителя
+                    Qotopln = 0
+                    Qotoplz = Qotopl
 
 
 #                print('r', t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo)
@@ -467,7 +481,7 @@ def out_PT_OUT(G, conn, calculationid, Tn):
 
             Qfact = 0
 
-            if not Qotopl is None and Qotopl > 0:
+            if not Qotopl is None:   # исправлено Claude, 2026-10-20 (ревью п. 1.7А): было еще 'and Qotopl > 0' - без отопления и летом Qfact = 0
                 Qsum_z = Qotopl + Qvent + Qkond + Qgvz     + Qrez   # !!!!!!!!!!
                 Qfact = Qotopl + Qvent + Qkond + Qgvz + Qgvop + Qgvoo + Qrez
 

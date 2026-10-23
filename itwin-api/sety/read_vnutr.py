@@ -20,12 +20,14 @@ from sety.b5.b5 import get_b5
 from sety.atm import add_atm
 
 from sety.any.colors import cprint
-from consumption import get_pt_name
+# исправлено Claude, 2026-10-20 (ревью п. 1.9Г): было 'from consumption import get_pt_name' - импорт не через пакет, вторая копия модуля
 
 
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Добавляет в граф узел внутренней схемы потребителя (кроме узла '0' - точки присоединения) с ключом
+# (id потребителя, номер id1) и координатами, сдвинутыми от узла потребителя; запоминает его в map_node.
 def add_node_for_pr(map_node, G, nP, name1, po1, x1, y1, id, externalCodeID, id1, debug):
 
     po1 = 1 if po1 == 'P' else 2
@@ -88,6 +90,9 @@ def add_node_for_pr(map_node, G, nP, name1, po1, x1, y1, id, externalCodeID, id1
 #-----------------------------------------------------------------------------------
 # Добавляем внутреннюю схему потребителей
 
+# [Claude 2026-10-18] Читает реальных потребителей фрагментов s_fileID и разворачивает их внутренние схемы (из b5.txt по номеру
+# схемы): создает внутренние узлы и ветви (элеватор, задвижки, участки, радиаторы, теплообменники,
+# калориферы, диафрагмы, узлы подпитки в атмосферу) с сопротивлениями по нагрузкам и расходам потребителя.
 def read_pt_vnutr(G, conn, tn, s_fileID):
     cursor = conn.cursor()
     cols = w_data.str_for_sql(tn, 'o')
@@ -177,6 +182,10 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
             cxema_name = pr.get('cxema', '??')
             cxema = get_b5(pr.get('cxema', '??'))
 
+            if cxema is None:   # исправлено Claude, 2026-10-20 (ревью п. 1.9В): проверка была после циклов for line in cxema - падало с TypeError
+                cprint(f'Не задана внутренняя схема {cxema_name} для потребителя [{consumption.get_pt_name(nP)}]', color='red')
+                exit(1)
+
             x = nP.get('x', None)
             y = nP.get('y', None)
             uzel = nP.get('uzel', None)
@@ -239,8 +248,9 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
 
             ut['typ'] = 'inner_line'
 
+            ut0 = dict(ut)   # исправлено Claude, 2026-10-20 (ревью п. 1.9Б): у каждой ветви свой словарь - раньше ZZ, typ_gvs, typTO переходили на следующие ветви
             for line in cxema:
-                ut['typTO'] = t
+                ut = dict(ut0)
                 name1,po1,name2,po2,typ,x1,y1,x2,y2,t = line
                 popo1 = 0 if po1 == 'P' else 1
                 popo2 = 0 if po2 == 'P' else 1
@@ -266,7 +276,7 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
                         ut['S'] = S
                         
                         _ATMOSPHERE = add_atm(G)
-                        G.add_edge((id1, po1), _ATMOSPHERE, key=(id, 5), po=1, Y=1, **ut, state=1)
+                        G.add_edge((id1, po1), _ATMOSPHERE, key=(nodeID, 5), po=1, Y=1, **ut, state=1)   # исправлено Claude, 2026-10-20 (ревью п. 1.9А): было id - встроенная функция
 
 
                     if G_gvoo != 0:
@@ -275,7 +285,7 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
                         ut['S'] = S
                         
                         _ATMOSPHERE = add_atm(G)
-                        G.add_edge((id1, po1), _ATMOSPHERE, key=(id, 6), po=1, Y=1, **ut, state=1)
+                        G.add_edge((id1, po1), _ATMOSPHERE, key=(nodeID, 6), po=1, Y=1, **ut, state=1)   # исправлено Claude, 2026-10-20 (ревью п. 1.9А): было id - встроенная функция
 
                     continue
                 
@@ -384,10 +394,10 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
                             a11 = pr.get('a11', 0)
 
                             if G_rez == 0:
-                                cprint(f'Не задана нагрузка рециркуляции для [{get_pt_name(nP)}]', color='red')
+                                cprint(f'Не задана нагрузка рециркуляции для [{consumption.get_pt_name(nP)}]', color='red')
                                 exit(1)
                             if a11 == 0:
-                                cprint(f'Не задана потеря напора в открытой ГВ [{get_pt_name(nP)}]', color='red')
+                                cprint(f'Не задана потеря напора в открытой ГВ [{consumption.get_pt_name(nP)}]', color='red')
                                 exit(1)
 
                             if G_rez != 0:
@@ -397,10 +407,10 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
                             a10 = pr.get('a10', 0)
 
                             if a10 == 0:
-                                cprint(f'Не задан напор на выходе приборов ГВ [{get_pt_name(nP)}]', color='red')
+                                cprint(f'Не задан напор на выходе приборов ГВ [{consumption.get_pt_name(nP)}]', color='red')
                                 exit(1)
                             if G_gvop + G_gvoo + G_rez == 0:
-                                cprint(f'Не задана нагрузка ГВ [{get_pt_name(nP)}]', color='red')
+                                cprint(f'Не задана нагрузка ГВ [{consumption.get_pt_name(nP)}]', color='red')
 #                                print(nP)
 #                                print(pr)
                                 exit(1)
@@ -425,6 +435,7 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
                         ut['typTO'] = t
 
                         a17 = pr.get('a17', 0)
+                        ras = 0   # исправлено Claude, 2026-10-20 (ревью п. 1.9Б): при нулевых расходах ГВС (t == 11) ras оставался от прошлой ветви
                         G_gvpr = pr_out.get('G_gvpr', 0)
                         G_gvsm = pr_out.get('G_gvsm', 0)
                         G_gvpw = pr_out.get('G_gvpw', 0)
@@ -557,12 +568,8 @@ def read_pt_vnutr(G, conn, tn, s_fileID):
 #                    ut['nodeID2'] = int(name2)*2 + 10 + popo2
                     ut['mesto'] = t
 
-                    G.add_edge((id1, po1), (id2, po2), key=(id, 1), po=2, **ut, state=1)
+                    G.add_edge((id1, po1), (id2, po2), key=(nodeID, 1), po=2, **ut, state=1)   # исправлено Claude, 2026-10-20 (ревью п. 1.9А): было id - встроенная функция
 
-            
-            if cxema is None:
-                cprint(f'Не задана внутренняя схема для потребителя', color='red')
-                exit(1)
 
 
 

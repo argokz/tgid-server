@@ -5,6 +5,8 @@ from sety.any.colors import cprint
 from sety.any.colors import nbsp
 
 
+# [Claude 2026-10-18] Проверяет, что у всех внешних кодов с потребителями во фрагменте fileID указан существующий источник тепла.
+# Печатает список кодов без источника; возвращает их количество (0 - все в порядке).
 def check_ec_hs(conn, fileID):
 
     q = f'''

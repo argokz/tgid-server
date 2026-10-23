@@ -9,12 +9,17 @@ from sety.dross.w_print import w_print
 ##include        "grext.h"
 H_DOPUST = 3.0   # """ допустимый остаток располагаемого напора """
 
+# [Claude 2026-10-18] Сообщение о том, что на практике ставят не более одного дросселя диаметром 3 мм (если n_3mm > 1).
 def msg3(n_3mm):
   if n_3mm > 1:  
     w_print(f"Из практики технической эксплуатации устанавливается не более одного дросселя");
     w_print(f"    диаметром 3 мм, который используется при расчете фактического режима.");
 
 
+# [Claude 2026-10-18] Одноступенчатый расчет дроссельных устройств потребителя по располагаемому напору rasp:
+# диафрагмы открытого ГВС (из обратки/подачи, рециркуляция), закрытого ГВС (pr/sm), вентиляции,
+# сопло элеватора (fss[0]=1) или диафрагмы отопления по фасадам (fss[0]=2/3). Результаты в dr_out,
+# сообщения - через w_print (если message). Возвращает ferr.
 def drvary1(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
             gvpr, gvsm, gvps, gvpw, gvop, gvoo, rez, fss,
              ho, hv, hgv, ptr_name, rezh, message=True):
@@ -366,7 +371,6 @@ def drvary1(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
 
             if ferr:
                 hoost = hoost-hrc
-
                 h_3mm = hoost
                 if gvps == 0. and gvpw == 0.:
                    f = otopl*otn_fs # """***********************************************************************"""
@@ -468,16 +472,11 @@ def drvary1(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
         if hrc > 0.:
 
             f = otopl*otn_fs #"""***********************************************************************"""
-            
-#            print(ptr_name,  'f=', f)
-            
             if f != 0:
                h_3mm = hrc
                n_3mm = 1
 
                ferr, hrc, dr_out['b21'] = drsh3(f, drs['a15'], drs['a16'], hrc)
-
-#               print(ptr_name, 'f=', f, 'a15=', drs['a15'], 'a16=', drs['a16'], 'hrc=', hrc, dr_out['b21'])
 
                if ferr:
                     n_3mm = int(h_3mm/hrc)

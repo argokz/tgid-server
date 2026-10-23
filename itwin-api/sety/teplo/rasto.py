@@ -28,6 +28,7 @@ from sety.ct import get_ct
 
 import time
 
+# [Claude 2026-10-18] Заглушка (ничего не делает); затеняет одноименную функцию из any.any.
 def fatal_error_teplo():
     pass
 
@@ -62,6 +63,10 @@ map_pt_cnt = defaultdict(int)
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Тепловой расчет реального потребителя при расходе G и температуре подачи t: в зависимости от схемы ГВС
+# (нет, pr, ps, pw, sm) считает отопление, теплообменники ГВС I/II ступени (итерационно), вентиляцию,
+# рециркуляцию и открытый водоразбор. Возвращает (t2, tg, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz,
+# Qgvop, Qgvoo) или None при t < 0 или нулевом расходе.
 def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
 
 #, double& t2, double& qq, double& tg, double& tv, double& tvv, double& Qotopl, double& Qvent, double& Qkond, double& Qgvz, double& Qgvop, double& Qgvoo
@@ -428,6 +433,7 @@ def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Заглушка (не реализовано).
 def rasTO10(node, pr, pt_G, G, t, Tn, debug):
     pass
 
@@ -437,6 +443,8 @@ map_t = defaultdict(float)
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Обертка над rasTO_pr: берет расчетные температуры потребителя по kodtr, замеряет время по типу схемы
+# (map_t) и возвращает (t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
 
     
@@ -503,6 +511,7 @@ def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Отладочные расходы потребителя по нагрузкам pr и удельным расходам ur (температуры 150/70/80 зашиты).
 def get_pt_G(pr, ur):
 
     pt_G = {}
@@ -525,6 +534,7 @@ def get_pt_G(pr, ur):
 #-----------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Отладочный прогон rasTO_pr 1000 раз на тестовом потребителе.
 def test():
     config.init()
 

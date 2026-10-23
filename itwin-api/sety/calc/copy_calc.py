@@ -5,6 +5,7 @@ import argparse
 
 #------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Подключение к PostgreSQL через ODBC; при ошибке печатает сообщение и возвращает None.
 def connect_to_database(db_name, host, port, user, password):
     try:
         conn_str = (
@@ -22,6 +23,7 @@ def connect_to_database(db_name, host, port, user, password):
         return None
 #------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Выполняет SELECT и возвращает (список имен колонок, список строк).
 def fetch_columns_and_rows(conn, select_sql: str, select_params: Sequence = ()):
     """
     Выполняет SELECT и возвращает:
@@ -39,6 +41,7 @@ def fetch_columns_and_rows(conn, select_sql: str, select_params: Sequence = ()):
 
 #------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Массовый UPDATE таблицы table по ключу key_column; rows - кортежи (ключ, значения update_columns...).
 def update_many(cur, table, key_column, update_columns, rows):
     """
     Массовый UPDATE для pyodbc.
@@ -65,6 +68,8 @@ def update_many(cur, table, key_column, update_columns, rows):
     cur.executemany(sql, params)
 #------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Копирует результаты расчета фрагмента fileID из базы conn1 в базу conn2:
+# для каждого SQL-файла из списка читает данные из conn1 и обновляет соответствующую таблицу gid.* в conn2.
 def copy_calc(conn1, conn2, fileID):
     lst = [
       ('us.sql',    'gid.nodes',                       'nodes',      ),

@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу BP_OUT результаты по байпасам для расчета calculationid
+# (состояние, сопротивление, расход a13, установка, диаметр, длина и др.).
 def out_BP_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

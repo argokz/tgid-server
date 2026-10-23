@@ -41,6 +41,7 @@ import sety.out.out_teplo
 
 from sety.any.colors import cprint
 
+# [Claude 2026-10-18] Удаляет из таблицы tn результаты всех расчетов, кроме max_num последних для каждой пары (пользователь, фрагмент).
 def del_old_out(conn, tn, s_id, max_num):
     q = f'''
 ;WITH NumberedCalculations AS (
@@ -72,6 +73,7 @@ WHERE {s_id} IN (
 
 
 
+# [Claude 2026-10-18] Очистка старых результатов расчетов во всех таблицах *_OUT. Сейчас отключена (return в начале).
 def del_out(conn):
 
     return
@@ -105,6 +107,9 @@ def del_out(conn):
 
 
 
+# [Claude 2026-10-18] Запись результатов расчета графа G для фрагмента fileID: создает запись в calculation (с параметрами расчета)
+# и заполняет таблицы US_OUT, PT_OUT, BP_OUT, UT_OUT, ZD_OUT, ANY_OUT, RS_OUT, NS_OUT, OK_OUT, ANY2_OUT,
+# печатает тепловой баланс и проверку источников. Возвращает id расчета.
 def w_out(G, conn, fileID):
 #    print('Запись результата началась', flush=True)
     cursor = conn.cursor()

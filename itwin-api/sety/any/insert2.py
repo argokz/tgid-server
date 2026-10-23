@@ -5,6 +5,7 @@ class Insert:
     cols = set()
     max_insert = 1000
 
+    # [Claude 2026-10-18] Построитель многострочного INSERT для таблицы table_name через соединение conn.
     def __init__(self, table_name, conn):
         self.row = {}
         self.row0 = {}
@@ -15,11 +16,13 @@ class Insert:
         self.conn = conn
         self.cursor = self.conn.cursor()
 
+    # [Claude 2026-10-18] Добавляет колонку col со значением по умолчанию def_val.
     def add_col(self, col, def_val=None):
         self.cols.add(col)
         self.row[col] = def_val
         self.row0[col] = def_val
 
+    # [Claude 2026-10-18] Выполняет накопленный INSERT (если есть строки) и commit; при ошибке печатает запрос и завершает процесс.
     def exec(self):
         if self.n > 0:
 #            print('----------------------------------')
@@ -34,6 +37,8 @@ class Insert:
                 print('----------------')
                 exit(1)
 
+    # [Claude 2026-10-18] Начинает новую строку: при накоплении max_insert строк сначала выполняет пакет;
+    # значения строки сбрасываются в значения по умолчанию.
     def addRow(self):
         if self.n == self.max_insert:
             self.exec()
@@ -52,6 +57,8 @@ class Insert:
         self.n += 1
 #        print(f'{self.n=}')
 
+    # [Claude 2026-10-18] Записывает значение колонки текущей строки: строки экранируются и берутся в кавычки, NaN -> null.
+    # Неизвестная колонка - печать ошибки и выход.
     def db_write(self, col, val=None):
         if col not in self.cols:
             print(f'Нет колонки {col} в таблице {self.table_name}')
@@ -68,6 +75,7 @@ class Insert:
 
         self.row[col] = val
 
+    # [Claude 2026-10-18] То же, что db_write, но 0 записывается как NULL (вызывает db_write как глобальную функцию - см. отчет).
     def db_write0(self, col, val=None):
         if col not in self.cols:
             print(f'Нет колонки {col} в таблице {self.table_name}')
@@ -78,6 +86,7 @@ class Insert:
             db_write(self, col, val)
 
 
+    # [Claude 2026-10-18] Список имен колонок через запятую (в порядке добавления).
     def db_insert_cols(self):
         vals = ''
         for k, v in self.row.items():
@@ -86,6 +95,7 @@ class Insert:
             
         return vals;
 
+    # [Claude 2026-10-18] Добавляет значения текущей строки в текст INSERT (None -> NULL).
     def db_insert_vals(self):
 
         vals = ''
@@ -110,6 +120,7 @@ class Insert:
 #            exit(1)
 
 
+    # [Claude 2026-10-18] Возвращает накопленный текст INSERT.
     def insert_text(self):
         cols = self.db_insert_cols()
         return self.ins

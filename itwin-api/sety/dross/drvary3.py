@@ -2,6 +2,7 @@ import math
 
 from sety.dross.drsh2 import drsh2
 from sety.dross.drsh3 import drsh3
+from sety.dross.drvary1 import drvary1   # исправлено Claude, 2026-10-20 (ревью п. 1.11А): не был импортирован - NameError
 
 from sety.dross.w_print import w_print
 
@@ -11,6 +12,9 @@ H_DOPUST1 = 2.0  # /* мин.допустимый гасимый напор на
 
 
 
+# [Claude 2026-10-18] Расчет дросселирования для ступени 3 (открытое ГВС и элеватор): диафрагмы на ГВС из обратки/подачи,
+# головная диафрагма, сопло элеватора (drsh2), диафрагмы на вентиляции, рециркуляции и ГВС pr/sm.
+# Результаты в dr_out; возвращает ferr.
 def drvary3(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
             gvpr, gvsm, gvps, gvpw, gvop, gvoo, rez, fss,
              ho, hv, hgv, ptr_name):
@@ -19,6 +23,7 @@ def drvary3(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
 #    double   hrc, ggv, hoost, hogrost, hgvost, hvost, h_3mm
 #    int     n_3mm, ferr = 0, t_g
 
+    ferr = False   # исправлено Claude, 2026-10-20 (ревью п. 1.11Б): иначе UnboundLocalError на return ferr
     hoost = hvost = hgvost = ggv = hogrost = 0.
     ggv = gvpr + gvsm + gvop + gvps + gvpw
     if fss[7]: # /* если есть откр. ГВ из обратки */
@@ -82,7 +87,8 @@ def drvary3(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
                 w_print(f" располагаемого напора ТП равного {hrc:.1f} м.")
                 w_print(f" Расчет дроссельных органов выполняется одноступенчатым способом")
 
-                return drvary1(drs, dr_out, rasp, pihP, pihO, otopl, otn_fs, vn,
+                # исправлено Claude, 2026-10-20 (ревью п. 1.11А): был пропущен Gz - все аргументы сдвигались
+                return drvary1(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
                     gvpr, gvsm, gvps, gvpw, gvop, gvoo, rez, fss,
                     ho, hv, hgv, ptr_name, 1)
 

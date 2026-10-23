@@ -11,6 +11,8 @@ from sety import sopr
 from sety.any import db2
 from sety.any.insert2 import Insert
 
+# [Claude 2026-10-18] Записывает в таблицу NS_OUT результаты по насосам (pumps с признаком линии < 6) для расчета calculationid:
+# расход, напоры, рабочая зона и т.п. Состояние всегда пишется 'открыт'.
 def out_NS_OUT(G, conn, calculationid):
     cursor = conn.cursor()
     

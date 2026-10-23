@@ -1,3 +1,4 @@
+import re   # вставлено Claude, 2026-10-20
 if not __package__:
     import os
     import sys
@@ -21,9 +22,11 @@ from sety.dross.w_print import get_text
 from sety.teplo.otopl import getUFpr
 
 
+# [Claude 2026-10-18] Заглушка: расчетные температуры не ищутся (всегда None), поэтому проверка невскипания ниже не выполняется.
 def getTR(tr):
     return None
 
+# [Claude 2026-10-18] Имя потребителя для сообщений (просто a).
 def pr_name(pr, a):
     return f'{a}'
 
@@ -33,6 +36,7 @@ def pr_name(pr, a):
 
 errmsg = "Расчет дроссельных органов не выполняется."
 
+# [Claude 2026-10-18] Словарь результатов расчета дроссельных устройств b7..b43 с нулевыми значениями.
 def init_dr_out():
     dr_out = dict()
 
@@ -75,6 +79,10 @@ def init_dr_out():
 
     return dr_out
 
+# [Claude 2026-10-18] Расчет дроссельных устройств потребителя potr_name: проверяет исходные данные и напоры, определяет способ
+# присоединения отопления (элеватор/независимая/безэлеваторная) и виды ГВС, при необходимости подпорную
+# диафрагму, затем вызывает drvary1..5 по признаку ступени a13. Возвращает (True, dr_out) или (False, dr_out)
+# при ошибке; текст сообщений - в dr_out['comment'].
 def dross(potr_name, pr, pr2, pt_out, el, isEl): ##(CNode* n,  const EL* el, bool isEl, const ZE* ze, const PT_OUT* pt_out, DR_OUT* dr_out)
 #    DRS drs
 #    UZEL ptr
@@ -272,47 +280,19 @@ def dross(potr_name, pr, pr2, pt_out, el, isEl): ##(CNode* n,  const EL* el, boo
 
     dr_out['cxema'] = pr['cxema']
 
-    if dr_out['cxema'][0] == '1':
-        if dr_out['cxema'][2] <= '4':
-            dr_out['cxema'] = "Зав.СО"
+    # исправлено Claude, 2026-10-20 (ревью п. 1.10): номер схемы N1.N2 разбирается как числа. Раньше по символам
+    # cxema[0], cxema[2]: 15.x попадали в 'Зав.СО', 3.10-7.12 - в 'ЗСО' вместо 'НСО'. Прочие (C15.x, 100.1) - как есть.
+    m = re.match(r'(\d+)\.(\d+)', dr_out['cxema'])
+    if m:
+        n1, n2 = int(m.group(1)), int(m.group(2))
+        if n1 == 1:
+            dr_out['cxema'] = "Зав.СО" if n2 <= 4 else "Нез.СО"
+        elif n1 == 2:
+            dr_out['cxema'] = "Вентиляция"
         else:
-            dr_out['cxema'] = "Нез.СО"
-
-    elif dr_out['cxema'][0] == '2':
-        dr_out['cxema'] = "Вентиляция" 
-
-    elif dr_out['cxema'][0] == '3':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "Пар.ЗСО"
-        else:
-            dr_out['cxema'] = "Пар.НСО"
-
-    elif dr_out['cxema'][0] == '4':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "Смеш.ЗСО"
-        else:
-            dr_out['cxema'] = "Смеш.НСО"
-    elif dr_out['cxema'][0] == '5':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "Посл.ЗСО"
-        else:
-            dr_out['cxema'] = "Посл.НСО"
-
-    elif dr_out['cxema'][0] == '6':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "ОткрПодача.ЗСО"
-        else:
-            dr_out['cxema'] = "ОткрПодача.НСО"
-    elif dr_out['cxema'][0] == '7':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "ОткрОбрат.ЗСО"
-        else:
-            dr_out['cxema'] = "ОткрОбрат.НСО"
-    elif dr_out['cxema'][0] == '15':
-        if dr_out['cxema'][2] <= '8':
-            dr_out['cxema'] = "Предвкл.ЗСО"
-        else:
-            dr_out['cxema'] = "Предвкл.НСО"
+            prefix = {3: 'Пар.', 4: 'Смеш.', 5: 'Посл.', 6: 'ОткрПодача.', 7: 'ОткрОбрат.', 15: 'Предвкл.'}.get(n1)
+            if prefix:
+                dr_out['cxema'] = prefix + ('ЗСО' if n2 <= 8 else 'НСО')
 
     dr_out['otoplz'] = pr['otoplz']
     dr_out['otopln'] = pr['otopln']

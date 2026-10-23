@@ -9,6 +9,8 @@ from sety.any.connect import br_text
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Читает таблицу tn (колонки по описанию w_data) в словарь look[id] = {имя поля: значение};
+# при fileID - только записи указанных фрагментов.
 def read_tab(conn, tn: str, look, id='id', fileID=None) -> None:
     cursor = conn.cursor()
 
@@ -45,6 +47,7 @@ def read_tab(conn, tn: str, look, id='id', fileID=None) -> None:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Как read_tab, но для таблиц узловых объектов: соединяет с nodes (только не удаленные) и добавляет fileID узла.
 def read_tab_node(conn, tn: str, look, id='id', fileID=None) -> None:
     cursor = conn.cursor()
 
@@ -88,6 +91,8 @@ def read_tab_node(conn, tn: str, look, id='id', fileID=None) -> None:
 #-----------------------------------------------------------------------------------
 
 # Читает строчку
+# [Claude 2026-10-18] Строка CSV -> словарь {колонка (нижний регистр): значение}; числа преобразуются в int/float.
+# На значении 'NULL' чтение строки прекращается (см. отчет).
 def read_row3(cols, row) -> dict:
     map_row = dict()
 #    print(cols)
@@ -113,6 +118,7 @@ def read_row3(cols, row) -> dict:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Строка результата запроса -> словарь {колонка (нижний регистр): значение}; пустые/нулевые значения пропускаются.
 def read_row2(tn, cursor, row) -> dict:
     map_row = dict()
 
@@ -125,6 +131,7 @@ def read_row2(tn, cursor, row) -> dict:
 #-----------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Читает всю таблицу tn (SELECT id, *) в look[id] = словарь полей. При ошибке БД - выход из программы.
 def read_tab2(conn, tn: str, look, id='id', fileID=None) -> None:
     cursor = conn.cursor()
 
@@ -160,6 +167,7 @@ def read_tab2(conn, tn: str, look, id='id', fileID=None) -> None:
 #-----------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Читает справочник из CSV sprav/<tn>.csv (разделитель ';') в look[первая колонка] = словарь полей.
 def read_csv2(tn: str, look, id='id') -> None:
 
     tn2 = w_data.map_tn.get(tn , tn)
@@ -187,6 +195,7 @@ def read_csv2(tn: str, look, id='id') -> None:
 #-----------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Читает таблицу tn в справочник look[id] = значение колонки col_name.
 def read_lookup(conn, tn: str, col_name: str, look) -> None:
     cursor = conn.cursor()
 
@@ -206,6 +215,8 @@ def read_lookup(conn, tn: str, col_name: str, look) -> None:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Строка результата запроса -> словарь с переименованием колонок по w_data.tab_list[tn];
+# колонки не из списка и пустые/нулевые значения пропускаются.
 def read_row(tn: str, cursor, row):
     map_row = dict()
 

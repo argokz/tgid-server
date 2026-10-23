@@ -34,6 +34,7 @@ map_kod = {}
 G = nx.MultiDiGraph()
 #G = nx.MultiGraph()
 
+# [Claude 2026-10-18] При -char_sety печатает характеристики сети: количество узлов, участков, регуляторов, насосов, задвижек и т.п.
 def print_kol_char(G):
 
     if not config.args.is_char_sety:
@@ -150,16 +151,19 @@ def print_kol_char(G):
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Заглушка преобразования координаты (возвращает x без изменений).
 def ispr_xy(x):
 #    x = int(x*100)
     return x
 
+# [Claude 2026-10-18] Заглушка преобразования координаты (возвращает x без изменений).
 def ispr_xy2(x):
 #    x = int(x*100)
     return x
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Старая отладочная функция чтения графа из AstanaGID. Нерабочая (см. отчет).
 def water2():
 #    conn = connect.connect('AlmatyGID')
     conn = connect.connect('AstanaGID')
@@ -184,6 +188,7 @@ def water2():
 
 #-----------------------------------------------
 
+# [Claude 2026-10-18] Отладка: печатает слабосвязные компоненты графа (размер и узлы).
 def check(G):
     """
     for (p, d) in G.nodes(data=True):
@@ -242,6 +247,7 @@ def check(G):
 '''
 
 
+# [Claude 2026-10-18] Сохраняет граф в GraphML (None в атрибутах узлов заменяется на 0).
 def save(G, file_name):
     for node in G.nodes:
         for attrib in G.nodes[node]:
@@ -255,6 +261,9 @@ def save(G, file_name):
     nx.write_graphml(G, file_name, edge_id_from_attribute=True, named_key_ids=True, infer_numeric_types=True)
 
 
+# [Claude 2026-10-18] Основной расчет: настройка консоли и лога, подключение к БД, проверка фрагмента, печать режима расчета,
+# чтение справочников и графа сети, гидравлический/тепловой расчет (w_calc), запись результатов (w_out),
+# при -dross_yes - расчет дроссельных органов.
 def run(**db):
     if sys.platform == 'win32':
         import ctypes
@@ -293,7 +302,7 @@ def run(**db):
 
     fileID = list(ff)[0]
 
-    ff_str = '.'.join([str(x) for x in ff])
+    ff_str = ', '.join([str(x) for x in ff])   # исправлено Claude, 2026-10-20 (ревью п. 1.15Г): было '.'.join - при нескольких фрагментах in (1.2)
 
     q = f'select id from fragments where id in ({ff_str})'
 

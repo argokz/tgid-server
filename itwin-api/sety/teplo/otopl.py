@@ -12,10 +12,13 @@ from sety.teplo.tepl_co1 import rasTT2
 from sety.teplo.potreb import set_rasz_pr
 from sety import read_tg
 from sety.consumption import is_bezelevator
+from sety.any.colors import cprint   # вставлено Claude, 2026-10-20
 
 import time
 
 
+# [Claude 2026-10-18] Коэффициент смешения элеватора потребителя: 0 для безэлеваторных схем; при uf_calc и is_tg -
+# по температурному графику источника (t1-t3)/(t3-t2); иначе pr['uf'] (по умолчанию 1).
 def getUFpr(n, pr):
     
     cxema = pr.get('cxema', '??')
@@ -66,9 +69,14 @@ def getUFpr(n, pr):
     return pr.get('uf', 1)
 
 
+warned_otopl = set()   # вставлено Claude, 2026-10-20: потребители, о которых уже предупредили (печать один раз)
+
 EPS = 0.00001
 EPS = 0.001
 
+# [Claude 2026-10-18] Расчет системы отопления потребителя при расходе W0 и температуре подачи t1 (наружная Tn):
+# независимая схема - rasTT2, зависимая - potreb2 (элеватор/смешение) или potreb1.
+# Возвращает (t2 - температура обратной воды, tv - внутренняя температура, Q - тепло, Гкал/ч).
 def otopl(node, pr, tr, W0, Tn, t1, is_leto, debug):
 #, double& t2, double& tv, double& Q    
 
@@ -112,6 +120,16 @@ def otopl(node, pr, tr, W0, Tn, t1, is_leto, debug):
         Q = 0
         return t1, 0, 0
 
+    # вставлено Claude, 2026-10-20: отрицательный расход на отопление (например, расчетный расход
+    # по переохлажденному узлу: нагрузка / (t1 - t2) при t1 < t2) - potreb2 не сходится. Отопления нет.
+    if W0 < 0:
+        kod = pr.get('kod', '??')
+        if ('G', kod) not in warned_otopl:
+            warned_otopl.add(('G', kod))
+            cprint(f'Отопление не рассчитано: потребитель [{kod} {pr.get('name', '??')}] '
+                   f'отрицательный расход на отопление {W0:.1f}, температура подачи {t1:.1f}', color='red')
+        return t1, Tn, 0
+
     ct = get_ct()
 
     '''
@@ -133,6 +151,18 @@ def otopl(node, pr, tr, W0, Tn, t1, is_leto, debug):
 
 #        print('~~~~~~~~~~', t1)
         t2, tv, tt01, tt02, tt03 = rasTT2(pr, tr, W0, kf * (pr_otopln+otopl_tp) * 1e6, Tn, t1, debug)
+
+    # вставлено Claude, 2026-10-20: защита potreb1/potreb2 - при подаче не теплее наружного воздуха
+    # (например, после больших тепловых потерь на участке с малым расходом) или при наружной температуре
+    # не ниже расчетной внутренней метод Ньютона не сходится и расчет падает. Считаем, что отопления нет.
+    elif pr_otoplz > 0 and (t1 <= Tn or Tn >= pr.get('Tr_tv_co', 0)):
+        t2 = t1
+        tv = Tn
+        kod = pr.get('kod', '??')
+        if kod not in warned_otopl:
+            warned_otopl.add(kod)
+            cprint(f'Отопление не рассчитано: потребитель [{kod} {pr.get('name', '??')}] '
+                   f'температура подачи {t1:.1f}, наружная {Tn}, внутренняя расчетная {pr.get('Tr_tv_co', 0)}', color='red')
 
     elif pr_otoplz > 0:
         u = getUFpr(node, pr)

@@ -8,6 +8,8 @@ from sety.any.colors import cprint
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Заполняет параметры регулятора давления ut2 по данным ut: min/max сопротивления (r1, r2) из kv и протечки,
+# узел с регулируемым напором и его значение Z, состояние. Предупреждает о незаданных параметрах.
 def read_RD(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
    
     name = w_print.line_name(G, lineID, nodeID1, nodeID2, externalSignLineID)
@@ -81,6 +83,7 @@ def read_RD(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Заполняет параметры регулятора расхода ut2: r1, r2, начальное сопротивление S, заданный расход Z, состояние.
 def read_RR(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
    
     name = w_print.line_name(G, lineID, nodeID1, nodeID2, externalSignLineID)
@@ -137,9 +140,9 @@ def read_RR(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 
     ut2['delta'] = ut.get('delta', 0.)
     
-    if Z == 0:
-        sost = 2
+    if Z == 0 and sost != 2:
         sost = 3
+        sost = 2
     
     ut2['sost'] = sost
 
@@ -147,6 +150,8 @@ def read_RR(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Заполняет параметры байпаса ut2: r1 по геометрии, r2, регулируемый напор (если задан узел) или расход Z,
+# диаметр, длина, состояние.
 def read_BP(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
    
     name = w_print.line_name(G, lineID, nodeID1, nodeID2, externalSignLineID)
@@ -183,6 +188,9 @@ def read_BP(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 
             Z = h
 #            delta = delta_h
+        else:   # исправлено Claude, 2026-10-20 (ревью п. 1.15А): узла нет в графе - Z был не определен (UnboundLocalError)
+            cprint(f'Узел регулирования байпаса [{name}] не найден, байпас считается регулятором расхода', color='yellow')
+            Z = q
     else:
         Z = q
 
@@ -217,8 +225,9 @@ def read_BP(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 #    if sost != 2:
 #        print(ut)
 
-    if Z == 0 and nodeID <= 0:
+    if Z == 0 and nodeID <= 0 and sost != 2:
         sost = 3
+        sost = 2
 
     ut2['sost'] = sost
 
@@ -233,6 +242,8 @@ def read_BP(G, ut, ut2, lineID, nodeID1, nodeID2, externalSignLineID):
 
 # Регулятор перепада давления
 
+# [Claude 2026-10-18] Заготовка для регулятора перепада давления: считает r1, r2, но ничего не сохраняет и не возвращает
+# (вызов в read_gid закомментирован).
 def read_RP(G, ut, ut2, nodeID1, nodeID2, externalSignLineID):
     kv = ut.get('kv', 0)
     otn_kv = ut.get('otn_kv', 0)

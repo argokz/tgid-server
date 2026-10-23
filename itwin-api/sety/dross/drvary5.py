@@ -12,6 +12,8 @@ H_DOPUST1 = 2.0  # /* мин.допустимый гасимый напор на
 #    double ho, double hv, double hgv, UZEL ptr)
 #{
 
+# [Claude 2026-10-18] Расчет дросселирования для ступени 5: подпорно-ограничительная диафрагма на обратном (циркуляционном)
+# трубопроводе ГВС, результаты в dr_out b39-b41; предупреждение, если напор в обратке > 80 м. Возвращает ferr.
 def drvary5(drs, dr_out, rasp, pihP, pihO, Gz, otopl, otn_fs, vn,
             gvpr, gvsm, gvps, gvpw, gvop, gvoo, rez, fss,
              ho, hv, hgv, ptr_name):

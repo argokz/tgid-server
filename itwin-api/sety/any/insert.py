@@ -4,6 +4,8 @@ import os
 import sys
 
 
+# [Claude 2026-10-18] Формирует для INSERT строку колонок (в кавычках, нижний регистр) и строку значений (None -> NULL).
+# Возвращает (table, scols, svals).
 def initInsert(table, cols, vals) :
     insert = ""
     scols = ""
@@ -33,6 +35,7 @@ def initInsert(table, cols, vals) :
 
 
 
+# [Claude 2026-10-18] Текст INSERT одной строки в таблицу "table".
 def createInsert(table, cols, vals):
 
     (table, scols, svals) = initInsert(table, cols, vals)
@@ -42,6 +45,7 @@ def createInsert(table, cols, vals):
     return insert
 
 
+# [Claude 2026-10-18] То же, что createInsert (дубликат).
 def createInsert0(table, cols, vals):
     (table, scols, svals) = initInsert(table, cols, vals)
 
@@ -50,6 +54,8 @@ def createInsert0(table, cols, vals):
 
     return insert
 
+# [Claude 2026-10-18] Продолжение многострочного INSERT: ',
+# (значения)'.
 def createInsertDop(table, cols, vals):
     (table, scols, svals) = initInsert(table, cols, vals)
 
@@ -58,6 +64,7 @@ def createInsertDop(table, cols, vals):
     return insert
 
 
+# [Claude 2026-10-18] Заглушка: всегда возвращает 1 (код получения SCOPE_IDENTITY ниже недостижим).
 def getLastID(cursor):
     return 1
 #    LAST_INSERT_ID = "SELECT LAST_INSERT_ID()"
@@ -79,6 +86,7 @@ def getLastID(cursor):
     return result
 
 
+# [Claude 2026-10-18] Выполняет INSERT с commit, возвращает getLastID (всегда 1). При ошибке печатает запрос и завершает процесс (os._exit).
 def execInsert(conn, insert, tab) :
 
     id = 0

@@ -7,6 +7,9 @@ from sety.consumption import is_bezelevator
 
 from sety.out.pt_out import n_ras
 
+# [Claude 2026-10-18] Расчет дроссельных органов для реальных потребителей с ненулевым расходом (z_dross.dross),
+# запись результатов в DR_OUT и перенос диаметров диафрагм/сопел в realconsumers
+# (кроме потребителей с признаком calcFerDiameterSignID = 2).
 def dross(G, conn, calculationid):
 
     insert = Insert('DR_OUT', conn)

@@ -4,13 +4,18 @@ import networkx as nx
 import numpy as np
 import scipy as sp
 
+from sety.any.dbg import dbg
 from collections import defaultdict
 
 #from scipy.sparse.linalg import spsolve
 
 from sety import config
+from sety import const
 
 from sety.any.colors import cprint
+
+from sety import w_data
+
 
 from sety import w_rd
 from sety import w_rr
@@ -38,7 +43,29 @@ from sety.check_ist3 import check_ist3
 
 eps = 0.00000000001
 
+# [Claude, 2026-08-24] Потери давления на трубе/закрытом обратном клапане
+# считаются по формуле S*x*|x| (реализовано как S*x^2*sign(x)), у неё
+# производная 2*S*|x| ровно обнуляется в x=0 и совсем мала рядом с нулём —
+# при почти нулевом расходе (типичная ситуация для одной из двух похожих
+# параллельных труб, когда решатель не может однозначно поделить расход
+# между ними) диагональ матрицы почти исчезает, и линейная система на этой
+# итерации становится плохо обусловленной вплоть до отказа spsolve.
+# FLOW_EPS — сглаживание: |x| заменяется на sqrt(x^2 + FLOW_EPS^2), что вдали
+# от нуля (|x| >> FLOW_EPS) неотличимо от исходной формулы, а в x=0 даёт
+# производную S*FLOW_EPS вместо нуля. Величина взята заведомо маленькой
+# относительно реальных расходов (в занесённых по проекту данных наименьшие
+# ненулевые величины такого масштаба — тысячные), чтобы не исказить обычный
+# (не вырожденный) расчёт.
+FLOW_EPS = 1e-6
 
+# [Claude 2026-10-18] Сглаженные потери напора S*x*|x| (|x| ~ sqrt(x^2+eps^2)) и производная для метода Ньютона - без излома в нуле.
+# Внимание: возвращаемая производная берется со знаком минус.
+def _smooth_loss(S, xk):
+    r = np.sqrt(xk * xk + FLOW_EPS * FLOW_EPS)
+    return S * xk * r, -S * (2 * xk * xk + FLOW_EPS * FLOW_EPS) / r
+
+
+# [Claude 2026-10-18] Заготовка проверки насосов: перебирает насосы, но ничего не проверяет и не меняет (ferr не возвращается).
 def check_NS(G, list_ns, root):
     ferr = False
 
@@ -60,6 +87,8 @@ def check_NS(G, list_ns, root):
 #------------------------------------------------------
 # Смотрим если истосник отключен на подаче или обратке
 
+# [Claude 2026-10-18] Для потребителей, у которых в графе есть только подающий или только обратный узел, обнуляет отбор.
+# Возвращает False, если такие были (нужен повторный расчет).
 def reset_consumptions_PO(G, root):
 #    return True
 
@@ -96,6 +125,9 @@ def reset_consumptions_PO(G, root):
 # Пересчитываем источники
 
 
+# [Claude 2026-10-18] Пересчитывает отборы потребителей (реальных и обобщенных) по текущим напорам/температурам через
+# consumption_pr/po и записывает их в правую часть beta0 и в узлы ('G', 'Gout'). При отсутствии узла
+# обратки - сообщение error_1234 и выход из функции (остальные потребители не пересчитываются).
 def reset_consumptions(G, beta0):
 #    print('Начали пересчитывать потребители')
 
@@ -158,6 +190,7 @@ def reset_consumptions(G, beta0):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Нумерует узлы, затем ветви графа подряд (атрибут 'num'); возвращает общее число.
 def set_G_num(G):
     num = 0
 
@@ -173,6 +206,8 @@ def set_G_num(G):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Начальное приближение: напоры узлов = геодезические отметки, расходы ветвей = 10, плюс места под
+# неизвестные узлов с заданным напором. Возвращает (root, число узлов, ветвей, узлов с заданным напором).
 def init_root(G):
     num = 0
 
@@ -204,6 +239,7 @@ def init_root(G):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Сумма модулей элементов вектора.
 def get_delta(b):
     delta = 0
     for i in range(len(b)): 
@@ -213,6 +249,7 @@ def get_delta(b):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Максимальный модуль элемента вектора.
 def get_delta_max(b):
     delta = 0
     for i in range(len(b)): 
@@ -222,6 +259,9 @@ def get_delta_max(b):
     return delta
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Подготовка гидравлической системы: списки уравнений баланса узлов (list_n), уравнений ветвей (list_l)
+# с параметрами по типам (насосы, арматура, обратные клапаны, регуляторы давления/расхода), узлов
+# с заданным напором (list_zd) и правая часть beta0. None, если нет узлов с заданным напором.
 def init_matrix(G, x, n_n, n_l, n_zn):
 #    n_n = G.number_of_nodes()
 #    n_l = G.number_of_edges()
@@ -397,6 +437,7 @@ def init_matrix(G, x, n_n, n_l, n_zn):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Отладка: печатает состояние обратных клапанов (открыт/закрыт) по знаку расхода.
 def check_OK2(G, list_ok, root):
     for i in range(len(list_ok)):
         k_l, n1, n2, is_open = list_ok[i]
@@ -409,151 +450,197 @@ def check_OK2(G, list_ok, root):
 
 #------------------------------------------------------
 
+# [Claude, 2026-08-24] make_matrix пересобирал матрицу целиком через lil_array
+# на каждой итерации (755 раз за реальный расчет), хотя структура (какие
+# позиции ненулевые) не меняется после первого вызова (first=True) — меняются
+# только значения на диагонали для рёбер типа pumps/reverseValves/обычная
+# труба (остальное — только правая часть beta, обычный numpy-массив, и так
+# был быстрый). Начиная со второго вызова (first=False) больше не трогаем
+# lil вообще: пишем новые значения напрямую в data-массив уже готовой CSC-
+# матрицы по заранее посчитанным смещениям (diag_offsets) — это убирает и
+# поэлементную запись через lil.__setitem__, и полную пересборку lil->csc
+# на каждой итерации. matrix0 с этого момента — не сам массив, а кортеж
+# (csc-матрица, словарь смещений диагонали), эта "непрозрачность" наружу не
+# протекает — вызывающий код просто передаёт matrix0 туда и обратно, не
+# заглядывая внутрь (проверено, других обращений к matrix0 в файле нет).
+#
+# Есть тонкость: если посчитанное диагональное значение оказывается ровно 0
+# (например, нулевой расход через трубу — sign(0)=0, или открытый обратный
+# клапан), исходный код полагался на отдельный проход "diag==0 -> eps" ПОСЛЕ
+# основного цикла, и это могло срабатывать на любой итерации, не только на
+# первой. Здесь эта подстановка сделана прямо на месте записи каждого
+# диагонального элемента — по итоговому результату (сверено построчно на
+# реальном расчете) это то же самое, так как между записью и проверкой
+# ничего больше эту позицию не трогает.
+# [Claude 2026-10-18] Строит (first=True) или обновляет на месте (first=False) матрицу Якоби и невязку для шага Ньютона
+# по текущему решению x: баланс узлов, уравнения потерь напора на ветвях, насосы, клапаны, регуляторы,
+# заданные напоры. Возвращает ((матрица, позиции диагонали), матрица, beta).
 def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, first):
     nn = len(beta0)
 
-    t0 = time.time()
-
-    t1 = time.time()
-
     beta = np.copy(beta0)
 
+    if first:
+        lil = sp.sparse.lil_array((nn, nn))
 
-    # Первый закон Кирхгофа
+        # Первый закон Кирхгофа
 
-    t2 = time.time()
+        for k_n, k_l, napr in list_n:
+            lil[k_n, k_l] = napr
+            beta[k_n] -= x[k_l]*napr
 
-    for k_n, k_l, napr in list_n:
-        if first:
-            matrix0[k_n, k_l] = napr
-        beta[k_n] -= x[k_l]*napr
+        # Второй закон Кирхгофа
 
+        for n1, n2, key, i1, i2, k_l, typ, param in list_l:
+            lil[k_l, i1] = 1
+            lil[k_l, i2] = -1
 
-    t3 = time.time()
+            if typ == 'pumps':
+                h, r1, r2 = param
+                lil[k_l, k_l] = (r1 + r2 * 2 * x[k_l])
+                beta[k_l] = -((x[i1] - x[i2]) + (h + r1 * x[k_l] + r2 * x[k_l] * x[k_l]))
 
-    # Второй закон Кирхгофа
+            elif typ == 'regulArmatures':  # Регулирующая арматура (ZD2)
+                r1, = param
+                beta[k_l] = -((x[i1] - x[i2]) - r1 * np.sign(x[k_l]))
 
-    for n1, n2, key, i1, i2, k_l, typ, param in list_l:
-#        print(n1, n2, i1, i2, 'k_l=', k_l, typ, param, flush=True)
-        if first:
-            matrix0[k_l, i1] = 1
-            matrix0[k_l, i2] = -1
+            elif typ == 'reverseValves':
+                n_ok, = param
+                k_l_, n1_, n2_, is_open = list_ok[n_ok]
 
-        if typ == 'pumps':
-            h, r1, r2 = param
-            matrix0[k_l, k_l] =  (r1 + r2 * 2 * x[k_l])
-            beta[k_l] = -((x[i1] - x[i2]) + (h + r1 * x[k_l] + r2 * x[k_l] * x[k_l]))
+                if is_open:
+                    S = 0
+                    lil[k_l, k_l] = 0
+                    beta[k_l] = -(x[i1] - x[i2])
 
-        elif typ == 'regulArmatures':  # Регулирующая арматура (ZD2)
-            r1, = param
-            beta[k_l] = -((x[i1] - x[i2]) - r1 * np.sign(x[k_l]))
+                else:
+                    S = 1.e6
 
-        elif typ == 'reverseValves':
-            n_ok, = param
-            k_l_, n1_, n2_, is_open = list_ok[n_ok]
+                    loss, dloss = _smooth_loss(S, x[k_l])
+                    lil[k_l, k_l] = dloss
+                    beta[k_l] = -(x[i1] - x[i2] - loss)
 
-            if is_open:
-                S = 0
-                matrix0[k_l, k_l] =  0
-                beta[k_l] = -(x[i1] - x[i2])
-            
             else:
-                S = 1.e6
+                typ2, S, n_rd = param
 
-                matrix0[k_l, k_l] =  -S * 2 * x[k_l] * np.sign(x[k_l])
-                beta[k_l] = -(x[i1] - x[i2] - S * x[k_l] * x[k_l] * np.sign(x[k_l]))
-#                print('5beta[2]=', beta[2], flush=True)
+                if typ2 == 'd':
+                   if not n_rd is None:
+                       nodeID3, przu3, k_l, k_n, i1i, ii2, n1, n2, key, S, Z, r1, r2, delta, drr, rdr, rdh, rash_old, Z_old = list_rd[n_rd]
+                elif typ2 == 'r':
+                    if not n_rd is None:
+                       n1, n2, i1, i2, k_l, S, Z, r1, r2, key = list_rr[n_rd]
 
-#                print('-------', flush=True)
-#                matrix0[k_l, i1] = 0
-#                matrix0[k_l, i2] = 0
+                    if r1 != r2:
+                        beta[i1] += Z
+                        beta[i2] -= Z
 
-        else:
-            typ2, S, n_rd = param
+                if S == 0: S = 1e-20
 
-            if typ2 == 'd':
-               if not n_rd is None:
-                   nodeID3, przu3, k_l, k_n, i1i, ii2, n1, n2, key, S, Z, r1, r2, delta, drr, rdr, rdh, rash_old, Z_old = list_rd[n_rd]
-            elif typ2 == 'r':
-                if not n_rd is None:
-                   n1, n2, i1, i2, k_l, S, Z, r1, r2, key = list_rr[n_rd]
+                loss, dloss = _smooth_loss(S, x[k_l])
+                lil[k_l, k_l] = dloss
+                beta[k_l] = -(x[i1] - x[i2] - loss)
 
-#                print('S=', S, list_rr[n_rd])
+        # Узлы с заданным напором
 
-                if r1 != r2:
-#                    print('rr', i1, i2, Z, flush=True)
+        for n_zn, nn1, p_zn in list_zd:
+            lil[nn1-1, n_zn] = 1
+            beta[nn1-1] = p_zn - x[n_zn]
 
-#                    matrix0[k_l, i1] = 0
-#                    matrix0[k_l, i2] = 0
+            lil[n_zn, nn1-1] = 1
+            beta[n_zn] -= x[nn1-1]
 
-#                    S = 10000
+        diag = lil.diagonal()
 
-#                    print('beta[i1]=', beta[i1],'beta[i2]=', beta[i2], flush=True)
-                    
-                    beta[i1] += Z
-                    beta[i2] -= Z
-#                    print('beta[i1]=', beta[i1],'beta[i2]=', beta[i2], flush=True)
+        # [Claude, 2026-08-24] Пробовал добавлять DIAG_REG к КАЖДОЙ диагонали здесь
+        # так же, как в teplo1.py/calc_nagr.py (защита от "плавающих" изолированных
+        # кусков сети) — но это гидравлика, матрица Ньютона пересобирается заново на
+        # каждой из ~755 итераций одного решения, и постоянная подмешанная добавка на
+        # КАЖДОЙ итерации вызвала реальное расхождение (d разошлось до ~1e28) на
+        # одном из реальных фрагментов при проверке. В отличие от teplo1.py/calc_nagr.py
+        # (там это разовый линейный решает, не итеративный процесс), здесь так
+        # рисковать не стал — откатил к исходному "только ровно нулевая -> eps".
+        for i in range(nn):
+            if diag[i] == 0:
+                lil[i, i] = eps
 
-#                    matrix0[k_l, k_l] =  -S * 2 * x[k_l] * np.sign(x[k_l])
-#                    beta[k_l] = -(x[i1] - x[i2] - S * x[k_l] * x[k_l] * np.sign(x[k_l]))
+        matrix = sp.sparse.csc_array(lil)
 
-#                    continue
-#                else:
-#                    matrix0[k_l, i1] = 1
-#                    matrix0[k_l, i2] = -1
+        diag_offsets = {}
+        for row in range(nn):
+            start, end = matrix.indptr[row], matrix.indptr[row + 1]
+            rows_in_col = matrix.indices[start:end]
+            pos = np.nonzero(rows_in_col == row)[0]
+            if len(pos):
+                diag_offsets[row] = start + pos[0]
 
-#            if S == 0: S = 0.0000001
-            if S == 0: S = 1e-20
+        return (matrix, diag_offsets), matrix, beta
 
-            matrix0[k_l, k_l] =  -S * 2 * x[k_l] * np.sign(x[k_l])
-            beta[k_l] = -(x[i1] - x[i2] - S * x[k_l] * x[k_l] * np.sign(x[k_l]))
+    else:
+        matrix, diag_offsets = matrix0
+        data = matrix.data
 
-            '''
-            if S == 0: 
-                matrix0[k_l, k_l] =  0
-                beta[k_l] = -(x[i1] - x[i2])
+        for k_n, k_l, napr in list_n:
+            beta[k_n] -= x[k_l]*napr
+
+        for n1, n2, key, i1, i2, k_l, typ, param in list_l:
+            if typ == 'pumps':
+                h, r1, r2 = param
+                val = (r1 + r2 * 2 * x[k_l])
+                data[diag_offsets[k_l]] = val if val != 0 else eps
+                beta[k_l] = -((x[i1] - x[i2]) + (h + r1 * x[k_l] + r2 * x[k_l] * x[k_l]))
+
+            elif typ == 'regulArmatures':  # Регулирующая арматура (ZD2)
+                r1, = param
+                beta[k_l] = -((x[i1] - x[i2]) - r1 * np.sign(x[k_l]))
+
+            elif typ == 'reverseValves':
+                n_ok, = param
+                k_l_, n1_, n2_, is_open = list_ok[n_ok]
+
+                if is_open:
+                    S = 0
+                    data[diag_offsets[k_l]] = eps
+                    beta[k_l] = -(x[i1] - x[i2])
+
+                else:
+                    S = 1.e6
+
+                    loss, dloss = _smooth_loss(S, x[k_l])
+                    data[diag_offsets[k_l]] = dloss if dloss != 0 else eps
+                    beta[k_l] = -(x[i1] - x[i2] - loss)
+
             else:
-                matrix0[k_l, k_l] =  -S * 2 * x[k_l] * np.sign(x[k_l])
-                beta[k_l] = -(x[i1] - x[i2] - S * x[k_l] * x[k_l] * np.sign(x[k_l]))
-            '''
+                typ2, S, n_rd = param
 
+                if typ2 == 'd':
+                   if not n_rd is None:
+                       nodeID3, przu3, k_l, k_n, i1i, ii2, n1, n2, key, S, Z, r1, r2, delta, drr, rdr, rdh, rash_old, Z_old = list_rd[n_rd]
+                elif typ2 == 'r':
+                    if not n_rd is None:
+                       n1, n2, i1, i2, k_l, S, Z, r1, r2, key = list_rr[n_rd]
 
+                    if r1 != r2:
+                        beta[i1] += Z
+                        beta[i2] -= Z
 
-    t4 = time.time()
+                if S == 0: S = 1e-20
 
-# Узлы с заданным напором
+                loss, dloss = _smooth_loss(S, x[k_l])
+                data[diag_offsets[k_l]] = dloss if dloss != 0 else eps
+                beta[k_l] = -(x[i1] - x[i2] - loss)
 
-    for n_zn, nn1, p_zn in list_zd:
-        if first:
-            matrix0[nn1-1, n_zn] = 1
-        beta[nn1-1] = p_zn - x[n_zn]
-        
-        if first:
-            matrix0[n_zn, nn1-1] = 1
-        beta[n_zn] -= x[nn1-1]
+        for n_zn, nn1, p_zn in list_zd:
+            beta[nn1-1] = p_zn - x[n_zn]
+            beta[n_zn] -= x[nn1-1]
 
-    t5 = time.time()
-
-    diag = matrix0.diagonal()
-
-    for i in range(nn):
-        if diag[i] == 0:
-            matrix0[i, i] = eps
-
-    t6 = time.time()
-
-    matrix = sp.sparse.csc_array(matrix0)
-
-    t7 = time.time()
-
-#    print(f'all:{(t7-t0)*1000:4.1f} lil:{(t1-t0)*1000:4.1f} copy:{(t2-t1)*1000:4.1f} К1:{(t3-t2)*1000:4.1f} К2:{(t4-t3)*1000:4.1f} zn:{(t5-t4)*1000:4.1f} tr:{(t6-t5)*1000:4.1f} conv:{(t7-t6)*1000:4.1f}', file=sys.stderr, flush=True)
-
-    return matrix0, matrix, beta
+        return (matrix, diag_offsets), matrix, beta
 
 
 #------------------------------------------------------
 
 # Проверяем источники
+# [Claude 2026-10-18] Старый вариант определения источников: по графу потоков от каждого источника назначает heatSourceID
+# достижимым узлам и ветвям. Возвращает True, если у потребителей источник изменился.
 def check_ist2(G, root):
     ispr = False
     
@@ -667,6 +754,8 @@ def check_ist2(G, root):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Считает источники (узлы подачи с ist0); если источник один - назначает его всем узлам.
+# Возвращает (число источников, id источника).
 def check_ist(G, root):
     n_ist = 0
     
@@ -703,6 +792,10 @@ def check_ist(G, root):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Гидравлический и тепловой расчет компоненты сети: вложенные итерации - пересчет потребителей с учетом
+# тепловых потерь, регуляторы расхода и обратные клапаны, регуляторы давления, метод Ньютона
+# (spsolve); затем определение источников, тепловой расчет (calc_teplo) и нагрузки по участкам.
+# Возвращает решение root или None.
 def solve_G(G, root, n_n, n_l, n_zn):
     '''
     matrix, beta = init_matrix(G, root)
@@ -832,8 +925,8 @@ def solve_G(G, root, n_n, n_l, n_zn):
             f_RR = w_rr.check_RR(G, list_rr, root)
             f_OK = w_ok.check_OK(G, list_ok, root)
 
-            if f_RR:
-                print(list_rr)
+#            if f_RR:
+#                dbg(list_rr)
 
 #            print('f_RR', f_RR, 'f_OK', f_OK, flush=True)
     #        break
@@ -895,9 +988,11 @@ def solve_G(G, root, n_n, n_l, n_zn):
 from sety.out.podpitka import n_ras
 
 
+# [Claude 2026-10-18] Проверка решения: печатает подпитку/водоразбор в узлах с небалансом, участки без сопротивления,
+# невязки на арматуре, насосах, регуляторах и других ветвях.
 def proverka(G, x):
 
-    return
+#    return
 #    cprint('---------------------------', color='b')
     cprint('Проверка', color='b')
 
@@ -942,6 +1037,10 @@ def proverka(G, x):
 
         typ = e['typ']
 
+
+        typ_r = w_data.map_tn.get(typ, typ)
+
+
         S = e.get('S', 0)  # сопротивление
         Z = e.get('Z', 0)  # расход
 
@@ -956,8 +1055,10 @@ def proverka(G, x):
             if r != 0.:
                 q_zad = e.get('r1', 0)
 
-                if abs(q_zad - (h2-h1)) > 1e-6:
-                    print(f'{typ} {name}. Перепад задано: {q_zad} получено: {h2 - h1:.2f} м., расход {r:.2f} т/ч')
+                # исправлено Claude, 2026-10-20 (ревью п. 2.4): в расчете h1 - h2 = r1*sign(G), было сравнение с h2 - h1 -
+                # ложное предупреждение при каждом прямом потоке
+                if abs(q_zad * np.sign(r) - (h1 - h2)) > 1e-6:
+                    print(f'{typ_r} {name}. Перепад задано: {q_zad} получено: {h1 - h2:.2f} м., расход {r:.2f} т/ч')
 
 #        if typ == 'pressDropRegulators':
 #            if r != 0.:
@@ -977,10 +1078,14 @@ def proverka(G, x):
                     h = r0 + r1*r + r2*r*r
 
                 if abs(h - (h2-h1)) > 0.01: 
-                    print(f'{typ} {name}. Перепад задано: {h} получено: {h2 - h1:.2f} м., расход {r:.2f} т/ч')
+                    print(f'{typ_r} {name}. Перепад задано: {h} получено: {h2 - h1:.2f} м., расход {r:.2f} т/ч')
                 
         elif typ == 'consumptRegulators' or typ == 'bypass' and nodeID3 == 0:
-            print(f'{typ} {name}. Расход задано: {Z} получено: {Z+r:.2f}  т/ч')
+            # исправлено Claude, 2026-10-22: x - отклонение от заданного только у открытого и не фиксированного
+            # регулятора, иначе (не обеспечил расход, перешел на сопротивление) x - сам расход; как в w_out.py
+            G_r = Z + r if e.get('sost') == const.L_OPEN and not e.get('fixed', False) else r
+            print(f'{typ_r} {name}. Расход задано: {Z} получено: {G_r:.2f}  т/ч')
+#            print(e.get('sost'))
 
         elif typ == 'pressRegulators' or typ == 'bypass' and nodeID3 != 0:
             if r != 0. and S != 0.:
@@ -991,7 +1096,8 @@ def proverka(G, x):
 
                     if S != 0:
                         dS = S - S2
-                        print(f'Невязка в {typ} {name}. Перепад {h1 - h2:.2f} м., расход {r:.2f} т/ч, сопротивление {S:.5f} должно быть {S2:.5f} Разница {dS*100/S:.1f}%')
+                        print(f'Невязка в {typ_r} {name}. Перепад {h1 - h2:.2f} м., расход {r:.2f} т/ч, сопротивление {S:.5f} должно быть {S2:.5f} Разница {dS*100/S:.1f}%')
+#                        print(e.get('sost'))
 
 
 
@@ -1008,14 +1114,17 @@ def proverka(G, x):
 
                     if S != 0:
                         dS = S - S2
-                        print(f'Невязка в {typ} {name}. Перепад {h1 - h2:.2f} м., расход {r:.2f} т/ч, сопротивление {S:.5f} должно быть {S2:.5f} Разница {dS*100/S:.1f}%')
+                        print(f'Невязка в {typ_r} {name}. Перепад {h1 - h2:.2f} м., расход {r:.2f} т/ч, сопротивление {S:.5f} должно быть {S2:.5f} Разница {dS*100/S:.1f}%')
 
-#    cprint('---------------------------', color='b')
+    cprint('---------------------------', color='b')
 
 
 #------------------------------------------------------
 
 
+# [Claude 2026-10-18] Расчет одной связной компоненты: нумерация, решение solve_G, перенос результатов в граф (set_G_out),
+# при необходимости повтор после обнуления 'висячих' потребителей, проверка, суммирование для
+# обобщенных потребителей (make_G2) и летний режим (make_G2_leto).
 def w_calc2(G, param_sum):
     set_G_num(G)
 
@@ -1027,7 +1136,9 @@ def w_calc2(G, param_sum):
     while True:
         root, n_n, n_l, n_zn = init_root(G)
 
+
         root = solve_G(G, root, n_n, n_l, n_zn)
+
 
         if root is None:
             print(f'Ошибка расчета', file=sys.stderr, flush=True)
@@ -1056,7 +1167,6 @@ def w_calc2(G, param_sum):
         if f_PO: 
             break
 
-
     proverka(G, root)
 
     if not config.args.g_is_avar:   # плановый расчет
@@ -1074,6 +1184,7 @@ def w_calc2(G, param_sum):
 #------------------------------------------------------
 
 # Ищет любой узел с ЗН
+# [Claude 2026-10-18] Первый узел с заданным напором (кроме атмосферы) или None.
 def find_zn(G):
     for n in G.nodes:
         p_zn = G.nodes[n].get('p_zn', None)
@@ -1087,6 +1198,7 @@ def find_zn(G):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Множество всех узлов с заданным напором.
 def find_zn2(G):
     
     zn = set()
@@ -1099,6 +1211,8 @@ def find_zn2(G):
 
 #------------------------------------------------------
 
+# [Claude 2026-10-18] Расчет всей сети: по каждой слабосвязной компоненте с узлом заданного напора вызывает w_calc2,
+# в конце при -save_po пишет суммарные нагрузки для обобщенных потребителей (write_po).
 def w_calc(G):
     print('Расчет начат', flush=True)
 
@@ -1150,22 +1264,24 @@ def w_calc(G):
                     name = w_print.node_name(G, n0, True)    
                     print(f'Фрагмент {ii+1}/{nn} [{name}]', flush=True)
 
-                    n_n = GG.number_of_nodes()
-                    n_l = GG.number_of_edges()
-#                    print(f'Узлов : {n_n} Ребер: {n_l}')
+                    if ii == 2 or True:
 
-                    print(f'Узлы с заданым напором', flush=True)
-                    nn0 = find_zn2(GG)
-                    z = 1
-                    for pp in nn0:
-                        p_zn = G.nodes[pp].get('p_zn', None)
-#                        print(z, w_print.node_name(G, pp, False), ' = ', p_zn, flush=True)
-                        if G.nodes[pp].get('name', '') != 'ATMOSPHERE':
-#                            print(G.nodes[pp].get('name', ''))
-                            print(z, w_print.node_name(G, pp, False), flush=True)
-                        z += 1
+                        n_n = GG.number_of_nodes()
+                        n_l = GG.number_of_edges()
+    #                    print(f'Узлов : {n_n} Ребер: {n_l}')
 
-                    w_calc2(GG, param_sum)
+                        print(f'Узлы с заданым напором', flush=True)
+                        nn0 = find_zn2(GG)
+                        z = 1
+                        for pp in nn0:
+                            p_zn = G.nodes[pp].get('p_zn', None)
+    #                        print(z, w_print.node_name(G, pp, False), ' = ', p_zn, flush=True)
+                            if G.nodes[pp].get('name', '') != 'ATMOSPHERE':
+    #                            print(G.nodes[pp].get('name', ''))
+                                print(z, w_print.node_name(G, pp, False), flush=True)
+                            z += 1
+
+                        w_calc2(GG, param_sum)
 
                     ii += 1
                 else:

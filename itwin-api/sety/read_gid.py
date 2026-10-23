@@ -47,7 +47,7 @@ from sety.line_poteri import line_poteri
 
 from sety.b5.b5 import get_b5
 
-from consumption import get_pt_name
+from sety.consumption import get_pt_name
 
 from sety import read_vnutr
 
@@ -132,6 +132,7 @@ ORDER BY n.externalNodeName
 '''
 
 
+# [Claude 2026-10-18] Собирает в set_node_vn узлы (не реальные потребители), у которых есть внутренние узлы во фрагментах s_fileID.
 def read_node_vn(conn):
     cursor = conn.cursor()
     q = f'''
@@ -157,6 +158,9 @@ WHERE rc.id IS NULL AND n.internalNodeID IS NOT NULL AND n.fileID IN ({s_fileID}
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Узлы с заданным напором (setPressNodes): напоры подачи/обратки берутся заданные или (при -mag_fragment)
+# из последнего расчета указанного узла магистрального фрагмента; для узла с напорами на обеих сторонах
+# добавляет фиктивный 'насос' обратка->подача с напором pP-pO, задает p_zn, температуру и источник.
 def read_zn(G, conn):
     cursor = conn.cursor()
 
@@ -342,6 +346,7 @@ WHERE n.fileID IN ({s_fileID}) and n.removed=0'''
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Удаляет из строки управляющие символы Unicode (категория C).
 def remove_control_characters(s):
     return ''.join(ch for ch in s if unicodedata.category(ch)[0] != 'C')
 
@@ -351,6 +356,8 @@ def remove_control_characters(s):
 
 # Внутренние узлы для источника
 
+# [Claude 2026-10-18] Для источников с внутренней схемой переносит источник (ist0) и температуру t0 на узлы присоединения
+# внутренней схемы и запоминает их в источнике ('n1' - подача, 'n2' - обратка).
 def read_ist_vn(G, conn, fileID):
 
     q = f'''
@@ -418,6 +425,9 @@ AND n.fileid={fileID}
 
 
 
+# [Claude 2026-10-18] Читает узлы сети фрагментов: для каждого узла добавляет в граф узлы подачи (id, 1) и/или обратки (id, 2)
+# по externalSignID, с координатами, кодом, именем и геодезической отметкой; внутренние узлы - только
+# для узлов с внутренними схемами, со смещенными координатами.
 def read_node(G, conn, tn):
     cursor = conn.cursor()
 
@@ -550,6 +560,8 @@ def read_node(G, conn, tn):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Читает связи узлов внутренних схем с внешними (connectNodes) в map_connectNodes[(внешний узел,
+# соседний узел, подача/обратка)] = внутренний узел.
 def read_connectNodes(conn):
     cursor = conn.cursor()
     q = '''
@@ -606,6 +618,9 @@ WHERE n.removed=0 AND n.fileID IN ({s_fileID})
 #-----------------------------------------------------------------------------------
 
 
+# [Claude 2026-10-18] Готовит атрибуты ветви по объекту таблицы tn: для участков - сопротивления подачи/обратки и нормы
+# тепловых потерь, для задвижек/арматуры/диафрагм - сопротивления, для насосов - характеристики,
+# для регуляторов и байпасов - через read_gid2. Возвращает словарь ut2.
 def read_line_row(G, tn, ut, lineID, nodeID1, nodeID2, externalSignLineID, internalNodeID):
     ut2 = {}
 
@@ -623,6 +638,12 @@ def read_line_row(G, tn, ut, lineID, nodeID1, nodeID2, externalSignLineID, inter
 #            else:
 
             diametr = ut.get('diametr', 1000)
+
+            # вставлено Claude, 2026-10-20 (ревью п. 2.1): ноль/пусто в БД молча заменяется умолчаниями - показываем
+            if not ut.get('diametr'):
+                cprint(f'Участок {name}: не задан диаметр, принят 1000 мм', color='yellow')
+            if not ut.get('dlina') and not internalNodeID:   # во внутренней схеме длину не задают - не выводим
+                cprint(f'Участок {name}: не задана длина, принята 1 м', color='yellow')
 
 #            if diametr != 0:
 #                name = w_print.line_name(G, nodeID1, nodeID2, externalSignLineID)
@@ -747,6 +768,9 @@ def read_line_row(G, tn, ut, lineID, nodeID1, nodeID2, externalSignLineID, inter
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Читает объекты-ветви таблицы tn (участки, насосы, регуляторы, задвижки и т.д.) фрагментов и добавляет
+# в граф ветви подачи и/или обратки по externalSignLineID (1 - обе, 2 - подача, 3 - обратка,
+# 4 - подача->обратка, 5 - обратка->подача), учитывая состояние и привязку к внутренним узлам.
 def read_line2(G, conn, tn: str) -> None:
     cursor = conn.cursor()
     cols = w_data.str_for_sql(tn, 'o')
@@ -792,9 +816,6 @@ def read_line2(G, conn, tn: str) -> None:
 #            if heatSourceID is None:
 #                print(lineID, nodeID1, nodeID2, tn)
                 
-                
-
-
             if internalNodeID is not None:
                 n0 = G.nodes.get((internalNodeID, 1), None)
                 if n0 is None:
@@ -915,6 +936,7 @@ def read_line2(G, conn, tn: str) -> None:
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Отладка: печатает внутреннюю схему потребителя из b5 (нигде не вызывается).
 def add_pr_vn(G, pr):
     print(get_b5(pr.get('cxema', '??')))
 
@@ -924,6 +946,9 @@ def add_pr_vn(G, pr):
 map_ist2 = {}  # для поиска узла источника по его номеру
 
 
+# [Claude 2026-10-18] Читает узловые объекты таблицы tn (источники, потребители, насосные станции, узлы подпитки):
+# считает расходы потребителей (consumption_pr/po), записывает отборы G/Gout в узлы подачи/обратки,
+# для источников - номер источника и температуру по графику.
 def read_node2(G, conn, tn):
     cursor = conn.cursor()
     cols = w_data.str_for_sql(tn, 'o')
@@ -1005,6 +1030,8 @@ def read_node2(G, conn, tn):
 
  
 
+            nP = nO = None   # исправлено Claude, 2026-10-20 (ревью п. 1.8): иначе для объекта только на обратке nP оставался от предыдущей строки
+
             if externalSignID in (1,2):
                 try:
                     nP = G.nodes.get((nodeID, 1), None)
@@ -1029,14 +1056,17 @@ def read_node2(G, conn, tn):
                         nO['Gout'] = GO
 
                     if Qz != 0:
-                        nP['Qz'] = Qz
+                        nO['Qz'] = Qz   # исправлено Claude, 2026-10-20 (ревью п. 1.8): было nP
                 except:
                     print('Error', (nodeID, 2))
                     continue
 
-            nP['id2'] = id2
+            # исправлено Claude, 2026-10-20 (ревью п. 1.8): id2 в те узлы объекта, которые есть (было всегда nP)
+            for n_obj in (nP, nO):
+                if n_obj is not None:
+                    n_obj['id2'] = id2
 
-            if tn == 'heatSources':
+            if tn == 'heatSources' and nP is not None:   # исправлено Claude, 2026-10-20 (ревью п. 1.8): nP is not None
 
                 nP['ist0'] = id2
 #                print('ИСТОЧНИК:', id2, nP)
@@ -1058,10 +1088,10 @@ def read_node2(G, conn, tn):
 #                    print('ist >>> ', id2, nodeID)
 
 
-            if tn == 'realConsumers':
+            if tn == 'realConsumers' and nP is not None:   # исправлено Claude, 2026-10-20 (ревью п. 1.8): nP is not None
                 if pr: nP |= pr
                 if pr_out: nP |= pr_out
-            if tn == 'generalizedConsumers':
+            if tn == 'generalizedConsumers' and nP is not None:   # исправлено Claude, 2026-10-20 (ревью п. 1.8): nP is not None
                 if pr: nP |= pr
                 if pr_out: nP |= pr_out
 
@@ -1082,6 +1112,8 @@ def read_node2(G, conn, tn):
 
 
 
+# [Claude 2026-10-18] Для фактического эквивалентного расчета: потребитель как ветви - подача->обратка с сопротивлением gsz
+# (летом gszl) и водоразбор из подачи/обратки в атмосферу (gsop, gsoo).
 def read_pt_line(G, conn, tn):
     cursor = conn.cursor()
     cols = w_data.str_for_sql(tn, 'o')
@@ -1196,6 +1228,9 @@ def read_pt_line(G, conn, tn):
 
 #-----------------------------------------------------------------------------------
 
+# [Claude 2026-10-18] Загрузка всей расчетной модели фрагментов ff: справочники, источники и температурные графики,
+# система теплоснабжения, узлы, источники, потребители (плановый или фактический режим), ветви всех типов,
+# узлы с заданным напором, утечки. Возвращает граф networkx.MultiDiGraph.
 def read_gid(conn, ff, db_name):
 
 #    print(conn_str)
