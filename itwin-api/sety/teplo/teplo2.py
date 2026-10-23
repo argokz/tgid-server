@@ -57,7 +57,7 @@ def rasTO2(node, typ, pr, pt_G, tr, G, t, tx, debug):
 #        print('Фатальная ошибка rasTO2', Wv)
 #        exit(1)
     
-    Ep = getEp(node, step, pr, pt_G, tr, G)
+    Ep = getEp(node, step, pr, pt_G, tr, G, Gx=Wv)  # исправлено Claude, 2026-10-22: Wv уже посчитан
 
 #    Ep = getEp(node, step, pr, pt_G, tr, G)
 

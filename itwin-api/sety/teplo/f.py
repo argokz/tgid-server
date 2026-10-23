@@ -21,24 +21,22 @@ def N_GWS(pr):
 
 # [Claude 2026-10-18] Расчетная нагрузка ГВС потребителя в Вт (сумма gvpw, gvps, gvsm, gvpr с коэффициентами справочника 28).
 def getQ(pr, debug):
-    Q = (pr.get('gvpw', 0) + pr.get('gvps', 0) + pr.get('gvsm', 0) + pr.get('gvpr', 0))
+    # исправлено Claude, 2026-10-22: N_GWS и getS28 - по одному разу (getQ вызывается ~3 млн раз за расчет);
+    # формулы и порядок сложения прежние
+    n_gws = N_GWS(pr)
 
-    if N_GWS(pr) == 1:  # Средненедельная
-        pass
-    elif N_GWS(pr) == 2: # Максимальная
-        Q *= pr.get('gvs_max', 0)
-    elif N_GWS(pr) == 3: # Балансовая
+    if n_gws == 3 or n_gws == 4: # Балансовая / Расчетная
+        s28 = getS28()
         Q = (
-            pr.get('gvpw', 0) * getS28().pw
-            + pr.get('gvps', 0) * getS28().ps
-            + pr.get('gvsm', 0) * getS28().sm
-            + pr.get('gvpr', 0) * getS28().pr)
-    elif (N_GWS(pr) == 4): # Расчетная
-        Q = (
-            pr.get('gvpw', 0) * getS28().pw
-            + pr.get('gvps', 0) * getS28().ps
-            + pr.get('gvsm', 0) * getS28().sm
-            + pr.get('gvpr', 0) * getS28().pr)
+            pr.get('gvpw', 0) * s28.pw
+            + pr.get('gvps', 0) * s28.ps
+            + pr.get('gvsm', 0) * s28.sm
+            + pr.get('gvpr', 0) * s28.pr)
+    else:
+        Q = (pr.get('gvpw', 0) + pr.get('gvps', 0) + pr.get('gvsm', 0) + pr.get('gvpr', 0))
+
+        if n_gws == 2: # Максимальная
+            Q *= pr.get('gvs_max', 0)
     #  Q *= (1.+pr.get('rez', 0)/100.)
 
 #    if debug:
@@ -245,10 +243,12 @@ def getFp(node, stupen, pr, pt_G, tr):
 
 # [Claude 2026-10-18] Эффективность подогревателя ГВС Ep = 1/(0.35*Wm/Wb + 0.65 + sqrt(Wm/Wb)/Fp) при расходе сетевой воды G;
 # при некорректном значении - 1.
-def getEp(node, stupen, pr, pt_G, tr, G, debug=False):
+def getEp(node, stupen, pr, pt_G, tr, G, debug=False, Gx=None):
     Ep = 0.8
 
-    Gx = getW(pr, pt_G, tr, True)
+    # исправлено Claude, 2026-10-22: Gx можно передать готовым (rasTO2/rasTO уже посчитали getW с теми же аргументами)
+    if Gx is None:
+        Gx = getW(pr, pt_G, tr, True)
 
     Wm = min(Gx, G) # Расход минимальный
     Wb = max(Gx, G) # Расход максимальный

@@ -10,8 +10,6 @@ else:
 import math
 import numpy as np
 
-import time
-
 
 from scipy.optimize import fsolve
 from scipy.optimize import newton
@@ -112,8 +110,6 @@ def rasTT2(pr, tr, G,  _q, _tn, t, debug):
 
     ct = get_ct()
 
-    tt1  = time.time()
-
     if not ct:
         print('Не создан объект "Система теплоснабжения"')
         fatal_error()
@@ -193,7 +189,6 @@ def rasTT2(pr, tr, G,  _q, _tn, t, debug):
 
     dt0 = t01 - t02
     dtp = t11 - t12
-    dtsr = srlog(t11 - t01, t12 - t02)
 
     pr2 = True
 
@@ -245,8 +240,6 @@ def rasTT2(pr, tr, G,  _q, _tn, t, debug):
             df12 = -0.2 / math.pow(-G * (tg - tx) * (tvn1 - tn1) / Q / (tn1 - tvn1), 0.8) * (tg + 0.5 * (1.0 + 2.0 * u) / (1.0 + u) * (tg - tx) * (tvn1 - tn1) / (tn1 - tvn1) - Tn - G * (tg - tx) * (tvn1 - tn1) / Q) * G * (tvn1 - tn1) / Q / (tn1 - tvn1) + math.pow(-G * (tg - tx) * (tvn1 - tn1) / Q / (tn1 - tvn1), 0.2) * (1.0 + 0.5 * (1.0 + 2.0 * u) / (1.0 + u) * (tvn1 - tn1) / (tn1 - tvn1) - G * (tvn1 - tn1) / Q) + G * (tvn1 - tn1) / Q / (tn1 - tvn1) * dt
 
 #----------------------------
-
-        tg2 = T1 - (tg - tx) * Gx / Gs
 
         f2 = 1000 * (tg - tx) * Gx - Wmp * Ep * (T1 - tx)
 
@@ -345,35 +338,12 @@ def rasTT2(pr, tr, G,  _q, _tn, t, debug):
 #    *tv = Tn + G * (T1 - T2) * (tvn1 - tn1) / Q
     tv = Tn + Gs*1000 * (T1 - T2) * (tvn1 - tn1) / Q
 
-    tv2 = Tn + Gx * 1000 * (tg - tx) * (tvn1 - tn1) / Q
-
-    T3 = (tg + tx * u) / (1 + u)
-
-    G1 = math.pow(Gx * 1000 * (1 + u) / Q, 0.2)
-
-
-    F0 = Q / ((t03 + t02) / 2 - tvn1)
-    
-    if T3 > tx:
-        q3 = F0 * G1 * math.pow(T3 - tx, 0.2) * ((T3 + tx) / 2 - tv) # Отдача тепла радиаторами
-    else:
-        q3 = 0
-
-    
-    q4 = Q / (tvn1 - tn1) * (tv - Tn)  # Потери тепла зданием
-
-  #  double q5 = 
-
     tt01 = tg
     tt02 = tx
     tt03 = (tg + u * tx) / (1 + u)
 
 #    if debug:
 #        print(f'<<< T2 = {T2} Q = {Q} Gs = {Gs} tvn1 = {tvn1} tn1 = {tn1}' )
-
-    tt2  = time.time()
-
-#    print(tt2-tt1)
 
     return t2, tv, tt01, tt02, tt03
 

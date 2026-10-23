@@ -117,23 +117,6 @@ def potreb1(pr, t1, tn, g, _q):
 
 #  for key, value in vars().items(): print(key, value)
 
-# Тут все линеаризовано 
-
-    dt = ((t01+t02)/2-tvn1)
-    x = (dt+Q/2./G)/(tvn1-tn1)
-
-    ttvn = (T1+x*Tn)/(1+x)
-    tt2 = T1 - Q/G*(Tn-ttvn)/(tn1-tvn1)
-    qq = G*(T1-tt2)
-
-
-
-
-#  if qq != 0:
-#    dq = abs((qq-q)/qq)
-#    if dq > maxdq and t1 > 0 and t1 < 200:
-#      maxdq = dq
-
     return q, t2, tv
 
 
@@ -145,7 +128,6 @@ def potreb1(pr, t1, tn, g, _q):
 
 # [Claude 2026-10-18] Отопление с узлом смешения (коэффициент смешения _u): находит внутреннюю температуру методом Ньютона.
 # Возвращает (q, t3 - температура после системы (обратка), t2 - после смешения, tv).
-# Код после первого return недостижим.
 def potreb2(pr, t1, tn, g, _q, _u, debug):
   #, double *t2, double *t3, double *tv, double *q  
 
@@ -214,25 +196,6 @@ def potreb2(pr, t1, tn, g, _q, _u, debug):
 #        print(f'()() tv={tv} t3={t3} t2={t2} q={q}')
 
     return q, t3, t2, tv
-    return q, t2, t3, tv
-
-    ttt2 = (G*T1*t01 + G*T1*t02 - 2*G*T1*tn1 - Q*T1 + 2*Q*Tn)/(G*t01 + G*t02 - 2*G*tn1 + Q)
-
-    dt = (t01+t02)/2-tvn1
-
-    x = (dt+Q/2./G)/(tvn1-tn1)
-
-    ttvn = (T1+x*Tn)/(1+x)
-    tt2 = T1 - Q/G*(Tn-ttvn)/(tn1-tvn1)
-    qq = G*(T1-tt2)
-
-    t3 = T1 - Q/G*(Tn-Tvn)/(tn1-tvn1)
-
-#    if debug:
-#        print(f'tv={ttvn} t3={t3} t2={tt2} q={qq}')
-
-
-    return qq, tt2, t3, ttvn
 
 #-----------------------------------------------------------------------------------
 

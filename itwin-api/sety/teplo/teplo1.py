@@ -17,8 +17,6 @@ from sety import config
 
 from sety import w_print
 
-#from sety.teplo.rasto import map_t
-#from sety.teplo.rasto import map_pt_cnt
 
 
 from sety.teplo.rasto import rasTO_pr2
@@ -30,6 +28,7 @@ from sety.any.colors import cprint
 from sety.teplo.teplo2 import rasTO2
 from sety.teplo.rasto3 import rasTO
 from sety.teplo.otopl import otopl
+from sety.teplo import tepl_gws2ps  # вставлено Claude, 2026-10-22: кэш getF2
 from sety.teplo.tepl_vent import rasVENT
 
 from sety.consumption import get_tr
@@ -725,7 +724,7 @@ def init_matrix_teplo(G, x, Tn, curT, teploYes, debug=False, node_edges=None):
             else:
                t = 0
                yes0 = False
-               g = 0
+#               g = 0   # закомментировано Claude, 2026-10-22: затирало уже набранный отток по участкам -> вырожденная матрица (см. check_consumers_flow)
                GG_Z = 0
                Qz = 0
 
@@ -1035,11 +1034,51 @@ def check_pt(G, x, Tn):
 
     print(f'Проверка {tt2-tt1:.2f}')
 
-#    print(f'{map_t}')
-#    print(f'{map_pt_cnt}')
     
 
 n_all_calc = 0
+
+# вставлено Claude, 2026-10-22: точность (°C) выхода из итераций calc_teplo по сходимости
+EPS_T_CALC = 0.01
+
+# вставлено Claude, 2026-10-22: диагностика - потребители, у которых есть расход, но с другой стороны (подача/обратка)
+# узла нет в схеме (не подключен участок) или к нему не поступает вода (например, закрыт участок).
+# Тепловой расчет для такого потребителя неверен: вода в обратку идет с температурой 0. Сообщается один раз.
+_reported_no_flow = set()
+
+# [Claude 2026-10-22] Печатает потребителей с расходом, у которых парный узел подачи/обратки не в схеме или без расхода.
+def check_consumers_flow(G, x, node_edges):
+    for n in G.nodes:
+        node = G.nodes[n]
+
+        if node.get('typ') not in ('generalizedConsumers', 'realConsumers'):
+            continue
+
+        GG_Z = node.get('G', 0) - node.get('Gout', 0)
+        if abs(GG_Z) < 0.00001:
+            continue
+
+        nodeID, po = n
+        pair = (nodeID, 2 if po == 1 else 1)
+        side = 'подачи' if pair[1] == 1 else 'обратки'
+
+        key = (node.get('fileID'), nodeID)
+        if key in _reported_no_flow:
+            continue
+
+        if pair not in G.nodes:
+            msg = f'узел {side} не подключен к сети'
+        else:
+            flow = sum(abs(x[G.edges[e]['num']]) for k, e in node_edges[pair])
+            if flow > 0.00001:
+                continue
+            msg = f'через узел {side} нет расхода (закрыт или не подключен участок?)'
+
+        _reported_no_flow.add(key)
+
+        name = w_print.node_name(G, n, True)
+        cprint(f'Потребитель {name}: {msg}, расход через потребителя {abs(GG_Z):.2f} т/ч - тепловой расчет для него неверен', color='red')
+
 
 
 
@@ -1070,6 +1109,11 @@ def calc_teplo(G, x, Tn, curT, teploYes0):
         ))
         for n in G.nodes
     }
+
+    tepl_gws2ps.clear_cache_F2()  # вставлено Claude, 2026-10-22: расчетные данные потребителей могли измениться
+    check_consumers_flow(G, x, node_edges)  # вставлено Claude, 2026-10-22: диагностика потребителей без расхода с одной стороны
+
+    t_prev = None  # вставлено Claude, 2026-10-22: решение прошлой итерации
 
     for i in range(n_calc):
         if i == n_calc-1 and teploYes0:
@@ -1107,6 +1151,11 @@ def calc_teplo(G, x, Tn, curT, teploYes0):
 
         if not yes:
             return False
+
+        # вставлено Claude, 2026-10-22: максимальное изменение температуры узлов по сравнению с прошлой итерацией
+        t = np.asarray(t)
+        dt_max = float(np.max(np.abs(t - t_prev))) if t_prev is not None and len(t_prev) == len(t) else None
+        t_prev = t
 
 #        if not yes and False:
         if False:
@@ -1203,6 +1252,10 @@ def calc_teplo(G, x, Tn, curT, teploYes0):
             nn, po = n;
 
             ii += 1
+
+        # вставлено Claude, 2026-10-22: выход по сходимости - температуры узлов за итерацию изменились меньше EPS_T_CALC
+        if dt_max is not None and dt_max < EPS_T_CALC:
+            break
 
         tt3  = time.time()
 #        print(f'Закончили шаг {i} {tt3-tt2:.4f}')

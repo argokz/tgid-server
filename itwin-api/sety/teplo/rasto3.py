@@ -56,7 +56,7 @@ def rasTO(nIin, pr, typ, tr, G, GG0, QQ, t, Tn, debug):
                             '''
 
                     #                        wout << " tt = " << tt << endl
-                    E1 = getEp(node, 1, pr, pt_G, tr, G2)
+                    E1 = getEp(node, 1, pr, pt_G, tr, G2, Gx=Wv)  # исправлено Claude, 2026-10-22: Wv уже посчитан
                     Wm = min(G2, Wv)
                     Qp = E1 * Wm * (tt - tr.get('Tx', 0))
                     tx = tr.get('Tx', 0) + Qp / Wv  # Горячая водопроводная
@@ -65,7 +65,7 @@ def rasTO(nIin, pr, typ, tr, G, GG0, QQ, t, Tn, debug):
                 tg = tx  # Горячая водопроводная
                 t2 = t  # На входе системы отопления
             else:
-                Ep = getEp(node, 2 if typ == 11 else 1, pr, pt_G, tr, G)
+                Ep = getEp(node, 2 if typ == 11 else 1, pr, pt_G, tr, G, Gx=Wv)  # исправлено Claude, 2026-10-22: Wv уже посчитан
                 Wm = min(G, Wv)
                 Qp = Ep * Wm * (t - tx)
 

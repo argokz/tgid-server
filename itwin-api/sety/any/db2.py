@@ -7,8 +7,11 @@ from sety import config
 def print_q(f, conn, q):
     cursor = conn.cursor()
     
-    if not cursor.execute(q):
-        return
+    # вставлено Claude, 2026-10-23: execute при ошибке бросает исключение, а не возвращает False
+    try:
+        cursor.execute(q)
+    except pyodbc.Error:
+        return False
 
 #    columns = [f'"{column[0]}"' for column in cursor.description]
 #    print(",".join(columns), file=f)
@@ -31,7 +34,10 @@ def print_q(f, conn, q):
 def exists_q(conn, q):
     cursor = conn.cursor()
 
-    if not cursor.execute(q):
+    # вставлено Claude, 2026-10-23: execute при ошибке бросает исключение, а не возвращает False
+    try:
+        cursor.execute(q)
+    except pyodbc.Error:
         return False
 
     while True:

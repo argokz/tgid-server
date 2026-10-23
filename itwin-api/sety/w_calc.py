@@ -1,5 +1,7 @@
 import sys
 import time
+import math  # вставлено Claude, 2026-10-22 (профилирование): для _smooth_loss
+import logging  # вставлено Claude, 2026-10-23: для регуляторов давления (-rd_new)
 import networkx as nx
 import numpy as np
 import scipy as sp
@@ -18,7 +20,9 @@ from sety import w_data
 
 
 from sety import w_rd
+from sety import w_rd2  # вставлено Claude, 2026-10-23: регуляторы давления в системе Ньютона (-rd_new)
 from sety import w_rr
+from sety import w_rr2  # вставлено Claude, 2026-10-23: регуляторы расхода уравнениями (по умолчанию; -rr_old - старые)
 from sety import w_ok
 
 from sety.errors import error_1234
@@ -61,7 +65,7 @@ FLOW_EPS = 1e-6
 # [Claude 2026-10-18] Сглаженные потери напора S*x*|x| (|x| ~ sqrt(x^2+eps^2)) и производная для метода Ньютона - без излома в нуле.
 # Внимание: возвращаемая производная берется со знаком минус.
 def _smooth_loss(S, xk):
-    r = np.sqrt(xk * xk + FLOW_EPS * FLOW_EPS)
+    r = math.sqrt(xk * xk + FLOW_EPS * FLOW_EPS)  # исправлено Claude, 2026-10-22: было np.sqrt - медленно на скалярах
     return S * xk * r, -S * (2 * xk * xk + FLOW_EPS * FLOW_EPS) / r
 
 
@@ -241,22 +245,20 @@ def init_root(G):
 
 # [Claude 2026-10-18] Сумма модулей элементов вектора.
 def get_delta(b):
-    delta = 0
-    for i in range(len(b)): 
-        delta += abs(b[i])
-
-    return delta
+    # исправлено Claude, 2026-10-22: было сложение в цикле по b[i]; cumsum складывает последовательно, как цикл -
+    # результат бит в бит тот же (np.sum и sum() в Python 3.12 складывают иначе и расходятся в последних битах)
+    if len(b) == 0:
+        return 0
+    return float(np.cumsum(np.abs(b))[-1])
 
 #------------------------------------------------------
 
 # [Claude 2026-10-18] Максимальный модуль элемента вектора.
 def get_delta_max(b):
-    delta = 0
-    for i in range(len(b)): 
-        if abs(b[i]) > delta:
-            delta = abs(b[i])
-
-    return delta
+    # исправлено Claude, 2026-10-22: было сравнение в цикле по b[i]
+    if len(b) == 0:
+        return 0
+    return float(np.abs(b).max())
 #------------------------------------------------------
 
 # [Claude 2026-10-18] Подготовка гидравлической системы: списки уравнений баланса узлов (list_n), уравнений ветвей (list_l)
@@ -280,6 +282,7 @@ def init_matrix(G, x, n_n, n_l, n_zn):
     list_rd = list()  # Регулятор давления
     list_rr = list()  # Регулятор расхода
     list_ok = list()  # Обратный клапан
+    G.graph['ok_flips'] = {}  # вставлено Claude, 2026-10-23: переключения обратных клапанов (w_ok.check_OK)
 
     list_ns = list()  # Насосы
 
@@ -475,8 +478,13 @@ def check_OK2(G, list_ok, root):
 # [Claude 2026-10-18] Строит (first=True) или обновляет на месте (first=False) матрицу Якоби и невязку для шага Ньютона
 # по текущему решению x: баланс узлов, уравнения потерь напора на ветвях, насосы, клапаны, регуляторы,
 # заданные напоры. Возвращает ((матрица, позиции диагонали), матрица, beta).
-def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, first):
+# вставлено Claude, 2026-10-23: rd_active - индексы list_rd активных регуляторов давления (ключ -rd_new),
+# для них вместо потерь напора на ветви уравнение H[узел импульса] = Z. При смене набора нужен first=True.
+# вставлено Claude, 2026-10-23: rr_active - работающие регуляторы расхода (w_rr2.py), None - прежняя модель (-rr_old).
+def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, first, rd_active=None, rr_active=None):
     nn = len(beta0)
+
+    ok_old = getattr(config.args, 'ok_old', False)  # вставлено Claude, 2026-10-23: обратные клапаны по-старому
 
     beta = np.copy(beta0)
 
@@ -513,6 +521,14 @@ def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, 
                     lil[k_l, k_l] = 0
                     beta[k_l] = -(x[i1] - x[i2])
 
+                # вставлено Claude, 2026-10-23: закрытый клапан - уравнение G = 0 (без протечки через S = 1e6);
+                # при смене состояния клапанов матрица пересобирается (first=True). -ok_old - прежний вариант
+                elif not ok_old:
+                    lil[k_l, i1] = 0
+                    lil[k_l, i2] = 0
+                    lil[k_l, k_l] = 1
+                    beta[k_l] = -x[k_l]
+
                 else:
                     S = 1.e6
 
@@ -526,11 +542,29 @@ def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, 
                 if typ2 == 'd':
                    if not n_rd is None:
                        nodeID3, przu3, k_l, k_n, i1i, ii2, n1, n2, key, S, Z, r1, r2, delta, drr, rdr, rdh, rash_old, Z_old = list_rd[n_rd]
+
+                       # вставлено Claude, 2026-10-23: активный регулятор давления - строка H[k_n] = Z
+                       if rd_active and n_rd in rd_active:
+                           lil[k_l, i1] = 0
+                           lil[k_l, i2] = 0
+                           lil[k_l, k_n] = 1
+                           beta[k_l] = Z - x[k_n]
+                           continue
                 elif typ2 == 'r':
                     if not n_rd is None:
                        n1, n2, i1, i2, k_l, S, Z, r1, r2, key = list_rr[n_rd]
 
-                    if r1 != r2:
+                    # вставлено Claude, 2026-10-23: регуляторы расхода уравнениями (rr_active не None, w_rr2.py):
+                    # работающий - строка G = Z, остальные - сопротивление S (r1 или r2), без подкачки Z в узлы
+                    if rr_active is not None:
+                        if n_rd in rr_active:
+                            lil[k_l, i1] = 0
+                            lil[k_l, i2] = 0
+                            lil[k_l, k_l] = 1
+                            beta[k_l] = Z - x[k_l]
+                            continue
+
+                    elif r1 != r2:
                         beta[i1] += Z
                         beta[i2] -= Z
 
@@ -602,6 +636,10 @@ def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, 
                     data[diag_offsets[k_l]] = eps
                     beta[k_l] = -(x[i1] - x[i2])
 
+                elif not ok_old:   # вставлено Claude, 2026-10-23: закрытый клапан - G = 0
+                    data[diag_offsets[k_l]] = 1
+                    beta[k_l] = -x[k_l]
+
                 else:
                     S = 1.e6
 
@@ -615,11 +653,24 @@ def make_matrix(x, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, 
                 if typ2 == 'd':
                    if not n_rd is None:
                        nodeID3, przu3, k_l, k_n, i1i, ii2, n1, n2, key, S, Z, r1, r2, delta, drr, rdr, rdh, rash_old, Z_old = list_rd[n_rd]
+
+                       # вставлено Claude, 2026-10-23: активный регулятор давления - строка H[k_n] = Z (постоянная)
+                       if rd_active and n_rd in rd_active:
+                           data[diag_offsets[k_l]] = eps
+                           beta[k_l] = Z - x[k_n]
+                           continue
                 elif typ2 == 'r':
                     if not n_rd is None:
                        n1, n2, i1, i2, k_l, S, Z, r1, r2, key = list_rr[n_rd]
 
-                    if r1 != r2:
+                    # вставлено Claude, 2026-10-23: работающий регулятор расхода - G = Z (w_rr2.py)
+                    if rr_active is not None:
+                        if n_rd in rr_active:
+                            data[diag_offsets[k_l]] = 1
+                            beta[k_l] = Z - x[k_l]
+                            continue
+
+                    elif r1 != r2:
                         beta[i1] += Z
                         beta[i2] -= Z
 
@@ -822,8 +873,14 @@ def solve_G(G, root, n_n, n_l, n_zn):
 
     list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0 = ret
 
+    # вставлено Claude, 2026-10-23: регуляторы расхода уравнениями (w_rr2.py), по умолчанию; -rr_old - прежняя модель.
+    # rr_act - работающие регуляторы (строка G = Z), передается во все make_matrix и меняется в w_rr2.check_RR
+    rr_new = not config.args.rr_old
+    rr_st = w_rr2.init_RR(G, list_rr) if rr_new else None
+    rr_act = rr_st['active'] if rr_new else None
+
     matrix0 = sp.sparse.lil_array((nn, nn))
-    matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, True)
+    matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, True, rr_active=rr_act)
 
     
 
@@ -848,12 +905,96 @@ def solve_G(G, root, n_n, n_l, n_zn):
 
     is_teplo = False
 
+    # вставлено Claude, 2026-10-23: регуляторы давления в системе Ньютона (w_rd2.py), по умолчанию; -rd_old - старый подбор.
+    # rd_solve(active) пересобирает матрицу с активными регуляторами и решает ее Ньютоном (как цикл it ниже);
+    # если не получилось - откат и старый метод w_rd.check_RD.
+    rd_new = config.args.rd_new and any(rd[11] != rd[12] for rd in list_rd)
+    rd_msgs = {}
+    rd_old_msg = False
+
+    def rd_newton(active, label):
+        nonlocal matrix0
+
+        delta = None
+
+        for it in range(100):
+            if n_ist == 1:
+                reset_consumptions(G, beta0)
+
+            matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, False, active, rr_active=rr_act)
+
+            beta2 = sp.sparse.linalg.spsolve(matrix, beta)
+
+            if not np.all(np.isfinite(beta2)):
+                logging.info(f'  Ньютон {label}: nan/inf')
+                return False
+
+            root[:] += beta2   # на месте: root - переменная solve_G
+
+            delta = get_delta(beta2)
+            delta2 = get_delta_max(beta2)
+
+            check_NS(G, list_ns, root)
+
+            print(f'iter: {m:1d} {j:1d} {label} {it:2d} d={delta:14f} d_max={delta2:10f}', file=sys.stderr, flush=True)
+
+            root[np.abs(root) < 0.00001] = 0
+
+            reset_sopr(G, root, list_l, heatSourceID)  # пересчитываеи сопротивления по температуре
+
+            if delta < 0.001:
+                break
+
+        if delta is None or delta >= 1.0 or not np.all(np.isfinite(root)):
+            logging.info(f'  Ньютон {label}: не сошелся d={delta}')
+            return False
+
+        return True
+
+    rd_pass = 0
+
+    ok_msg = False   # вставлено Claude, 2026-10-23: сообщение о неустановившихся обратных клапанах выведено
+
+    def rd_solve(active):
+        nonlocal matrix0, rd_pass
+
+        matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, True, active, rr_active=rr_act)
+        rd_pass += 1
+
+        return rd_newton(active, f'p{rd_pass:<2d}')
+
+    def rd_jacobian():
+        nonlocal matrix0
+
+        matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, False, rr_active=rr_act)
+
+        return matrix
+
     for m in range(n_potr): # Пересчет потребителей с учетом тепловых потерь
 #        print(f'Расчет потерь {m} из {n_potr} {n_ist=}')
         for j in range(5): # регуляторы расхода
 #            print('=====================================================================')
 #            print(f'Потребители {j+1}')
-            for i in range(config.args.iter): # Регуляторы давления
+
+            # вставлено Claude, 2026-10-23: новый расчет регуляторов давления, при неудаче - старый цикл ниже
+            rd_done = False
+
+            if rd_new:
+                rd_done, msgs = w_rd2.calc_RD_active(G, list_rd, root, rd_solve, rd_jacobian)
+
+                if rd_done:
+                    rd_msgs = msgs
+                else:
+                    rd_msgs = {}
+                    if not rd_old_msg:
+                        cprint('Регуляторы давления: расчет с уравнениями регуляторов не сошелся, '
+                               'использован итерационный подбор сопротивлений', color='yellow')
+                        rd_old_msg = True
+
+                    # структура матрицы без активных регуляторов
+                    matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, True, rr_active=rr_act)
+
+            for i in range(0 if rd_done else config.args.iter): # Регуляторы давления
 #            for i in range(1): # Регуляторы давления
                 for it in range(100):  # Итерация уравнения
                     t1 = time.time()
@@ -864,14 +1005,14 @@ def solve_G(G, root, n_n, n_l, n_zn):
 
                     t2 = time.time()
 
-                    matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, False)
+                    matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, False, rr_active=rr_act)
 
 
                     t3 = time.time()
 
     #                w_print.print_matrix(matrix, beta)
 
-                    beta1 = matrix @ root
+#                    beta1 = matrix @ root  # закомментировано Claude, 2026-10-22: не используется
 
     #                w_print.print_b('beta1', beta1)
             #        if get_delta(beta) < 0.0001: break
@@ -922,8 +1063,22 @@ def solve_G(G, root, n_n, n_l, n_zn):
 
 
 
-            f_RR = w_rr.check_RR(G, list_rr, root)
-            f_OK = w_ok.check_OK(G, list_ok, root)
+            if rr_new:   # вставлено Claude, 2026-10-23
+                f_RR = w_rr2.check_RR(G, list_rr, root, rr_st)
+            else:
+                f_RR = w_rr.check_RR(G, list_rr, root)
+            ok_old = config.args.ok_old   # вставлено Claude, 2026-10-23
+            f_OK = w_ok.check_OK(G, list_ok, root, reopen=not ok_old)
+
+            # вставлено Claude, 2026-10-23: у закрытого клапана и работающего регулятора расхода другая структура
+            # строки - пересобрать матрицу
+            if (f_OK and not ok_old) or (f_RR and rr_new):
+                matrix0, matrix, beta = make_matrix(root, list_n, list_l, list_zd, list_rd, list_rr, list_ok, list_ns, beta0, matrix0, True, rr_active=rr_act)
+
+                # состояние клапанов / регуляторов расхода не установилось за 5 проходов - одно сообщение
+                if j == 4 and not ok_msg:
+                    cprint('Обратные клапаны и регуляторы расхода: состояние не установилось за 5 проходов, взято последнее', color='yellow')
+                    ok_msg = True
 
 #            if f_RR:
 #                dbg(list_rr)
@@ -970,6 +1125,11 @@ def solve_G(G, root, n_n, n_l, n_zn):
         t2 = time.time()
 #        print(f'Закончили считать тепло {(t2-t1):0.2f} секунд', flush=True)
 #        print('---------------------------------', flush=True)
+
+    # вставлено Claude, 2026-10-23: регуляторы давления, не обеспечившие напор (-rd_new); печатает w_calc2
+    # после последнего solve_G, чтобы при повторном расчете подсети сообщения не дублировались
+    G.graph['rd_msgs'] = rd_msgs
+    G.graph['rr_msgs'] = w_rr2.messages(G, list_rr, root, rr_st) if rr_new else {}  # вставлено Claude, 2026-10-23
 
     calc_nagr(G, root)
 
@@ -1083,7 +1243,7 @@ def proverka(G, x):
         elif typ == 'consumptRegulators' or typ == 'bypass' and nodeID3 == 0:
             # исправлено Claude, 2026-10-22: x - отклонение от заданного только у открытого и не фиксированного
             # регулятора, иначе (не обеспечил расход, перешел на сопротивление) x - сам расход; как в w_out.py
-            G_r = Z + r if e.get('sost') == const.L_OPEN and not e.get('fixed', False) else r
+            G_r = Z + r if config.args.rr_old and e.get('sost') == const.L_OPEN and not e.get('fixed', False) else r  # rr_old - Claude, 2026-10-23
             print(f'{typ_r} {name}. Расход задано: {Z} получено: {G_r:.2f}  т/ч')
 #            print(e.get('sost'))
 
@@ -1166,6 +1326,15 @@ def w_calc2(G, param_sum):
 
         if f_PO: 
             break
+
+    # вставлено Claude, 2026-10-23: сообщения по регуляторам давления (-rd_new) последнего solve_G
+    rd_msgs = G.graph.pop('rd_msgs', {})
+    for k in sorted(rd_msgs):
+        cprint(rd_msgs[k], color='yellow')
+
+    rr_msgs = G.graph.pop('rr_msgs', {})  # вставлено Claude, 2026-10-23: регуляторы расхода (w_rr2.py)
+    for k in sorted(rr_msgs):
+        cprint(rr_msgs[k], color='yellow')
 
     proverka(G, root)
 

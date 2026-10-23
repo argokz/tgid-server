@@ -1,4 +1,3 @@
-import time
 
 from sety import config
 from sety.teplo.rasto import rasTO_pr2
@@ -395,8 +394,6 @@ def setPR(node, po, typ, debug):
 def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 #t2, Qotoplz1, Qotopln1, Qvent1, Qkond1, Qgvz1, Qgvop1, Qgvoo1
 
-    tt1  = time.time()
-
     #  const PT_G *pt_GO = getPT_G(node_name(po))
 #    pt_GO = getPT_G(node->node_name_potr())
 
@@ -439,8 +436,8 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
 #    PR pr
 
-    qq_pr = qq_ps = qq_pw = qq_sm = qq_oo = qq_op = qq_z = qq_n = qq_v = qq_k = 0
-    qq_pr2 = qq_ps2 = qq_pw2 = qq_sm2 = qq_oo2 = qq_op2 = qq_z2 = qq_n2 = qq_v2 = qq_k2 = qq_rez2 = 0
+    qq_v = qq_k = 0
+    qq_pr2 = qq_ps2 = qq_pw2 = qq_sm2 = qq_z2 = qq_n2 = qq_v2 = qq_k2 = qq_rez2 = 0
 
     pr = {}
 
@@ -460,8 +457,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         print('!!!!!!!!!')
 
 
-    tt2  = time.time()
-
     if po.get('gv_pr', 0) != 0  or po.get('otopl_pr', 0) != 0 :
 
         if debug1:
@@ -470,7 +465,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         pr, pt_G2 = setPR(node, po, 'TPR', debug)
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug)
 
-        qq_pr = qq
         Qgvz1 += Qgvz
 
         if po.get('cx_co_pr', 0) == 3: #  /*'Н'*/
@@ -483,8 +477,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         qq_pr2 = t2 * (pt_G.get('G_ot_pr', 0)+pt_G.get('G_gvpr', 0))*1000
 
 
-    tt3  = time.time()
-
     if po.get('gv_ps', 0) != 0  or po.get('otopl_ps', 0) != 0 :
 
         if debug1:
@@ -493,7 +485,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         pr, pt_G2 = setPR(node, po, 'TPS', debug)
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug)
 
-        qq_ps = qq
         Qgvz1 += Qgvz
         if po.get('cx_co_ps', 0) == 3: #  /*'Н'*/
             Qotopln1 += Qotopl
@@ -504,8 +495,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         qq_ps2 = t2 * (pt_G.get('G_ot_ps', 0) + pt_G.get('G_gvps', 0)) * 1000
 
 
-    tt4  = time.time()
-
     if po.get('gv_pw', 0) != 0 or po.get('otopl_pw', 0) != 0 :
         if debug1:
             print('TPW')
@@ -515,7 +504,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug)
 
-        qq_pw = qq
         Qgvz1 += Qgvz
 
         if po.get('cx_co_pw', 0) == 3: #  /*'Н'*/
@@ -527,9 +515,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
         qq_pw2 = t2 * (pt_G.get('G_ot_pw', 0) + pt_G.get('G_gvpw', 0)) * 1000
 
-    tt5  = time.time()
-    tt6  = time.time()
-
     if po.get('gv_sm', 0) != 0 or po.get('otopl_sm', 0):
 
         if debug1:
@@ -537,13 +522,8 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
         pr, pt_G2 = setPR(node, po, 'TSM', debug)
 
-        tt5  = time.time()
-
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug)
 
-        tt6  = time.time()
-
-        qq_sm = qq
         Qgvz1 += Qgvz
         if po.get('cx_co_sm', 0) == 3: #  /*'Н'*/
             Qotopln1 += Qotopl
@@ -575,8 +555,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         }
     """
 
-#    tt6  = time.time()
-
     if po.get('ventil_cv', 0) != 0 and not config.args.is_leto:
         if debug1:
             print('TVV')
@@ -596,8 +574,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         qq_v2 = pt_G.get('G_ventil', 0) * t2v*1000
 
 
-    tt7  = time.time()
-
     if po.get('kondiz', 0) != 0 and not config.args.is_leto:
         gvent = 1000 * pt_G.get('G_kondiz', 0)
 #        double t2v
@@ -609,7 +585,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
 
 
-    Ggvo = (pt_G.get('G_gvop', 0) + pt_G.get('G_gvoo', 0)) * 1000
     Got = (pt_G.get('G_otoplz', 0) + pt_G.get('G_otopln', 0))
 
     if Got != 0:
@@ -622,8 +597,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 
 #    double G_ot_gv = pt_G.get('G_ot_pr', 0) + pt_G.get('G_ot_sm', 0) + pt_G.get('G_ot_ps', 0) + pt_G.get('G_ot_pw', 0)
 
-
-    tt8  = time.time()
 
 
     if po.get('otopl_zco', 0) != 0 and pt_G.get('G_otoplz', 0) != 0 :
@@ -638,14 +611,11 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
 #        double  tvv
         pr, pt_G2 = setPR(node, po, 'TZZ', debug)
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug1)
-        qq_z = qq
         Qotoplz1 += Qotopl
 #        qq_z2 = (pt_G.get('G_otoplz', 0)*1000 - pt_G.get('G', 0) * pt_G.get('G_otoplz', 0) /Got) * t2
         qq_z2 = (pt_G.get('G_otoplz', 0)- Got_z - pt_G.get('G_gvoo', 0) * d_z)*1000*t2
         
 
-
-    tt9  = time.time()
 
     if po.get('otopl_nco', 0) != 0  and pt_G.get('G_otopln', 0) != 0 :
 
@@ -657,7 +627,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
         pr, pt_G2 = setPR(node, po, 'TNN', debug)
 
         t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo = rasTO_pr2(node, pr, pt_G2, G, t, Tn, debug)
-        qq_n = qq
         Qotopln1 += Qotopl
 
         qq_n2 = (pt_G.get('G_otopln', 0) - Got_n - pt_G.get('G_gvoo', 0) * d_n) * 1000 * t2
@@ -685,9 +654,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
     GG *= 1000
 
     #  double QQ = qq_pr+qq_ps+qq_pw+qq_sm+qq_z+qq_n+qq_v+qq_k+qq_oo+qq_op
-    QQ = qq_pr + qq_ps + qq_pw + qq_sm + qq_z + qq_n + qq_v + qq_k
-
-#    t2 = t - QQ / GG
 
     QQ2 = qq_pr2 + qq_ps2 + qq_pw2 + qq_sm2 + qq_z2 + qq_n2 + qq_v2 + qq_k2 + qq_rez2
 
@@ -721,14 +687,6 @@ def rasTO_po(node, po, pt_G, G, t, Tn, debug):
     #  double t2_sm = t-qq_pr/pt_G.get('gvsm', 0)
 
 
-    tt10  = time.time()
-
-
-#    print(tt10-tt9, tt9-tt8, tt8-tt7, tt7-tt6, tt6-tt5, tt5-tt4, tt4-tt3, tt3-tt2, tt2-tt1)
-
-#    if tt6-tt5 > 0.0001:
-#        print(tt10-tt1, 'sm:', tt6-tt5,   'ps:', tt4-tt3)
-#        print('---------------------------------------')
 
 
     return t2, Qotoplz1, Qotopln1, Qvent1, Qkond1, Qgvz1, Qgvop1, Qgvoo1

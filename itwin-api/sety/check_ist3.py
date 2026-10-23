@@ -1,5 +1,6 @@
 import sys
 import time
+from collections import deque  # вставлено Claude, 2026-10-22 (ревью п. 4)
 import networkx as nx
 import numpy as np
 import scipy as sp
@@ -147,11 +148,10 @@ def mark_flow_edges(G, source, node, po):
         
 
     marked_edges = set()
-    visited = set()
-    queue = [(node, po)]
+    queue = deque([(node, po)])  # исправлено Claude, 2026-10-22 (ревью п. 4): было list, pop(0) - O(n)
     
     while queue:
-        current_node = queue.pop(0)
+        current_node = queue.popleft()
 
 
         if 'src' not in G.nodes[current_node]:

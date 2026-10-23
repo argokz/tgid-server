@@ -16,6 +16,9 @@ def get_args_json(args):
         "is_save_po_yes",
 
         "iter",
+        "rd_new",  # вставлено Claude, 2026-10-23
+        "ok_old",  # вставлено Claude, 2026-10-23
+        "rr_old",  # вставлено Claude, 2026-10-23
         "g_equival",
 
         "is_kv",
@@ -240,6 +243,14 @@ def init():
 # Тут нужно смотреть что за параметры
 
     parser.add_argument('-iter', required=False, type=int, default=20, dest='iter', help=argparse.SUPPRESS)
+    # вставлено Claude, 2026-10-23: регуляторы давления уравнениями в системе Ньютона (w_rd2.py), по умолчанию;
+    # -rd_old - прежний итерационный подбор сопротивлений (w_rd.check_RD)
+    parser.add_argument('-rd_new', action='store_true', default=True, dest='rd_new', help='Регуляторы давления: уравнения регуляторов в системе Ньютона (по умолчанию)')
+    parser.add_argument('-rd_old', action='store_false', dest='rd_new', help='Регуляторы давления: прежний итерационный подбор сопротивлений')
+    # вставлено Claude, 2026-10-23: обратные клапаны по-старому (закрытый - S = 1e6, повторно не открывается)
+    parser.add_argument('-ok_old', action='store_true', default=False, dest='ok_old', help='Обратные клапаны: прежний расчет')
+    # вставлено Claude, 2026-10-23: регуляторы расхода по-старому (подкачка Z в узлы + ветвь S = 10000, без возврата в работу)
+    parser.add_argument('-rr_old', action='store_true', default=False, dest='rr_old', help='Регуляторы расхода: прежний расчет')
     parser.add_argument('-tp_metod', required=False, type=int, default=1, dest='tp_metod', help=argparse.SUPPRESS)
     parser.add_argument('-type_of_net', required=False, type=int, default=1, dest='type_of_net', help=argparse.SUPPRESS)
     parser.add_argument('-time', required=False, type=str, default='', dest='time', help=argparse.SUPPRESS)

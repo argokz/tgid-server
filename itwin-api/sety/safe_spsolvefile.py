@@ -109,6 +109,15 @@ def safe_spsolve(A, b, max_dense_size=200):
     if np.any(np.isnan(x)) or np.any(np.isinf(x)):
         singular = True
 
+    # вставлено Claude, 2026-10-22: SuperLU на почти вырожденной матрице может вернуть решение с огромной невязкой
+    # без предупреждения (в первом тепловом расчете была невязка до 6e26) - проверяем |A*x - b|. Только сообщение,
+    # результат функции не меняется.
+    if not singular:
+        resid = np.max(np.abs(A @ x - b)) if len(b) else 0
+        if resid > 1e-6 * max(1.0, np.max(np.abs(b))):
+            i_max = int(np.argmax(np.abs(A @ x - b)))
+            print(f" Matrix appears singular or ill-conditioned: max |A*x - b| = {resid:.3g} (row {i_max}), max |x| = {np.max(np.abs(x)):.3g}")
+
     if singular:
         print(" Matrix appears singular or ill-conditioned")
 

@@ -6,6 +6,7 @@ import networkx as nx
 import logging
 
 from sety import const
+from sety import config  # вставлено Claude, 2026-10-23
 from sety import w_print
 from sety import sopr
 
@@ -553,7 +554,8 @@ def set_RR_out(G, rr, x, l_n, n_n1, n_n2, nn1, nn2, n1, n2):
 
 #    print(f'=== {name}  {rr.get('fixed')}' )
 
-    if rr.get('sost') == const.L_OPEN and not rr.get('fixed', False):
+    # исправлено Claude, 2026-10-23: в новой модели (w_rr2.py) x - полный расход, Z прибавляется только при -rr_old
+    if config.args.rr_old and rr.get('sost') == const.L_OPEN and not rr.get('fixed', False):
         r += Z
 
 
@@ -797,7 +799,8 @@ def set_BP_RR_out(G, rr, x, l_n, n_n1, n_n2, nn1, nn2, n1, n2):
 
     r = x[l_n]
 
-    if rr.get('sost') == const.L_OPEN and not rr.get('fixed', False):
+    # исправлено Claude, 2026-10-23: в новой модели (w_rr2.py) x - полный расход, Z прибавляется только при -rr_old
+    if config.args.rr_old and rr.get('sost') == const.L_OPEN and not rr.get('fixed', False):
         r += Z
 
     h1 = x[n_n1]

@@ -1,7 +1,4 @@
 import math
-import time
-
-from collections import defaultdict
 
 from sety.teplo import gid_init
 from sety.any import any
@@ -25,8 +22,6 @@ from sety.teplo import otopl
 from sety.teplo import tepl_vent
 
 from sety.ct import get_ct
-
-import time
 
 # [Claude 2026-10-18] Заглушка (ничего не делает); затеняет одноименную функцию из any.any.
 def fatal_error_teplo():
@@ -55,10 +50,6 @@ from sety.teplo.teplo2 import rasTO2
 
 EPS = 0.00001
 EPS_E = 0.1
-
-
-map_pt_cnt = defaultdict(int)
-
 
 
 #-----------------------------------------------------------------------------------
@@ -296,25 +287,11 @@ def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
         #    if (config.args.is_leto) g = ggv
 
 
-        tt1  = time.time()
-
-        t01 = time.time()
-
-        dt1 = 0
-        dt2 = 0
-        dt3 = 0
-        dt4 = 0
-        dt5 = 0
-
         for i in range(100):
             tx0 = tx
 
-            t01 = time.time()
-
             t2_1, tx = rasTO2(node, 11, pr, pt_G, tr, ggv, t, tx2, debug)      # II ступень верхняя
             tg = tx  # горячая на ГВС
-
-            t02 = time.time()
 
             if config.args.is_leto:
                 t2_2 = t
@@ -322,13 +299,9 @@ def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
             else:
                 t2_2, tv, Qotopl = otopl.otopl(node, pr, tr, got, Tn, t, config.args.is_leto, debug)
 
-            t03 = time.time()
-
             if gvent:
                 t2v, tvv = tepl_vent.rasVENT(pr, gvent, (pr_ventil + pr_kondiz) * 1.e6, t, Tn, debug)
                 Qvent = gvent * (t - t2v) / 1e6
-
-            t04 = time.time()
 
             if ggv + got + gvent:
                 t2 = (t2_1 * ggv + t2_2 * got + t2v * gvent) / (ggv + got + gvent)
@@ -339,14 +312,6 @@ def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
 
             t2_2, tx2 = rasTO2(node, 10, pr, pt_G, tr, g, t2, tr.get('Tx', 0), debug)  # I ступень нижняя
 
-            t05 = time.time()
-
-            dt1 += (t02-t01)
-            dt2 += (t03-t02)
-            dt3 += (t04-t03)
-            dt4 += (t05-t04)
-
-
       #      Qgvz = (t-t2_1)*ggv*1e-6+(t2-t2_2)*g*1e-6
       #      Qgvz = (t-t2_2)*ggv*1e-6
             Qgvz = (t - t2_1) * ggv * 1e-6 + (t2 - t2_2) * g * 1e-6
@@ -356,13 +321,9 @@ def rasTO_pr(node, pr, tr, pt_G, G, t, Tn, obob, debug):
 #            print(f'{tx=}, {tx0=} {tx-tx0=}')
 
             if abs(tx - tx0) < EPS_E:
-                map_pt_cnt[i] += 1
                 break
 
 #        print('>>>', i)
-
-        tt2  = time.time()
-#        print(f'    i = {i} {tt2-tt1:.4f} = II={dt1:.4f} от={dt21:.4f} в={dt31:.4f} I={dt41:.4f}')
 
         GG = g
         if config.args.is_leto:
@@ -438,13 +399,10 @@ def rasTO10(node, pr, pt_G, G, t, Tn, debug):
     pass
 
 
-map_t = defaultdict(float)
-
-
 #-----------------------------------------------------------------------------------
 
-# [Claude 2026-10-18] Обертка над rasTO_pr: берет расчетные температуры потребителя по kodtr, замеряет время по типу схемы
-# (map_t) и возвращает (t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
+# [Claude 2026-10-18] Обертка над rasTO_pr: берет расчетные температуры потребителя по kodtr и возвращает
+# (t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
 
     
@@ -454,38 +412,9 @@ def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
     tr = node.get('kodtr', None)
 #    print(f't={t} tr = {tr}')
 
-    tt1  = time.time()
-
     tr = read_gid.map_tr.get(tr, None)
 
     v = rasTO_pr(node, pr, tr, pt_G, G, t, Tn, False, debug)
-
-    tt2  = time.time()
-
-
-    typ = ''
-
-    if pr.get('gvsm', 0) != 0:
-        typ = 'TSM'
-    elif pr.get('gvps', 0) != 0:
-        typ = 'TPS'
-    elif pr.get('gvpr', 0) != 0:
-        typ = 'TPR'
-    elif pr.get('gvpw', 0) != 0:
-        typ = 'TPW'
-
-    if pr.get('otoplz', 0) != 0:
-        typ += '_Z'
-#        print(pr)
-#        exit(1)
-
-    
-    elif pr.get('otopln', 0) != 0:
-        typ += '_N'
-
-
-    map_t[typ] += tt2-tt1
-
 
     if v is None: 
         return t, 0, None, None, None, 0, 0, 0, 0, 0, 0

@@ -20,7 +20,7 @@ from sety.teplo.t import getS28
 
 # [Claude 2026-10-18] Площадь (kF/sqrt(W0*Wv)) теплообменника II ступени ГВС для последовательной схемы (ps).
 # Тепло I ступени QI находится итерациями совместно с расчетом отопления (otopl) до точности 1e-3.
-def getF2(node, pr, pr2, tr):
+def _getF2_calc(node, pr, pr2, tr):
 
     Q_gvs_max = pr.get('gvps', 0) * pr.get('gvs_max', 0) #rez - рециркуляция
 
@@ -92,4 +92,26 @@ def getF2(node, pr, pr2, tr):
     #  wout << "kf2 = " << kFII << endl
 
 
+    return F2
+
+
+#-----------------------------------------------------------------------------------
+
+# вставлено Claude, 2026-10-22: кэш getF2. FII зависит только от расчетных данных потребителя (pr, tr), а не от
+# расходов и температур, но считается итерациями с otopl - ~12 % времени теплового расчета. Расчетные данные
+# потребителей меняются только между вызовами calc_teplo (reset_consumptions), поэтому кэш очищается
+# в начале каждого calc_teplo (clear_cache_F2).
+_cache_F2 = {}
+
+# [Claude 2026-10-22] Очистить кэш getF2 (вызывается в начале calc_teplo).
+def clear_cache_F2():
+    _cache_F2.clear()
+
+# [Claude 2026-10-22] getF2 с кэшем по потребителю (id(tr), id, kod, name).
+def getF2(node, pr, pr2, tr):
+    key = (id(tr), pr.get('id'), pr.get('kod'), pr.get('name'))
+    F2 = _cache_F2.get(key)
+    if F2 is None:
+        F2 = _getF2_calc(node, pr, pr2, tr)
+        _cache_F2[key] = F2
     return F2
