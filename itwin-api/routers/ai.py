@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from database.tu_connection import DEFAULT_RADIUS_M, MAX_RADIUS_M
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from ai import calc_protocol, config, tu_recommend, wear_plan
+from ai import calc_protocol, config, tools, tu_recommend, wear_plan
 from ai.client import AiError, require_ai
 from ai.schemas import AiStatus
 from auth import AuthUser, require_permission, require_roles
@@ -18,7 +18,7 @@ from database.connect import acquire_conn
 router = APIRouter(tags=["ai"])
 
 # Инструменты, которые уже есть в этом API (пополняются этапами 3–6 плана)
-AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan"]
+AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan", "search", "data_quality", "import_mapping"]
 
 
 @router.get("/api/v1/ai/status", response_model=AiStatus)
@@ -109,5 +109,54 @@ async def ai_wear_plan(body: WearPlanRequest, user: Annotated[AuthUser, Depends(
         async with acquire_conn() as conn:
             return await wear_plan.plan(conn, calculation_id=body.calculation_id, fragment_id=body.fragment_id,
                                         top=body.top, username=user.username)
+    except AiError as exc:
+        raise exc.to_http() from exc
+
+
+class SearchRequest(BaseModel):
+    text: str = Field(..., min_length=2, max_length=500)
+    fragment_ids: Optional[list[int]] = Field(None, max_length=50, description="Видимые фрагменты карты")
+
+
+@router.post("/api/v1/ai/search", dependencies=[Depends(require_ai)])
+async def ai_search(body: SearchRequest, user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Поиск фразой: модель разбирает фразу в запрос (узел, участок, потребители, источник, инструмент),
+    сервер выполняет его существующими выборками."""
+    try:
+        async with acquire_conn() as conn:
+            return await tools.search(conn, text=body.text, fragment_ids=body.fragment_ids, username=user.username)
+    except AiError as exc:
+        raise exc.to_http() from exc
+
+
+class DataQualityExplainRequest(BaseModel):
+    fragment_id: Optional[int] = Field(None, ge=1)
+
+
+@router.post("/api/v1/ai/data-quality/explain", dependencies=[Depends(require_ai)])
+async def ai_data_quality_explain(body: DataQualityExplainRequest,
+                                  user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Сводка по проблемам данных: причины, последствия, инструмент и шаги массового исправления."""
+    try:
+        async with acquire_conn() as conn:
+            return await tools.explain_data_quality(conn, fragment_id=body.fragment_id, username=user.username)
+    except AiError as exc:
+        raise exc.to_http() from exc
+
+
+class ImportMappingRequest(BaseModel):
+    mode: str = Field(..., pattern="^(nodes|lines|coords)$")
+    columns: list[str] = Field(..., min_length=1, max_length=200)
+    samples: list[list[Any]] = Field(default_factory=list, max_length=5)
+    has_geometry: bool = False
+
+
+@router.post("/api/v1/ai/import/suggest-mapping", dependencies=[Depends(require_ai)])
+async def ai_import_suggest_mapping(body: ImportMappingRequest,
+                                    user: Annotated[AuthUser, Depends(require_permission("import"))]):
+    """Сопоставление колонок файла импорта с полями назначения по именам и образцам строк."""
+    try:
+        return await tools.suggest_import_mapping(mode=body.mode, columns=body.columns, samples=body.samples,
+                                                  has_geometry=body.has_geometry, username=user.username)
     except AiError as exc:
         raise exc.to_http() from exc

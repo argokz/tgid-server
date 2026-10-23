@@ -13,6 +13,7 @@ from routers.auth_routes import router as auth_router
 from routers.calc import router as calc_router
 from routers.core import router as core_router
 from routers.crud import router as crud_router
+from routers.data_quality import router as data_quality_router
 from routers.equipment import router as equipment_router
 from routers.alseko_binding import router as alseko_binding_router
 from routers.electrical_binding import router as electrical_binding_router
@@ -61,4 +62,5 @@ all_routers = [
     activity_log_router,
     ai_router,
     wear_router,
+    data_quality_router,
 ]
