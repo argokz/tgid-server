@@ -82,9 +82,8 @@ async def export_defect_word(defect_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("word report failed")
+        raise HTTPException(status_code=500, detail="Не удалось сформировать Word-отчёт")
 
 
 @router.get("/api/passports/diagnostics")
@@ -95,7 +94,7 @@ async def passport_site_diagnostics():
             return await get_passport_site_diagnostics(conn)
     except Exception as e:
         logger.exception("passport diagnostics failed")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Не удалось выполнить диагностику паспорта") from e
 
 
 @router.get("/api/passports/hierarchy")
@@ -166,8 +165,8 @@ async def get_passports_hierarchy():
                 build_tree(rs_nach_rows, "Распределительные сети (по начальникам)", "rs")
             ]
         except Exception as e:
-            logger.error(f"Error fetching hierarchy: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"Error fetching hierarchy: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Не удалось загрузить иерархию паспортов")
 
 
 @router.get("/api/export/shp")

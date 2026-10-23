@@ -30,6 +30,7 @@ from database.network_bypasses import get_network_bypasses
 from database.pressure_tests import get_pressure_tests
 from database.repairs import get_repairs
 from database import ut_out_columns as UT
+from database.excel_reports import load_sql
 from database.shurfs import get_shurfs
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "report_templates")
@@ -228,6 +229,8 @@ class SheetData:
     # Лист результатов расчёта (*_out): пустой лист — «расчёт не выполнен»; входные листы
     # (как «Обобщённые» у потребителей) считаются в X-Report-Rows/Total вместе с первым
     is_result: bool = False
+    # Производный от входных лист (как «Расч.Нагрузки» потребителей): в X-Report-Rows/Total не входит
+    derived: bool = False
 
 
 @dataclass
@@ -784,8 +787,234 @@ _PT_RESULTS_SQL = _LAST_CALC_CTE + f"""
 """
 
 
+# Листы 3, 5–7 шаблона G_PT (OUT_PT_Расчетные нагрузки / Тепло / ТеплоГидравл / Отключенные.sql).
+# Реальные и обобщённые потребители вместе — подзапрос consumerview десктопа (sql/reports/_consumerview.sql).
+_PT_VIEW_HEAD = [
+    "Код записи", "Состояние потребителя", "Признак потребителя",
+    "Узел присоединения: код расчётной схемы", "Узел присоединения: наименование узла",
+    "Содержательное наименование потребителя или адрес",
+]
+_PT_HEAT_RECEIVED = [
+    "Полученное тепло: на отопление (зав. схема), Гкал/ч", "Полученное тепло: на отопление (незав. схема), Гкал/ч",
+    "Полученное тепло: на вентиляцию и кондиционирование, Гкал/ч",
+    "Полученное тепло: ГВС в закрытой системе, Гкал/ч",
+    "Полученное тепло: ГВС в открытой системе из подающего трубопровода, Гкал/ч",
+    "Полученное тепло: ГВС в открытой системе из обратного трубопровода, Гкал/ч",
+    "Полученное тепло: в циркуляционном трубопроводе, Гкал/ч",
+    "Полученное тепло: суммарное в закрытой системе, Гкал/ч",
+    "Полученное тепло: суммарное в открытой системе из подающей трубы, Гкал/ч",
+    "Полученное тепло: суммарное в открытой системе из обратной трубы, Гкал/ч",
+]
+_PT_HEAT_REQUIRED_SUM = [
+    "Требуемое тепло: суммарное в закрытой системе, Гкал/ч",
+    "Требуемое тепло: суммарное в открытой системе из подающей трубы, Гкал/ч",
+    "Требуемое тепло: суммарное в открытой системе из обратной трубы, Гкал/ч",
+]
+_PT_TEMPERATURES = [
+    "Температура сетевой воды на входе теплового пункта, °C",
+    "Температура сетевой воды на выходе теплового пункта, °C",
+]
+
+PT_LOADS_HEADERS = _PT_VIEW_HEAD + [
+    "Тепловая нагрузка на отопление: зависимая схема, Гкал/ч",
+    "Тепловая нагрузка на отопление: независимая схема, Гкал/ч",
+    "Внутренние тепловыделения, Гкал/ч", "Нагрузка на вентиляцию, Гкал/ч", "Нагрузка на кондиционирование, Гкал/ч",
+    "ГВС открытая система: из подающего трубопровода, Гкал/ч",
+    "ГВС открытая система: из обратного трубопровода, Гкал/ч",
+    "На компенсацию теплопотерь в рециркуляции ГВС, Гкал/ч",
+    "ГВС закрытая система: параллельная схема, Гкал/ч", "ГВС закрытая система: смешанная схема, Гкал/ч",
+    "ГВС закрытая система: последовательная схема, Гкал/ч",
+    "ГВС закрытая система: предвключённая схема, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в закрытой системе, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в открытой системе из подающей трубы, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в открытой системе из обратной трубы, Гкал/ч",
+    "Внутренний объём системы отопления, м³", "Внутренний объём системы вентиляции, м³",
+    "Балансовая принадлежность",
+]
+
+PT_HEAT_HEADERS = _PT_VIEW_HEAD + _PT_TEMPERATURES + _PT_HEAT_RECEIVED + [
+    "Требуемое тепло: на отопление (зав. схема), Гкал/ч", "Требуемое тепло: на отопление (незав. схема), Гкал/ч",
+    "Требуемое тепло: на вентиляцию и кондиционирование, Гкал/ч",
+    "Требуемое тепло: ГВС в закрытой системе, Гкал/ч",
+    "Требуемое тепло: ГВС в открытой системе из подающего трубопровода, Гкал/ч",
+    "Требуемое тепло: ГВС в открытой системе из обратного трубопровода, Гкал/ч",
+    "Требуемое тепло: в циркуляционном трубопроводе, Гкал/ч",
+] + _PT_HEAT_REQUIRED_SUM + ["Код источника тепла", "Расчёт"]
+
+PT_HEAT_HYDRAULICS_HEADERS = _PT_VIEW_HEAD + [
+    "Расход сетевой воды на отопление (зав. схема), т/ч", "Расход сетевой воды на отопление (незав. схема), т/ч",
+    "Расход сетевой воды на вентиляцию и кондиционирование, т/ч",
+    "Расход на ГВС в закрытой системе, т/ч", "Расход на ГВС в открытой системе из подающего трубопровода, т/ч",
+    "Расход на ГВС в открытой системе из обратного трубопровода, т/ч", "Расход в циркуляционном трубопроводе, т/ч",
+    "Суммарный расход в закрытой системе, т/ч", "Суммарный расход в открытой системе из подающей трубы, т/ч",
+    "Суммарный расход в открытой системе из обратной трубы, т/ч",
+    "Пьезометрический напор в подающей трубе, м", "Пьезометрический напор в обратной трубе, м",
+    "Располагаемый напор, м",
+] + _PT_TEMPERATURES + _PT_HEAT_RECEIVED + _PT_HEAT_REQUIRED_SUM + [
+    "Необходимый располагаемый напор, м", "Код источника тепла", "Расчёт",
+]
+
+PT_DISCONNECTED_HEADERS = _PT_VIEW_HEAD[:5] + ["Содержательное наименование потребителя"] + [
+    "Расчётная нагрузка на отопление: зависимая схема, Гкал/ч",
+    "Расчётная нагрузка на отопление: независимая схема, Гкал/ч",
+    "Расчётная нагрузка на вентиляцию и кондиционирование, Гкал/ч",
+    "Средняя нагрузка ГВС: в закрытой системе, Гкал/ч",
+    "Средняя нагрузка ГВС: в открытой системе из подающего трубопровода, Гкал/ч",
+    "Средняя нагрузка ГВС: в открытой системе из обратного трубопровода, Гкал/ч",
+    "Средняя нагрузка ГВС: в циркуляционном трубопроводе, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в закрытой системе, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в открытой системе из подающей трубы, Гкал/ч",
+    "Суммарная нагрузка по потребителю: в открытой системе из обратной трубы, Гкал/ч",
+    "Код источника тепла",
+]
+
+_PT_VIEW_WHERE = "WHERE ($1::int[] IS NULL OR n.fileid = ANY($1::int[]))"
+_PT_VIEW_COLUMNS = """n.id, CASE WHEN n.cstatename = 'открыто' THEN '' ELSE 'закр' END AS sost,
+           TRIM(n.obob) AS po_pr, n.externalcode, n.externalnodename, n.name_building"""
+
+
+def _consumerview() -> str:
+    return "(" + load_sql("_consumerview") + ")"
+
+
+_PT_LOADS_SQL = f"""
+    SELECT {_PT_VIEW_COLUMNS},
+           n.otoplz, n.otopln, 0 AS otopl_tp, n.ventil, n.kondiz,
+           n.avghlgvsopenflow AS gvop1, n.avghlgvsopenret AS gvoo1, n.rez_q,
+           n.avghlgvscloseparall AS gvpr, n.avghlgvsclosemix AS gvsm,
+           n.avghlgvscloseconseq AS gvps, n.avghlgvsclosepreon AS gvpw,
+           n.qz, n.avghlgvsopenflow AS gvop, n.avghlgvsopenret AS gvoo,
+           (n.otoplz + n.otopln) * n.volwaterhs AS v_otop,
+           (n.ventil + n.kondiz) * n.volwatervs AS v_vent,
+           n.orgname
+      FROM {_consumerview()} n
+    {_PT_VIEW_WHERE}
+     ORDER BY n.id
+     LIMIT $2
+"""
+
+# Результаты pt_out последнего расчёта фрагмента узла (как $calculationID$ = getOutID десктопа)
+_PT_VIEW_RESULTS_JOIN = f"""
+      FROM pt_out p
+      JOIN calc ON calc.cid = p.calculationid
+      JOIN {_consumerview()} n ON n.id = p.nodeid AND n.fileid = calc.fileid"""
+_PT_VIEW_SOURCE_JOIN = """
+      LEFT JOIN externalcodes ec ON ec.id = n.kod_ist
+      LEFT JOIN heatsources hs ON hs.id = ec.heatsourceid"""
+
+_PT_HEAT_COMMON = """
+           round(p.t1::numeric, 1) AS t1, round(p.t2::numeric, 1) AS t2,
+           round(p.qotz::numeric, 3) AS qotz, round(p.qotn::numeric, 3) AS qotn,
+           COALESCE(p.dop12, 0) + COALESCE(p.dop13, 0) AS dop12_13,
+           round(p.dop17::numeric, 3) AS dop17, round(p.dop18::numeric, 3) AS dop18,
+           round(p.dop19::numeric, 3) AS dop19, round(p.dop20::numeric, 3) AS dop20,
+           round(p.qsum_z::numeric, 3) AS qsum_z,
+           round(p.dop18::numeric, 3) AS dop18_2, round(p.dop19::numeric, 3) AS dop19_2"""
+_PT_HEAT_SUM = """COALESCE(p.qotz_treb, 0) + COALESCE(p.qotn_treb, 0) + COALESCE(p.qvent_treb, 0)
+             + COALESCE(p.qgvz_treb, 0)"""
+
+_PT_HEAT_SQL = _LAST_CALC_CTE + f"""
+    SELECT {_PT_VIEW_COLUMNS},
+           {_PT_HEAT_COMMON},
+           round(p.qotz_treb::numeric, 3) AS qotz_treb, round(p.qotn_treb::numeric, 3) AS qotn_treb,
+           round(p.qvent_treb::numeric, 3) AS qvent_treb, p.qgvz_treb,
+           n.avghlgvsopenflow, n.avghlgvsopenret, n.rez_q,
+           {_PT_HEAT_SUM} AS qsum,
+           n.avghlgvsopenflow AS avghlgvsopenflow2, n.avghlgvsopenret AS avghlgvsopenret2,
+           hs.name AS source, p.calculationid
+    {_PT_VIEW_RESULTS_JOIN}
+    {_PT_VIEW_SOURCE_JOIN}
+    {_PT_VIEW_WHERE}
+     ORDER BY n.id
+     LIMIT $2
+"""
+
+_PT_HEAT_HYDRAULICS_SQL = _LAST_CALC_CTE + f"""
+    SELECT {_PT_VIEW_COLUMNS},
+           p.a4, p.a5, p.a6 + p.a7 AS a6_7, p.a11, p.a12, p.a13, p.a14, p.a15, p.a16, p.a17,
+           round(p.a21::numeric, 1) AS a21, round(p.a22::numeric, 1) AS a22, round(p.a23::numeric, 1) AS a23,
+           {_PT_HEAT_COMMON},
+           {_PT_HEAT_SUM} AS qsum,
+           CASE WHEN COALESCE(p.dop18, 0) = 0 AND COALESCE(p.dop19, 0) = 0 THEN 0
+                ELSE p.qgvop_treb * COALESCE(p.dop18, 0) / (COALESCE(p.dop18, 0) + COALESCE(p.dop19, 0))
+           END AS dop18_1,
+           CASE WHEN COALESCE(p.dop18, 0) = 0 AND COALESCE(p.dop19, 0) = 0 THEN 0
+                ELSE p.qgvoo_treb * COALESCE(p.dop19, 0) / (COALESCE(p.dop18, 0) + COALESCE(p.dop19, 0))
+           END AS dop19_1,
+           round(p.gneob::numeric, 3) AS gneob,
+           hs.name AS source, p.calculationid
+    {_PT_VIEW_RESULTS_JOIN}
+    {_PT_VIEW_SOURCE_JOIN}
+    {_PT_VIEW_WHERE}
+     ORDER BY n.id
+     LIMIT $2
+"""
+
+# Отключенные: закрытые потребители и потребители без строки pt_out в последнем расчёте фрагмента.
+# В сумме z обобщённых десктоп пропускал отопление по независимой схеме — добавлено (как в
+# sql/reports/out_pt_otklyuchennye.sql).
+_PT_DISCONNECTED_UNION = """
+    SELECT nn.id, nn.fileid, rc.consumerstateid, '' AS prizn, nn.externalcodeid,
+           nn.externalnodename AS uzel, rc.name AS name_building,
+           rc.calchldep AS otoplz, rc.calchlindep AS otopln,
+           rc.calchlventil + rc.avghlcond AS ventil,
+           rc.avghlgvscloseparall + rc.avghlgvsclosemix + rc.avghlgvscloseconseq + rc.avghlgvsclosepreon AS gvz,
+           rc.avghlgvsopenflow AS gvop, rc.avghlgvsopenret AS gvoo, rc.circhlosopen AS rez,
+           rc.calchldep + rc.calchlindep + rc.calchlventil + rc.avghlcond
+             + rc.avghlgvscloseparall + rc.avghlgvsclosemix + rc.avghlgvscloseconseq + rc.avghlgvsclosepreon AS z,
+           rc.avghlgvsopenflow AS op, rc.avghlgvsopenret AS oo
+      FROM realconsumers rc
+      JOIN nodes nn ON nn.id = rc.nodeid
+     WHERE COALESCE(nn.removed, 0) = 0
+    UNION ALL
+    SELECT nn.id, nn.fileid, gc.consumerstateid, 'О' AS prizn, nn.externalcodeid,
+           nn.externalnodename AS uzel, '' AS name_building,
+           gc.calchldep
+             + CASE WHEN gc.schemeparallid = 3 THEN 0 ELSE gc.calchlparall END
+             + CASE WHEN gc.schememixid = 3 THEN 0 ELSE gc.calchlmix END
+             + CASE WHEN gc.schemeconseqid = 3 THEN 0 ELSE gc.calchlconseq END
+             + CASE WHEN gc.schemepreonid = 3 THEN 0 ELSE gc.calchlpreon END AS otoplz,
+           gc.calchlindep
+             + CASE WHEN gc.schemeparallid = 3 THEN gc.calchlparall ELSE 0 END
+             + CASE WHEN gc.schememixid = 3 THEN gc.calchlmix ELSE 0 END
+             + CASE WHEN gc.schemeconseqid = 3 THEN gc.calchlconseq ELSE 0 END
+             + CASE WHEN gc.schemepreonid = 3 THEN gc.calchlpreon ELSE 0 END AS otopln,
+           gc.calchlventil AS ventil,
+           gc.calchlgvsparall + gc.calchlgvsmix + gc.calchlgvsconseq + gc.calchlgvspreon AS gvz,
+           gc.avghlgvsopensysflow AS gvop, gc.avghlgvsopensysret AS gvoo, gc.avghlcompopen AS rez,
+           gc.calchldep + gc.calchlindep + gc.calchlparall + gc.calchlmix + gc.calchlconseq + gc.calchlpreon
+             + gc.calchlventil
+             + gc.calchlgvsparall + gc.calchlgvsmix + gc.calchlgvsconseq + gc.calchlgvspreon AS z,
+           gc.avghlgvsopensysflow AS op, gc.avghlgvsopensysret AS oo
+      FROM generalizedconsumers gc
+      JOIN nodes nn ON nn.id = gc.nodeid
+     WHERE COALESCE(nn.removed, 0) = 0"""
+
+_PT_DISCONNECTED_JOIN = f"""
+      FROM ({_PT_DISCONNECTED_UNION}) c
+      JOIN calc ON calc.fileid = c.fileid"""
+_PT_DISCONNECTED_WHERE = """
+     WHERE ($1::int[] IS NULL OR c.fileid = ANY($1::int[]))
+       AND (c.consumerstateid = 2
+            OR NOT EXISTS (SELECT 1 FROM pt_out p WHERE p.calculationid = calc.cid AND p.nodeid = c.id))"""
+
+_PT_DISCONNECTED_SQL = _LAST_CALC_CTE + f"""
+    SELECT c.id, CASE WHEN c.consumerstateid = 1 THEN '' ELSE 'закр' END AS sost, c.prizn,
+           ec.name AS kod, c.uzel, c.name_building,
+           c.otoplz, c.otopln, c.ventil, c.gvz, c.gvop, c.gvoo, c.rez, c.z, c.op, c.oo,
+           hs.name AS source
+    {_PT_DISCONNECTED_JOIN}
+      LEFT JOIN externalcodes ec ON ec.id = c.externalcodeid
+      LEFT JOIN heatsources hs ON hs.id = ec.heatsourceid
+    {_PT_DISCONNECTED_WHERE}
+     ORDER BY c.prizn, c.id
+     LIMIT $2
+"""
+
+
 async def _rows_consumers(conn, scope: ReportScope) -> SheetData:
-    """G_PT: «Потребители реальные» + «Потребители обобщённые» + «Гидравлика» (pt_out)."""
+    """G_PT: «Потребители реальные» + «Потребители обобщённые» + «Расч.Нагрузки» + «Гидравлика» (pt_out)
+    + «Тепло» + «ТеплоГидравл.» + «Отключенные» — листы шаблона G_PT десктопа."""
     real_total = await conn.fetchval(
         f"SELECT count(*) FROM realconsumers c JOIN nodes n ON n.id = c.nodeid {_PT_NODE_WHERE}",
         scope.fragment_ids,
@@ -800,9 +1029,29 @@ async def _rows_consumers(conn, scope: ReportScope) -> SheetData:
     data.extra_sheets.append(
         ("Потребители обобщённые", SheetData(list(PT_GENERALIZED_HEADERS), _values(gen), int(gen_total or 0)))
     )
+    loads_total = await conn.fetchval(
+        f"SELECT count(*) FROM {_consumerview()} n {_PT_VIEW_WHERE}", scope.fragment_ids,
+    )
+    loads = await conn.fetch(_PT_LOADS_SQL, scope.fragment_ids, scope.limit)
+    data.extra_sheets.append(
+        ("Расч.Нагрузки", SheetData(list(PT_LOADS_HEADERS), _values(loads), int(loads_total or 0), derived=True))
+    )
     data.extra_sheets.append(await _result_sheet(
         conn, scope, "Гидравлика", list(PT_RESULT_HEADERS),
         _LAST_CALC_CTE + f"\n    SELECT count(*) {_PT_RESULTS_JOIN}\n    {_PT_NODE_WHERE}", _PT_RESULTS_SQL,
+    ))
+    view_results_count = _LAST_CALC_CTE + f"\n    SELECT count(*) {_PT_VIEW_RESULTS_JOIN}\n    {_PT_VIEW_WHERE}"
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Тепло", list(PT_HEAT_HEADERS), view_results_count, _PT_HEAT_SQL,
+    ))
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "ТеплоГидравл.", list(PT_HEAT_HYDRAULICS_HEADERS), view_results_count,
+        _PT_HEAT_HYDRAULICS_SQL,
+    ))
+    data.extra_sheets.append(await _result_sheet(
+        conn, scope, "Отключенные", list(PT_DISCONNECTED_HEADERS),
+        _LAST_CALC_CTE + f"\n    SELECT count(*) {_PT_DISCONNECTED_JOIN}\n    {_PT_DISCONNECTED_WHERE}",
+        _PT_DISCONNECTED_SQL,
     ))
     data.notes.extend(_result_notes(data))
     return data
@@ -1226,7 +1475,7 @@ async def build_excel_report(
     notes = _report_notes(sheet_title, data, scope, frags) + data.notes
     content = await asyncio.to_thread(_render_workbook, sheet_title, data, notes)
     # Входные листы (у потребителей — реальные + обобщённые) считаются вместе; листы расчёта — нет
-    inputs = [data] + [extra for _, extra in data.extra_sheets if not extra.is_result]
+    inputs = [data] + [extra for _, extra in data.extra_sheets if not (extra.is_result or extra.derived)]
     rows = sum(len(sheet.rows) for sheet in inputs)
     total = sum(max(sheet.total, len(sheet.rows)) for sheet in inputs)
     return ExcelReport(

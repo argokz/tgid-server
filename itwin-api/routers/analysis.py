@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from auth import AuthUser, require_roles
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
@@ -121,7 +123,7 @@ class TravelTimeRequest(BaseModel):
 
 
 @router.post("/api/analysis/travel-time")
-async def analysis_travel_time(body: TravelTimeRequest):
+async def analysis_travel_time(body: TravelTimeRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     """Время прохождения потока по выделенному направлению (gid6 OnTimePr)."""
     async with acquire_conn() as conn:
         graph = await _get_topology_graph(conn)
@@ -195,12 +197,12 @@ async def admissibility_query(
 
 
 @router.post("/api/analysis/valve-isolation")
-async def api_valve_isolation(req: ValveIsolationRequest):
+async def api_valve_isolation(req: ValveIsolationRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     async with acquire_conn() as conn:
         try:
             return await simulate_outage_isolation(conn, line_id=req.line_id, node_id=req.node_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
-            logger.error(f"Error in valve isolation: {exc}")
-            raise HTTPException(status_code=500, detail=str(exc))
+            logger.error(f"Error in valve isolation: {exc}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Не удалось выполнить анализ отключения")

@@ -29,3 +29,6 @@ itwin-api/files/word/
 itwin-api/word_reports/files/
 .env.*
 !.env.example
+
+# Архив движка (не код)
+itwin-api/sety.zip

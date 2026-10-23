@@ -295,6 +295,47 @@ def test_pt_columns_follow_desktop_g_pt():
     assert "FROM pt_out o" in rg._PT_RESULTS_SQL
 
 
+def test_pt_result_sheets_follow_desktop_g_pt_sheets_3_5_6_7():
+    # G_PT: «Расч.Нагрузки» 24 колонки, «Тепло» 29, «ТеплоГидравл.» 36, «Отключенные» 17 (+ «Расчёт» у pt_out)
+    assert len(rg.PT_LOADS_HEADERS) == 24 and rg.PT_LOADS_HEADERS[-1] == "Балансовая принадлежность"
+    assert len(rg.PT_HEAT_HEADERS) == 30 and rg.PT_HEAT_HEADERS[-2:] == ["Код источника тепла", "Расчёт"]
+    assert len(rg.PT_HEAT_HYDRAULICS_HEADERS) == 37 and rg.PT_HEAT_HYDRAULICS_HEADERS[-3].startswith("Необходимый")
+    assert len(rg.PT_DISCONNECTED_HEADERS) == 17 and rg.PT_DISCONNECTED_HEADERS[-1] == "Код источника тепла"
+    for h in (rg.PT_LOADS_HEADERS, rg.PT_HEAT_HEADERS, rg.PT_HEAT_HYDRAULICS_HEADERS, rg.PT_DISCONNECTED_HEADERS):
+        assert h[:5] == rg.PT_RESULT_HEADERS[:5]  # код, состояние, признак, узел (код схемы, наименование)
+    assert rg.PT_HEAT_HYDRAULICS_HEADERS[6:16] == rg.PT_RESULT_HEADERS[6:16]  # расходы как на «Гидравлике»
+    assert rg.PT_HEAT_HEADERS[6].startswith("Температура") and rg.PT_HEAT_HYDRAULICS_HEADERS[19].startswith("Температура")
+    # обе части consumerview, последний расчёт фрагмента, фрагменты и лимит
+    for sql in (rg._PT_LOADS_SQL, rg._PT_HEAT_SQL, rg._PT_HEAT_HYDRAULICS_SQL):
+        assert "FROM realconsumers rc" in sql and "FROM generalizedconsumers gc" in sql
+        assert "n.fileid = ANY($1::int[])" in sql and "LIMIT $2" in sql
+    for sql in (rg._PT_HEAT_SQL, rg._PT_HEAT_HYDRAULICS_SQL, rg._PT_DISCONNECTED_SQL):
+        assert "MAX(id) AS cid FROM calculation" in sql
+    assert "p.a6 + p.a7 AS a6_7" in rg._PT_HEAT_HYDRAULICS_SQL and "p.gneob" in rg._PT_HEAT_HYDRAULICS_SQL
+    assert "p.qgvz_treb" in rg._PT_HEAT_SQL and "p.qgvop_treb" not in rg._PT_HEAT_SQL
+    assert "c.consumerstateid = 2" in rg._PT_DISCONNECTED_SQL and "NOT EXISTS" in rg._PT_DISCONNECTED_SQL
+    assert "c.fileid = ANY($1::int[])" in rg._PT_DISCONNECTED_SQL and "LIMIT $2" in rg._PT_DISCONNECTED_SQL
+
+
+def test_pt_workbook_has_desktop_sheets_in_order_and_counts_only_input_rows(monkeypatch):
+    conn = FakeConn(total=3, rows=[{"id": 1, "x": "a"}, {"id": 2, "x": "b"}, {"id": 3, "x": "c"}])
+    monkeypatch.setattr(rg, "acquire_conn", _acquire(conn))
+    report = asyncio.run(rg.build_excel_report("pt", fragment_ids=[74]))
+    wb = openpyxl.load_workbook(io.BytesIO(report.content), read_only=True)
+    assert wb.sheetnames == ["Потребители реальные", "Потребители обобщённые", "Расч.Нагрузки", "Гидравлика",
+                             "Тепло", "ТеплоГидравл.", "Отключенные", "Примечание"]
+    for title, headers in (("Расч.Нагрузки", rg.PT_LOADS_HEADERS), ("Тепло", rg.PT_HEAT_HEADERS),
+                           ("ТеплоГидравл.", rg.PT_HEAT_HYDRAULICS_HEADERS),
+                           ("Отключенные", rg.PT_DISCONNECTED_HEADERS)):
+        assert list(next(wb[title].iter_rows(values_only=True))) == headers
+    # «Расч.Нагрузки» — производный от реальных + обобщённых, в счётчик строк не входит
+    assert report.rows == report.total == 6
+    assert len(list(wb["Расч.Нагрузки"].iter_rows())) == 4
+    for title in ("Тепло", "ТеплоГидравл.", "Отключенные"):
+        assert len(list(wb[title].iter_rows())) == 1
+        assert any(title in n and "расчёт не выполнен" in n for n in report.notes)
+
+
 def test_ns_columns_follow_desktop_g_ns():
     assert len(rg.NS_HEADERS) == 24 and len(rg.NS_RESULT_HEADERS) == 25  # gns «Вх.Насосы», G_NSA + расчёт
     assert rg.NS_HEADERS[1].startswith("Насосная станция") and rg.NS_HEADERS[5] == "Номер насоса"
@@ -307,19 +348,6 @@ def test_ns_columns_follow_desktop_g_ns():
     for sql in (rg._NS_ROWS_SQL, rg._NS_RESULTS_SQL):
         assert LINE_IN_FRAGMENTS_SQL in sql and "LIMIT $2" in sql
     assert "FROM pumps p" in rg._NS_ROWS_SQL and "FROM ns_out o" in rg._NS_RESULTS_SQL
-
-
-def test_pt_workbook_has_desktop_sheets_and_counts_both_consumer_kinds(monkeypatch):
-    conn = FakeConn(total=2, rows=[{"id": 1, "x": "a\x01b"}, {"id": 2, "x": "c"}])
-    monkeypatch.setattr(rg, "acquire_conn", _acquire(conn))
-    report = asyncio.run(rg.build_excel_report("pt", fragment_ids=[74]))
-    wb = openpyxl.load_workbook(io.BytesIO(report.content), read_only=True)
-    assert wb.sheetnames == ["Потребители реальные", "Потребители обобщённые", "Гидравлика", "Примечание"]
-    assert list(next(wb["Гидравлика"].iter_rows(values_only=True))) == rg.PT_RESULT_HEADERS
-    assert list(next(wb["Потребители реальные"].iter_rows(values_only=True))) == rg.PT_REAL_HEADERS
-    assert list(wb["Потребители реальные"].iter_rows(values_only=True))[1] == (1, "ab")  # \x01 вычищен
-    assert (report.rows, report.total) == (4, 4)  # реальные + обобщённые; лист расчёта не считается
-    assert any("Гидравлика" in n and "расчёт не выполнен" in n for n in report.notes)
 
 
 def test_ns_workbook_has_results_sheet(monkeypatch):

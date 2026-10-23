@@ -335,7 +335,7 @@ class ThrottlingSheetRequest(BaseModel):
 
 
 @router.post("/api/calc/orifice-plate")
-async def api_calc_orifice_plate(req: OrificePlateRequest):
+async def api_calc_orifice_plate(req: OrificePlateRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     try:
         return calculate_orifice_plate_full(
             flow_g=req.flow_g,
@@ -353,7 +353,7 @@ async def api_calc_orifice_plate(req: OrificePlateRequest):
 
 
 @router.post("/api/calc/elevator-nozzle")
-async def api_calc_elevator_nozzle(req: ElevatorNozzleRequest):
+async def api_calc_elevator_nozzle(req: ElevatorNozzleRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     try:
         return calculate_elevator_parameters(
             q_heating_gcal=req.q_heating_gcal,
@@ -394,7 +394,7 @@ class ElevatorEngineRequest(BaseModel):
 
 
 @router.post("/api/calc/gvs-circulation-diaphragm")
-async def api_calc_gvs_circulation(req: GvsCirculationRequest):
+async def api_calc_gvs_circulation(req: GvsCirculationRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     """Ограничительная диафрагма циркуляционной линии открытой ГВС (движок sety, drvary1 b39–b41)."""
     try:
         return calculate_gvs_circulation_diaphragm(**req.model_dump())
@@ -403,7 +403,7 @@ async def api_calc_gvs_circulation(req: GvsCirculationRequest):
 
 
 @router.post("/api/calc/elevator-engine")
-async def api_calc_elevator_engine(req: ElevatorEngineRequest):
+async def api_calc_elevator_engine(req: ElevatorEngineRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     """Сопло элеватора и диафрагма перед соплом по напорам узла (движок sety, drvary1 b7–b9, b21–b26)."""
     try:
         return calculate_elevator_engine(**req.model_dump())
@@ -412,7 +412,7 @@ async def api_calc_elevator_engine(req: ElevatorEngineRequest):
 
 
 @router.post("/api/calc/throttling-sheet")
-async def api_calc_throttling_sheet(req: ThrottlingSheetRequest):
+async def api_calc_throttling_sheet(req: ThrottlingSheetRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     try:
         excel_bytes = generate_throttling_excel(data)

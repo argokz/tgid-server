@@ -290,7 +290,7 @@ async def get_piezometer_path(start: int, end: int, calculation_id: Optional[int
         raise
     except Exception as e:
         logger.error(f"Error fetching piezometer path: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Не удалось построить пьезометрический путь")
 
 
 class RouteRequest(BaseModel):
@@ -300,7 +300,7 @@ class RouteRequest(BaseModel):
 
 
 @router.post("/piezometer/route")
-async def build_piezometer_route(body: RouteRequest):
+async def build_piezometer_route(body: RouteRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     """Маршрут через последовательность узлов (waypoints), как выделение направления в десктопе."""
     pool = get_pool()
     try:
@@ -330,7 +330,7 @@ async def build_piezometer_route(body: RouteRequest):
         raise
     except Exception as e:
         logger.error(f"Error building piezometer route: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Не удалось построить маршрут пьезометра")
 
 
 class PiezometerExcelRequest(BaseModel):
@@ -352,7 +352,9 @@ class PiezometerExcelRequest(BaseModel):
 
 @router.post("/api/piezometer/excel")
 @router.post("/piezometer/excel")
-async def api_download_piezometer_excel(body: PiezometerExcelRequest):
+async def api_download_piezometer_excel(
+    body: PiezometerExcelRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]
+):
     """Экспорт пьезометрического профиля и технологической таблицы в Excel (openpyxl)."""
     pool = get_pool()
     try:
@@ -464,7 +466,7 @@ async def api_download_piezometer_excel(body: PiezometerExcelRequest):
         raise
     except Exception as e:
         logger.error(f"Error generating piezometer excel: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Не удалось сформировать Excel пьезометра")
 
 
 # ---------------------------------------------------------------------------

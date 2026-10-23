@@ -7,6 +7,7 @@ import uuid
 import time
 import locale
 import logging
+from typing import Optional
 from celery import Celery
 from dotenv import load_dotenv
 
@@ -68,17 +69,46 @@ ALLOWED_SETY_FLAGS = frozenset({
 
 _NUMBER_RE = re.compile(r"^-\d+(\.\d+)?$")
 
+# Допустимые диапазоны числовых флагов: sety проверяет Tn только против температурного
+# графика уже внутри расчёта (w.py, exit(1)), а -iter без ограничения растягивает расчёт.
+SETY_NUMERIC_RANGES: dict[str, tuple[float, float, type]] = {
+    "-Tn": (-60.0, 40.0, float),
+    "-iter": (1, 200, int),
+    "-fileID": (1, 10**9, int),
+}
+
+# Таймаут одного запуска ww.py (секунды); у sety есть циклы без ограничения числа итераций.
+SETY_TIMEOUT_S = int(os.getenv("SETY_TIMEOUT_S", "3600"))
+
+
+def _check_numeric_flag(flag: str, value: str) -> None:
+    low, high, kind = SETY_NUMERIC_RANGES[flag]
+    try:
+        number = kind(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Параметр {flag}: ожидается число, получено «{value}»") from None
+    if not (low <= number <= high):
+        raise ValueError(f"Параметр {flag}={value} вне допустимого диапазона {low}…{high}")
+
 
 def validate_sety_params(params: str) -> list[str]:
-    """Разбирает строку параметров sety; ValueError для зарезервированных и неизвестных флагов."""
+    """Разбирает строку параметров sety; ValueError для зарезервированных и неизвестных флагов
+    и для числовых значений вне диапазона (SETY_NUMERIC_RANGES)."""
     try:
         tokens = shlex.split(params or "")
     except ValueError as exc:
         raise ValueError(f"Не удалось разобрать параметры расчёта: {exc}") from exc
+    pending_numeric: Optional[str] = None
     for token in tokens:
         if not token.startswith("-") or _NUMBER_RE.match(token):
-            continue  # значение флага (в т.ч. отрицательное число: -Tn -25)
-        raw = token.split("=", 1)[0]
+            # значение флага (в т.ч. отрицательное число: -Tn -25)
+            if pending_numeric:
+                _check_numeric_flag(pending_numeric, token)
+                pending_numeric = None
+            continue
+        if pending_numeric:
+            raise ValueError(f"Параметр {pending_numeric}: не задано значение")
+        raw, _, inline_value = token.partition("=")
         flag = raw.lower()
         if flag.startswith("--"):
             flag = flag[1:]
@@ -86,6 +116,13 @@ def validate_sety_params(params: str) -> list[str]:
             raise ValueError(f"Параметр {flag} задаётся сервером и не может быть передан в расчёт")
         if raw not in ALLOWED_SETY_FLAGS:
             raise ValueError(f"Неизвестный параметр расчёта: {raw}")
+        if raw in SETY_NUMERIC_RANGES:
+            if inline_value:
+                _check_numeric_flag(raw, inline_value)
+            else:
+                pending_numeric = raw
+    if pending_numeric:
+        raise ValueError(f"Параметр {pending_numeric}: не задано значение")
     return tokens
 
 
@@ -245,7 +282,7 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
     out_file_path = cmd[cmd.index("-out_file") + 1]
     log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"ww_output_{request_id}_{label}.log")
     try:
-        result = subprocess.run(cmd, capture_output=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, check=True, timeout=SETY_TIMEOUT_S)
         output = _redact(_decode_process_text(result.stdout))
         with open(log_file_path, "w", encoding="utf-8") as log_file:
             log_file.write(output or "")
@@ -259,6 +296,10 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
             logger.info(po_message)
             output = f"{output or ''}\n{po_message}\n"
         return {"status": "success", "output": output}
+    except subprocess.TimeoutExpired as e:
+        error_message = f"Расчёт прерван: превышен лимит времени {SETY_TIMEOUT_S} с (SETY_TIMEOUT_S)"
+        logger.error(f"{error_message}; {label}")
+        return {"status": "error", "output": _redact(_decode_process_text(e.stdout or b"")), "error": error_message}
     except subprocess.CalledProcessError as e:
         error_message = _redact(_decode_process_text(e.stderr)).strip() or "Неизвестная ошибка"
         logger.error(f"Ошибка запуска ww.py: {error_message}")
@@ -359,7 +400,8 @@ def _save_protocol(*, request_id: str, task_id: str | None, run: dict, file_id: 
         return None
 
 
-@celery_app.task(bind=True, name="run_sety_calculation")
+@celery_app.task(bind=True, name="run_sety_calculation",
+                 soft_time_limit=SETY_TIMEOUT_S * 50 + 60, time_limit=SETY_TIMEOUT_S * 50 + 120)
 def run_sety_calculation(self, params: str, request_id: str = None, dross: bool = True,
                          file_ids: list[int] | None = None):
     """Расчёт sety.
