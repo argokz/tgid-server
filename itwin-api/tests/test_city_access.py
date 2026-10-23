@@ -57,7 +57,7 @@ def _bearer(token):
 
 
 def test_catalog_default_and_custom(monkeypatch):
-    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent", "karaganda"]
+    assert [c["code"] for c in cities.cities_catalog()] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent", "karaganda", "ekibastuz", "atbasar", "kokshetau", "shakhtinsk"]
     assert cities.cities_catalog()[1] == {"code": "astana", "label": "Астана", "path": "/tgid/astana/"}
     monkeypatch.setenv("TGID_CITIES", "almaty:Алматы, shymkent:Шымкент:/shym/, bad code:x, almaty:дубль")
     assert cities.cities_catalog() == [
@@ -183,7 +183,7 @@ def test_admin_list_has_catalog(client, monkeypatch):
 
     monkeypatch.setattr(admin, "list_users", fake_list)
     body = client.get("/api/v1/admin/users", headers=_bearer(master_token())).json()
-    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent", "karaganda"]
+    assert body["current_city"] == "astana" and [c["code"] for c in body["cities_catalog"]] == ["almaty", "astana", "shatura", "taraz", "aktobe", "shymkent", "karaganda", "ekibastuz", "atbasar", "kokshetau", "shakhtinsk"]
 
 
 @pytest.mark.asyncio
@@ -250,6 +250,10 @@ def test_shatura_city_and_workspace(monkeypatch):
     ("aktobegid", "aktobe", "Актобе", "AktobeGIS"),
     ("shymkentgid", "shymkent", "Шымкент", "ShymkentGIS"),
     ("karagandagid", "karaganda", "Караганда", "KaragandaGIS"),
+    ("ekibastuzgid", "ekibastuz", "Экибастуз", "EkibastuzGIS"),
+    ("atbasargid", "atbasar", "Атбасар", "AtbasarGIS"),
+    ("kokshetaugid", "kokshetau", "Кокшетау", "KokshetauGIS"),
+    ("shahtinskgid", "shakhtinsk", "Шахтинск", "ShakhtinskGIS"),
 ])
 def test_kz_cities_by_db_name_and_workspace(monkeypatch, db, code, label, ws):
     monkeypatch.delenv("TGID_CITY", raising=False)

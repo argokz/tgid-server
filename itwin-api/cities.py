@@ -17,8 +17,10 @@ import os
 import re
 from typing import Iterable, Optional
 
-DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент,karaganda:Караганда"
+DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент,karaganda:Караганда,ekibastuz:Экибастуз,atbasar:Атбасар,kokshetau:Кокшетау,shakhtinsk:Шахтинск"
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
+# база названа иначе, чем код города: shahtinskgid → shakhtinsk
+_DB_CITY_ALIASES = {"shahtinsk": "shakhtinsk"}
 
 
 class CityError(ValueError):
@@ -53,7 +55,8 @@ def current_city() -> str:
         return explicit
     db = os.getenv("DB_NAME", "").strip().lower()
     m = re.match(r"^([a-z]+?)gid", db)
-    return m.group(1) if m else db
+    code = m.group(1) if m else db
+    return _DB_CITY_ALIASES.get(code, code)
 
 
 def city_label(code: Optional[str] = None) -> str:
