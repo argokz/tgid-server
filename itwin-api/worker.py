@@ -559,3 +559,31 @@ def build_file_job(self, kind: str, params: dict, user: str = ""):
     return {"status": "success", "kind": kind, "filename": meta["filename"], "size": meta["size"],
             "media_type": meta["media_type"], "ttl": meta["ttl"],
             "elapsed_s": round(time.monotonic() - started, 2)}
+
+
+@celery_app.task(bind=True, name="run_wear_index", soft_time_limit=1800, time_limit=1900)
+def run_wear_index(self, fragment_ids: list[int] | None = None, user: str = "", name: str | None = None):
+    """Индекс износа участков и приоритет ремонта (database/wear.py): шапка в calculation_iznos,
+    строки в wear_out той же БД (DB_* окружения воркера)."""
+    import asyncio
+
+    import asyncpg
+
+    from database.wear import WearError, run
+
+    async def _go():
+        conn = await asyncpg.connect(
+            host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT") or 5432), user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"), database=os.getenv("DB_NAME"), timeout=60,
+        )
+        try:
+            return await run(conn, fragment_ids=fragment_ids, user=user, name=name)
+        finally:
+            await conn.close()
+
+    self.update_state(state="PROGRESS", meta={"message": "Расчёт износа участков"})
+    try:
+        summary = asyncio.run(_go())
+    except WearError as e:
+        return {"status": "error", "message": "Ошибка расчёта износа", "error": _redact(str(e))}
+    return {"status": "success", "message": f"Износ рассчитан: участков {summary['lines']}", **summary}

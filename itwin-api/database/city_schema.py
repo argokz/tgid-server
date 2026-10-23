@@ -70,6 +70,9 @@ COMMON: tuple[Item, ...] = (
          "select to_regclass('public.calculation_protocol') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'calculation_protocol' and column_name = 'ai_summary')",
          (_m("20261023_calculation_protocol_ai_summary.sql"),)),
+    Item("таблицы calculation_iznos и wear_out",
+         "select to_regclass('public.wear_out') is not null and to_regclass('public.calculation_iznos') is not null",
+         (_m("20261023_wear_out.sql"),)),
     Item("таблица card_template",
          "select to_regclass('public.card_template') is not null",
          (_m("20261017_card_template.sql"),)),

@@ -31,6 +31,7 @@ from routers.pts import router as pts_router
 from routers.registries import router as registries_router
 from routers.reports import router as reports_router
 from routers.topology import router as topology_router
+from routers.wear import router as wear_router
 
 all_routers = [
     core_router,
@@ -59,4 +60,5 @@ all_routers = [
     admin_router,
     activity_log_router,
     ai_router,
+    wear_router,
 ]

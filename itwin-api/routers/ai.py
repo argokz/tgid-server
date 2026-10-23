@@ -9,7 +9,7 @@ from database.tu_connection import DEFAULT_RADIUS_M, MAX_RADIUS_M
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from ai import calc_protocol, config, tu_recommend
+from ai import calc_protocol, config, tu_recommend, wear_plan
 from ai.client import AiError, require_ai
 from ai.schemas import AiStatus
 from auth import AuthUser, require_permission, require_roles
@@ -18,7 +18,7 @@ from database.connect import acquire_conn
 router = APIRouter(tags=["ai"])
 
 # Инструменты, которые уже есть в этом API (пополняются этапами 3–6 плана)
-AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend"]
+AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan"]
 
 
 @router.get("/api/v1/ai/status", response_model=AiStatus)
@@ -92,5 +92,22 @@ async def ai_tu_recommend(
                 load_gcal_h=body.load_gcal_h, floors=body.floors, area_m2=body.area_m2,
                 radius_m=body.radius_m, username=user.username,
             )
+    except AiError as exc:
+        raise exc.to_http() from exc
+
+
+class WearPlanRequest(BaseModel):
+    calculation_id: Optional[int] = Field(None, ge=1, description="Расчёт износа; пусто — последний")
+    fragment_id: Optional[int] = Field(None, ge=1)
+    top: int = Field(40, ge=5, le=40, description="Сколько участков с наибольшим приоритетом передать модели")
+
+
+@router.post("/api/v1/ai/wear/plan", dependencies=[Depends(require_ai)])
+async def ai_wear_plan(body: WearPlanRequest, user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Пояснительная записка к плану ремонтов по расчёту износа: группы участков, действия, срочность."""
+    try:
+        async with acquire_conn() as conn:
+            return await wear_plan.plan(conn, calculation_id=body.calculation_id, fragment_id=body.fragment_id,
+                                        top=body.top, username=user.username)
     except AiError as exc:
         raise exc.to_http() from exc
