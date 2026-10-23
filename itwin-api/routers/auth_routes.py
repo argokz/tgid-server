@@ -38,6 +38,7 @@ from auth import (
     verify_master_password,
     verify_password,
 )
+from ai import config as ai_config
 from auth_models import AuthConfigResponse, ChangePasswordRequest, LoginRequest, MeResponse, TokenResponse
 
 logger = get_logger(__name__)
@@ -159,6 +160,7 @@ async def auth_config():
         topology_mutations_enabled=_topology_mutations_enabled(),
         city=city_access.current_city(),
         city_label=city_access.city_label(),
+        ai_enabled=ai_config.enabled(),
     )
 
 

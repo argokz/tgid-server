@@ -29,6 +29,7 @@ class AuthConfigResponse(BaseModel):
     topology_mutations_enabled: bool
     city: str = ""  # код города этого API (cities.py)
     city_label: str = ""
+    ai_enabled: bool = False  # помощник ИИ (ai/config.py: AI_ENABLED + ключ)
 
 
 class CityItem(BaseModel):

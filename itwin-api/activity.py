@@ -41,6 +41,7 @@ ACTION_LABELS: dict[str, str] = {
     "REFS": "Справочники",
     "EDIT": "Изменение данных",
     "REQUEST": "Прочее действие",
+    "AI": "Запрос к ИИ",
 }
 
 # (метод или *, регулярка пути) → действие; первое совпадение. Пути — без префикса /tgid/<город>/map-api.
@@ -71,6 +72,7 @@ _READONLY_POST = re.compile(
     r"^/api/(v1/)?topology/(convert-point|versions)|^/(api/)?piezometer/route|^/api/analysis/|^/api/calc/"
     r"|^/api/v1/card-edit/batch/(card|preview)|^/api/v1/card-templates/\d+/preview|^/api/v1/group-setters/[^/]+/preview"
     r"|^/api/(v1/)?import/inspect|^/api/v1/calculations/protocols/locate|^/api/v1/file-jobs$"
+    r"|^/api/v1/ai/"  # вызовы ИИ пишет ai/usage.py с токенами
 )
 # предпросмотр: «"dry_run": true» в теле или dry_run=true в адресе — не действие
 _DRY_RUN = re.compile(rb'"dry_run"\s*:\s*true')
