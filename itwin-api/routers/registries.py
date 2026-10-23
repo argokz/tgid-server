@@ -16,6 +16,7 @@ from database.alseko import (
     get_unassigned_alseko_buildings,
 )
 from database.connect import acquire_conn
+from database.tu_connection import DEFAULT_RADIUS_M, MAX_RADIUS_M, connection_candidates, estimate_load
 from database.corrosion_indicators import (
     get_corrosion_indicator,
     get_corrosion_indicator_lookups,
@@ -194,6 +195,32 @@ async def technical_condition_balance(year: Optional[int] = Query(None, ge=1990,
     """Свод/баланс ТУ по источникам за год (эталон gid6 tu.sql, упрощённый PG)."""
     async with acquire_conn() as conn:
         return await get_technical_condition_balance(conn, year=year)
+
+
+@router.get("/api/v1/technical-conditions/connection-candidates")
+async def technical_condition_connection_candidates(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    lon: float = Query(..., ge=-180, le=180), lat: float = Query(..., ge=-90, le=90),
+    load_gcal_h: Optional[float] = Query(None, ge=0, le=1000, description="Нагрузка заявки, Гкал/ч"),
+    radius_m: int = Query(DEFAULT_RADIUS_M, ge=20, le=MAX_RADIUS_M),
+    limit: int = Query(8, ge=1, le=30),
+    calculation_id: Optional[int] = Query(None, ge=1),
+):
+    """Точки подключения рядом с объектом: узлы, участок, режим по последнему расчёту, балл и причины."""
+    async with acquire_conn() as conn:
+        return await connection_candidates(conn, lon=lon, lat=lat, load_gcal_h=load_gcal_h,
+                                           radius_m=radius_m, limit=limit, calculation_id=calculation_id)
+
+
+@router.get("/api/v1/technical-conditions/load-estimate")
+async def technical_condition_load_estimate(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    floors: Optional[int] = Query(None, ge=1, le=100),
+    area_m2: Optional[float] = Query(None, gt=0, le=1_000_000),
+):
+    """Оценка нагрузки нового здания по аналогам АЛСЕКО (этажность, площадь застройки)."""
+    async with acquire_conn() as conn:
+        return await estimate_load(conn, floors=floors, area_m2=area_m2)
 
 
 @router.get("/api/technical-conditions")

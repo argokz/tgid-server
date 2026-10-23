@@ -184,6 +184,8 @@ async def get_technical_condition_balance(
             - _f(d["contract_total"])
             - _f(d["load_increase_total"])
         )
+        # дефицит мощности источника с учётом перспективных ТУ (этап 4 ИИ-плана)
+        d["deficit"] = d["balance_with_prospective"] < 0
         items.append(d)
 
     # Источники без ТУ/мощности не шумим: оставляем строки с хоть какими-то данными
@@ -222,6 +224,7 @@ async def get_technical_condition_balance(
     ]
     totals = {k: sum(_f(i.get(k)) for i in items) for k in keys}
     totals["tu_count"] = int(totals["tu_count"])
+    totals["deficit_sources"] = sum(1 for i in items if i["deficit"])
 
     return {
         "year": year,
