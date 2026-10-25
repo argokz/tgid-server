@@ -248,12 +248,32 @@ async def get_corrosion_indicators(
         page_size,
         (page - 1) * page_size,
     )
+    # Счётчики по этапам при тех же фильтрах, кроме этапа — плитки-фильтры журнала в вебе
+    counts_where, counts_values = _build_filters(
+        phase_id=None,
+        rod_state_id=rod_state_id,
+        process_mark_id=process_mark_id,
+        water_aggressiveness_id=water_aggressiveness_id,
+        season_year=season_year,
+        date_from=date_from,
+        date_to=date_to,
+        line_id=line_id,
+        node_id=node_id,
+        search=search,
+    )
+    count_rows = await conn.fetch(
+        "SELECT COALESCE(latest.sostoyanie, indicator.sostoyanie) AS state_id, count(DISTINCT indicator.id) AS count "
+        + CORROSION_FROM + counts_where + " GROUP BY COALESCE(latest.sostoyanie, indicator.sostoyanie)",
+        *counts_values,
+    )
+
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
+        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
     }
 
 

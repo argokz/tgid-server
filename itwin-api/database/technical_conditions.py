@@ -160,12 +160,34 @@ async def get_technical_conditions(
         page_size,
         (page - 1) * page_size,
     )
+    # Счётчики по состояниям договора при тех же фильтрах, кроме состояния — плитки-фильтры реестра в вебе
+    counts_where, counts_values = _build_filters(
+        state_id=None,
+        issue_year=issue_year,
+        heat_source=heat_source,
+        district=district,
+        linked=linked,
+        date_from=date_from,
+        date_to=date_to,
+        building_id=building_id,
+        pipe_id=pipe_id,
+        search=search,
+    )
+    count_rows = await conn.fetch(
+        """SELECT tu.sostoyanie_dogovora AS state_id, count(*) AS count
+             FROM tehnicheskie_usloviya tu
+             LEFT JOIN zdaniya_tu building ON building.id=tu.zdanie"""
+        + counts_where + " GROUP BY tu.sostoyanie_dogovora",
+        *counts_values,
+    )
+
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
+        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
     }
 
 
