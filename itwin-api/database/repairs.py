@@ -199,12 +199,33 @@ async def get_repairs(
         """,
         *query_values,
     )
+    # Счётчики по состояниям при тех же фильтрах, кроме состояния — плитки-фильтры журнала в вебе
+    counts_where, counts_values = _build_filters(
+        state_id=None,
+        repair_type_id=repair_type_id,
+        category_id=category_id,
+        responsible_id=responsible_id,
+        approved=approved,
+        date_from=date_from,
+        date_to=date_to,
+        line_id=line_id,
+        node_id=node_id,
+        search=search,
+    )
+    count_rows = await conn.fetch(
+        """SELECT repair.stateid AS state_id, count(*) AS count FROM remont2 repair
+           LEFT JOIN nachalniki_uchastkov responsible ON responsible.id=repair.responsibleid"""
+        + counts_where + " GROUP BY repair.stateid",
+        *counts_values,
+    )
+
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
+        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
     }
 
 
