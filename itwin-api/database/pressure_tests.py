@@ -1,7 +1,12 @@
 from datetime import date
 from typing import Any, Optional
 
+import asyncio
+import logging
+
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 PRESSURE_TEST_SUMMARY_SELECT = """
@@ -180,6 +185,7 @@ async def get_pressure_tests(
     line_id: Optional[int] = None,
     node_id: Optional[int] = None,
     search: Optional[str] = None,
+    with_counts: bool = False,
 ) -> dict[str, Any]:
     where_sql, values = _build_filters(
         state_id=state_id,
@@ -212,33 +218,41 @@ async def get_pressure_tests(
         *query_values,
     )
     # Счётчики по состояниям при тех же фильтрах, кроме состояния — плитки-фильтры журнала в вебе
-    counts_where, counts_values = _build_filters(
-        state_id=None,
-        test_type_id=test_type_id,
-        heat_source_id=heat_source_id,
-        responsible_id=responsible_id,
-        approved=approved,
-        date_from=date_from,
-        date_to=date_to,
-        line_id=line_id,
-        node_id=node_id,
-        search=search,
-    )
-    count_rows = await conn.fetch(
-        """SELECT test.sostoyanie_opresid AS state_id, count(*) AS count FROM opres test
-           LEFT JOIN istochniki_tepla heat_source ON heat_source.id=test.istochnik_tepla
-           LEFT JOIN nachalniki_uchastkov responsible ON responsible.id=test.responsibleid"""
-        + counts_where + " GROUP BY test.sostoyanie_opresid",
-        *counts_values,
-    )
+    # Только по запросу веба (with_counts): отчёты зовут ту же функцию, им счётчики не нужны.
+    # Сбой этого запроса не должен ронять список — поле необязательное, веб без него прячет плитки
+    state_counts = None
+    if with_counts:
+        try:
+            counts_where, counts_values = _build_filters(
+                state_id=None,
+                test_type_id=test_type_id,
+                heat_source_id=heat_source_id,
+                responsible_id=responsible_id,
+                approved=approved,
+                date_from=date_from,
+                date_to=date_to,
+                line_id=line_id,
+                node_id=node_id,
+                search=search,
+            )
+            count_rows = await conn.fetch(
+                """SELECT test.sostoyanie_opresid AS state_id, count(*) AS count FROM opres test
+                   LEFT JOIN istochniki_tepla heat_source ON heat_source.id=test.istochnik_tepla
+                   LEFT JOIN nachalniki_uchastkov responsible ON responsible.id=test.responsibleid"""
+                + counts_where + " GROUP BY test.sostoyanie_opresid",
+                *counts_values,
+            )
 
+            state_counts = [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows]
+        except (asyncpg.PostgresError, asyncio.TimeoutError):
+            logger.warning("get_pressure_tests: счётчики для плиток не посчитаны", exc_info=True)
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
-        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
+        "state_counts": state_counts,
     }
 
 

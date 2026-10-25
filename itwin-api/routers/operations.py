@@ -41,7 +41,7 @@ async def pressure_test_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_pressure_tests(
-            conn, page=page, page_size=page_size, state_id=state_id,
+            conn, with_counts=True, page=page, page_size=page_size, state_id=state_id,
             test_type_id=test_type_id, heat_source_id=heat_source_id,
             responsible_id=responsible_id, approved=approved,
             date_from=date_from, date_to=date_to, line_id=line_id,
@@ -80,7 +80,7 @@ async def repair_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_repairs(
-            conn, page=page, page_size=page_size, state_id=state_id,
+            conn, with_counts=True, page=page, page_size=page_size, state_id=state_id,
             repair_type_id=repair_type_id, category_id=category_id,
             responsible_id=responsible_id, approved=approved,
             date_from=date_from, date_to=date_to, line_id=line_id,
@@ -120,7 +120,7 @@ async def inspection_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_inspections(
-            conn,
+            conn, with_counts=True,
             page=page,
             page_size=page_size,
             responsible_id=responsible_id,
@@ -166,7 +166,7 @@ async def shurf_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_shurfs(
-            conn,
+            conn, with_counts=True,
             page=page,
             page_size=page_size,
             purpose_id=purpose_id,
@@ -213,7 +213,7 @@ async def defect_journal(
 
     async with acquire_conn() as conn:
         return await get_defects(
-            conn,
+            conn, with_counts=True,
             page=page,
             page_size=page_size,
             source_id=source_id,

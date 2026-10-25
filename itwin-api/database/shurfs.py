@@ -1,7 +1,12 @@
 from datetime import date
 from typing import Any, Optional
 
+import asyncio
+import logging
+
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 SHURF_SUMMARY_SELECT = """
@@ -138,6 +143,7 @@ async def get_shurfs(
     line_id: Optional[int] = None,
     node_id: Optional[int] = None,
     search: Optional[str] = None,
+    with_counts: bool = False,
 ) -> dict[str, Any]:
     where_sql, values = _build_filters(
         purpose_id=purpose_id,
@@ -166,30 +172,38 @@ async def get_shurfs(
         *query_values,
     )
     # Счётчики по состояниям при тех же фильтрах, кроме состояния — плитки-фильтры журнала в вебе
-    counts_where, counts_values = _build_filters(
-        purpose_id=purpose_id,
-        state_id=None,
-        approved=approved,
-        date_from=date_from,
-        date_to=date_to,
-        line_id=line_id,
-        node_id=node_id,
-        search=search,
-    )
-    count_rows = await conn.fetch(
-        "SELECT s.sostoyanie_shurfaid AS state_id, count(*) AS count"
-        " FROM shurfy s LEFT JOIN ulitsy street ON street.id=s.ulicaid"
-        + counts_where + " GROUP BY s.sostoyanie_shurfaid",
-        *counts_values,
-    )
+    # Только по запросу веба (with_counts): отчёты зовут ту же функцию, им счётчики не нужны.
+    # Сбой этого запроса не должен ронять список — поле необязательное, веб без него прячет плитки
+    state_counts = None
+    if with_counts:
+        try:
+            counts_where, counts_values = _build_filters(
+                purpose_id=purpose_id,
+                state_id=None,
+                approved=approved,
+                date_from=date_from,
+                date_to=date_to,
+                line_id=line_id,
+                node_id=node_id,
+                search=search,
+            )
+            count_rows = await conn.fetch(
+                "SELECT s.sostoyanie_shurfaid AS state_id, count(*) AS count"
+                " FROM shurfy s LEFT JOIN ulitsy street ON street.id=s.ulicaid"
+                + counts_where + " GROUP BY s.sostoyanie_shurfaid",
+                *counts_values,
+            )
 
+            state_counts = [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows]
+        except (asyncpg.PostgresError, asyncio.TimeoutError):
+            logger.warning("get_shurfs: счётчики для плиток не посчитаны", exc_info=True)
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
-        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
+        "state_counts": state_counts,
     }
 
 

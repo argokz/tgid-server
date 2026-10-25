@@ -1,7 +1,12 @@
 from datetime import date
 from typing import Any, Optional
 
+import asyncio
+import logging
+
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 INSPECTION_SUMMARY_SELECT = """
@@ -157,6 +162,7 @@ async def get_inspections(
     line_id: Optional[int] = None,
     node_id: Optional[int] = None,
     search: Optional[str] = None,
+    with_counts: bool = False,
 ) -> dict[str, Any]:
     where_sql, values = _build_filters(
         responsible_id=responsible_id,
@@ -188,37 +194,45 @@ async def get_inspections(
     )
     # Счётчики для плиток-фильтров веба при тех же условиях, кроме самих признаков: сколько осмотров
     # с выявленными нарушениями и сколько с результатами по участкам
-    counts_where, counts_values = _build_filters(
-        responsible_id=responsible_id,
-        has_defects=None,
-        has_inspected_sections=None,
-        date_from=date_from,
-        date_to=date_to,
-        line_id=line_id,
-        node_id=node_id,
-        search=search,
-    )
-    facets = await conn.fetchrow(
-        """SELECT
-               count(*) FILTER (WHERE EXISTS (SELECT 1 FROM defect d WHERE d.osmotrid=inspection.id))::int AS with_defects,
-               count(*) FILTER (WHERE EXISTS (
-                   SELECT 1 FROM faktory_riska_truboprovoda risk
-                   WHERE risk.objid=inspection.id AND risk.obj_type_faktory_riskaid=2
-               ))::int AS with_results
-           FROM osmotr inspection
-           LEFT JOIN nachalniki_uchastkov responsible
-             ON responsible.id=inspection.otvetstvennoe_lico_id"""
-        + counts_where,
-        *counts_values,
-    )
+    # Только по запросу веба (with_counts): отчёты зовут ту же функцию, им счётчики не нужны.
+    # Сбой этого запроса не должен ронять список — поле необязательное, веб без него прячет плитки
+    facet_counts = None
+    if with_counts:
+        try:
+            counts_where, counts_values = _build_filters(
+                responsible_id=responsible_id,
+                has_defects=None,
+                has_inspected_sections=None,
+                date_from=date_from,
+                date_to=date_to,
+                line_id=line_id,
+                node_id=node_id,
+                search=search,
+            )
+            facets = await conn.fetchrow(
+                """SELECT
+                       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM defect d WHERE d.osmotrid=inspection.id))::int AS with_defects,
+                       count(*) FILTER (WHERE EXISTS (
+                           SELECT 1 FROM faktory_riska_truboprovoda risk
+                           WHERE risk.objid=inspection.id AND risk.obj_type_faktory_riskaid=2
+                       ))::int AS with_results
+                   FROM osmotr inspection
+                   LEFT JOIN nachalniki_uchastkov responsible
+                     ON responsible.id=inspection.otvetstvennoe_lico_id"""
+                + counts_where,
+                *counts_values,
+            )
 
+            facet_counts = {"with_defects": facets["with_defects"], "with_results": facets["with_results"]}
+        except (asyncpg.PostgresError, asyncio.TimeoutError):
+            logger.warning("get_inspections: счётчики для плиток не посчитаны", exc_info=True)
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
-        "facet_counts": {"with_defects": facets["with_defects"], "with_results": facets["with_results"]},
+        "facet_counts": facet_counts,
     }
 
 

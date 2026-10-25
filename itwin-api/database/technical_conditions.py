@@ -1,7 +1,12 @@
 from datetime import date
 from typing import Any, Optional
 
+import asyncio
+import logging
+
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 TECHNICAL_CONDITION_SUMMARY_SELECT = """
@@ -129,6 +134,7 @@ async def get_technical_conditions(
     building_id: Optional[int] = None,
     pipe_id: Optional[int] = None,
     search: Optional[str] = None,
+    with_counts: bool = False,
 ) -> dict[str, Any]:
     where_sql, values = _build_filters(
         state_id=state_id,
@@ -161,33 +167,41 @@ async def get_technical_conditions(
         (page - 1) * page_size,
     )
     # Счётчики по состояниям договора при тех же фильтрах, кроме состояния — плитки-фильтры реестра в вебе
-    counts_where, counts_values = _build_filters(
-        state_id=None,
-        issue_year=issue_year,
-        heat_source=heat_source,
-        district=district,
-        linked=linked,
-        date_from=date_from,
-        date_to=date_to,
-        building_id=building_id,
-        pipe_id=pipe_id,
-        search=search,
-    )
-    count_rows = await conn.fetch(
-        """SELECT tu.sostoyanie_dogovora AS state_id, count(*) AS count
-             FROM tehnicheskie_usloviya tu
-             LEFT JOIN zdaniya_tu building ON building.id=tu.zdanie"""
-        + counts_where + " GROUP BY tu.sostoyanie_dogovora",
-        *counts_values,
-    )
+    # Только по запросу веба (with_counts): отчёты зовут ту же функцию, им счётчики не нужны.
+    # Сбой этого запроса не должен ронять список — поле необязательное, веб без него прячет плитки
+    state_counts = None
+    if with_counts:
+        try:
+            counts_where, counts_values = _build_filters(
+                state_id=None,
+                issue_year=issue_year,
+                heat_source=heat_source,
+                district=district,
+                linked=linked,
+                date_from=date_from,
+                date_to=date_to,
+                building_id=building_id,
+                pipe_id=pipe_id,
+                search=search,
+            )
+            count_rows = await conn.fetch(
+                """SELECT tu.sostoyanie_dogovora AS state_id, count(*) AS count
+                     FROM tehnicheskie_usloviya tu
+                     LEFT JOIN zdaniya_tu building ON building.id=tu.zdanie"""
+                + counts_where + " GROUP BY tu.sostoyanie_dogovora",
+                *counts_values,
+            )
 
+            state_counts = [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows]
+        except (asyncpg.PostgresError, asyncio.TimeoutError):
+            logger.warning("get_technical_conditions: счётчики для плиток не посчитаны", exc_info=True)
     return {
         "items": [dict(row) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
         "pages": (total + page_size - 1) // page_size if total else 0,
-        "state_counts": [{"state_id": row["state_id"], "count": row["count"]} for row in count_rows],
+        "state_counts": state_counts,
     }
 
 

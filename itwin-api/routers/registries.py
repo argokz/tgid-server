@@ -161,7 +161,7 @@ async def corrosion_indicator_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_corrosion_indicators(
-            conn, page=page, page_size=page_size, phase_id=phase_id,
+            conn, with_counts=True, page=page, page_size=page_size, phase_id=phase_id,
             rod_state_id=rod_state_id, process_mark_id=process_mark_id,
             water_aggressiveness_id=water_aggressiveness_id,
             season_year=season_year, date_from=date_from, date_to=date_to,
@@ -240,7 +240,7 @@ async def technical_condition_journal(
         raise HTTPException(status_code=422, detail="date_from must not be after date_to")
     async with acquire_conn() as conn:
         return await get_technical_conditions(
-            conn, page=page, page_size=page_size, state_id=state_id,
+            conn, with_counts=True, page=page, page_size=page_size, state_id=state_id,
             issue_year=issue_year, heat_source=heat_source, district=district,
             linked=linked, date_from=date_from, date_to=date_to,
             building_id=building_id, pipe_id=pipe_id, search=search,
