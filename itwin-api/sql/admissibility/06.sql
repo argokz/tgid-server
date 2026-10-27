@@ -22,10 +22,10 @@ SELECT * From (SELECT
          THEN 'Факт. температура в помещениях выше допустимой (больше 5% от расчетной); ' 
          ELSE '' END ||
 
-    CASE WHEN (ptOut.dop8 != null AND ptOut.dop8 != 0 AND ptOut.dop8 < 0.9 * rc.calcTempVS) 
+    CASE WHEN (ptOut.dop8 IS NOT NULL AND ptOut.dop8 != 0 AND ptOut.dop8 < 0.9 * rc.calcTempVS) 
          THEN 'Расч. температура нагрет. возд. в сист.вент. ниже допустимой (более 10% от исходной); ' 
          ELSE '' END ||
-    CASE WHEN (ptOut.dop8 != null AND ptOut.dop8 != 0 AND ptOut.dop8 > 1.1 * rc.calcTempVS)
+    CASE WHEN (ptOut.dop8 IS NOT NULL AND ptOut.dop8 != 0 AND ptOut.dop8 > 1.1 * rc.calcTempVS)
          THEN 'Расч. температура нагрет. возд. в сист.вент. выше допустимой (более 10% от исходной); ' 
          ELSE '' END ||
 
@@ -70,8 +70,8 @@ WHERE
     AND (
         ptOut.tv < rc.calctemphr - 0.5
         OR ptOut.tv > 1.05 * rc.calctemphr
-        OR (ptOut.dop8 != null AND ptOut.dop8 != 0 and ptOut.dop8 < 0.9 * rc.calcTempVS)
-        OR (ptOut.dop8 != null AND ptOut.dop8 != 0 and ptOut.dop8 > 1.1 * rc.calcTempVS)
+        OR (ptOut.dop8 IS NOT NULL AND ptOut.dop8 != 0 and ptOut.dop8 < 0.9 * rc.calcTempVS)
+        OR (ptOut.dop8 IS NOT NULL AND ptOut.dop8 != 0 and ptOut.dop8 > 1.1 * rc.calcTempVS)
         OR ROUND(usO.t) <  tg.t2 - 0.5  
         OR ROUND(usO.t) > tg.t2 + 0.5
         

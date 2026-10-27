@@ -51,6 +51,21 @@ def test_admissibility_lower_head_limit_is_consistent():
     assert "0.524" not in sql  # одна формула нижней границы: 0.535·t − 49.2
 
 
+def test_admissibility_never_compares_with_null():
+    # «x != null» в PostgreSQL всегда NULL: проверка вентиляции в 06 не срабатывала
+    for qid in R.ADMISSIBILITY:
+        sql = (R.ADMISSIBILITY_DIR / f"{qid:02d}.sql").read_text(encoding="utf-8")
+        assert not re.search(r"(!=|<>|[^<>!:=]=)\s*null", sql, re.I), qid
+
+
+def test_admissibility_head_columns_match_supply_and_return():
+    # 04: pihP — US_OUT подачи (externalSign = 1), pihO — обратки; Hpr = pihP − pihO
+    sql = (R.ADMISSIBILITY_DIR / "04.sql").read_text(encoding="utf-8")
+    assert re.search(r'pihP as "Получ\. напор на подаче', sql)
+    assert re.search(r'pihO as "Получ\. напор на обратке', sql)
+    assert "usP.pih as pihP" in sql and "usP.externalSign = 1" in sql
+
+
 def test_heat_consumption_system_filters():
     assert set(nq.SYSTEM_FILTERS) == {"closed", "open"}
     assert "= 0" in nq.SYSTEM_FILTERS["closed"] and "> 0" in nq.SYSTEM_FILTERS["open"]
