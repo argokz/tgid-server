@@ -33,7 +33,9 @@ def _auth(role="calculator"):
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
-    monkeypatch.delenv("AI_ENABLED", raising=False)
+    # Все настройки помощника — как без .env: у разработчика в .env включён ИИ, своя модель и лимиты
+    for name in [k for k in os.environ if k.startswith("AI_")]:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     ai_client.reset_client()
     yield

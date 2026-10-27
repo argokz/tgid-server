@@ -135,6 +135,19 @@ def test_sanitize_fixes_index_and_names():
     assert [a.index for a in out.alternatives] == [0]
 
 
+def test_sanitize_takes_choice_from_explanation_when_index_missing():
+    # живой ответ 27.10: «Выбран кандидат [0] …», а chosen_index = null
+    rec = tr.TuRecommendation(request=tr.ParsedRequest(), chosen_index=None,
+                              explanation="Выбран кандидат [1] — узел «ТК 15»: располагаемый напор …", draft=tr.TuDraft())
+    assert tr._sanitize(rec, _candidates()["items"]).chosen_index == 1
+    # номер вне списка — выбора нет; «не выбран» — тоже
+    rec = tr.TuRecommendation(request=tr.ParsedRequest(), chosen_index=None, explanation="Выбран кандидат [9]", draft=tr.TuDraft())
+    assert tr._sanitize(rec, _candidates()["items"]).chosen_index is None
+    rec = tr.TuRecommendation(request=tr.ParsedRequest(), chosen_index=None,
+                              explanation="Подходящего кандидата нет: у [0] нет расчёта", draft=tr.TuDraft())
+    assert tr._sanitize(rec, _candidates()["items"]).chosen_index is None
+
+
 def test_recommend_uses_estimate_when_no_load(monkeypatch):
     calls = []
 

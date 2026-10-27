@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -42,7 +43,8 @@ class TuDraft(BaseModel):
 
 class TuRecommendation(BaseModel):
     request: ParsedRequest
-    chosen_index: Optional[int] = None
+    # Обязательное (номер или null): с умолчанием модель поле опускала, хотя в тексте называла выбранного
+    chosen_index: Optional[int]
     explanation: str
     alternatives: list[Alternative] = Field(default_factory=list)
     draft: TuDraft
@@ -84,8 +86,16 @@ def build_user_input(request_text: str, candidates: dict[str, Any], load_estimat
     return "\n".join(lines)
 
 
+# «Выбран кандидат [0]» в объяснении — выбор, если номер не пришёл полем
+_CHOSEN_IN_TEXT_RE = re.compile(r"^\s*Выбран\w*\s+кандидат\s*\[(\d+)\]", re.I)
+
+
 def _sanitize(rec: TuRecommendation, candidates: list[dict[str, Any]]) -> TuRecommendation:
     n = len(candidates)
+    if rec.chosen_index is None:
+        m = _CHOSEN_IN_TEXT_RE.match(rec.explanation or "")
+        if m:
+            rec.chosen_index = int(m.group(1))
     if rec.chosen_index is not None and not (0 <= rec.chosen_index < n):
         rec.chosen_index = None
     rec.alternatives = [a for a in rec.alternatives if 0 <= a.index < n and a.index != rec.chosen_index]
