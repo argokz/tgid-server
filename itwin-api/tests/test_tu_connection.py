@@ -64,8 +64,14 @@ def test_dedupe_keeps_variant_with_latest_calculation():
 
 
 class FakeConn:
-    def __init__(self, rows=None, analogs=None):
+    def __init__(self, rows=None, analogs=None, has_buildings=True):
         self.rows, self.analogs, self.calls = rows or [], analogs or [], []
+        self.has_buildings = has_buildings
+
+    async def fetchval(self, sql, *args):
+        self.calls.append((sql, args))
+        assert "to_regclass('zdaniya_2')" in sql
+        return self.has_buildings
 
     async def fetch(self, sql, *args):
         self.calls.append((sql, args))
@@ -94,6 +100,14 @@ def test_estimate_load_by_floors_and_area():
     assert by_area["per_1000m2"] == 0.5 and by_area["load_gcal_h"] == 1.0
     assert asyncio.run(tc.estimate_load(conn))["load_gcal_h"] is None
     assert asyncio.run(tc.estimate_load(FakeConn(), floors=30))["analogs"] == 0
+
+
+def test_estimate_load_without_buildings_layer():
+    """База без zdaniya_2 (Астана): понятный ответ без запроса к таблице, а не 500."""
+    conn = FakeConn(analogs=[{"nagr": 0.3, "shape_area": 600.0, "floor": 9}], has_buildings=False)
+    out = asyncio.run(tc.estimate_load(conn, floors=9, area_m2=1000))
+    assert out["load_gcal_h"] is None and out["analogs"] == 0 and "нет слоя зданий" in out["basis"]
+    assert not any("FROM zdaniya_2" in sql for sql, _ in conn.calls)
 
 
 def _candidates():

@@ -223,6 +223,9 @@ async def estimate_load(conn, *, floors: Optional[int] = None, area_m2: Optional
     при известной площади застройки — медиана удельной нагрузки на 1000 м² × площадь."""
     if not floors or floors < 1:
         return {"load_gcal_h": None, "analogs": 0, "basis": "не задана этажность"}
+    # слой АЛСЕКО есть не в каждой базе города (в Астане его нет) — без проверки запрос падал с 500
+    if not await conn.fetchval("SELECT to_regclass('zdaniya_2') IS NOT NULL"):
+        return {"load_gcal_h": None, "analogs": 0, "basis": "в базе города нет слоя зданий с нагрузками (zdaniya_2)"}
     lo, hi = max(1, floors - 1), floors + 1
     rows = await conn.fetch(_ANALOG_SQL, lo, hi)
     if not rows:
