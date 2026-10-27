@@ -21,6 +21,52 @@ from sety.ct import get_ct
 
 #---------------------------------------------------------------------------
 
+# вставлено Claude, 2026-10-24: баланс источника по ребрам, пересекающим его границу (узлы источника
+# nodes - подача и, если есть, обратка; ребра между ними, например насос, внутренние).
+# Вытекающий поток уносит температуру узла источника (заданную t0), втекающий приносит температуру
+# узла, откуда пришел; разница расходов - подпитка с температурой холодной воды tx.
+# Q = (Σ Gвых*tвых - Σ Gвх*tвх - (Σ Gвых - Σ Gвх)*tx) / 1000, Гкал/ч.
+# Возвращает (расход, вытекающий из узла подачи, Q).
+def ist_balans(G, nodes, tx):
+    nodes = {x for x in nodes if x in G.nodes}
+
+    # [Claude 2026-10-24] Температура узла: заданная t0 (источник), иначе расчетная t; nan/нет - 0.
+    def node_t(x):
+        nd = G.nodes[x]
+        t = nd.get('t0', nd.get('t', 0))
+        return 0 if t is None or np.isnan(t) else t
+
+    G_out = 0
+    G_in = 0
+    G_P = 0   # отпуск в подающий теплопровод (транзит через обратку источника не учитывается)
+    H = 0
+
+    for x in nodes:
+        for a, b, key in itertools.chain(G.out_edges(x, keys=True), G.in_edges(x, keys=True)):
+            if a in nodes and b in nodes:
+                continue
+
+            GG = G.edges[a, b, key].get('G', 0)
+
+            # поток GG идет a -> b; при GG < 0 - обратно
+            src, dst = (a, b) if GG > 0 else (b, a)
+            GG = abs(GG)
+
+            if src in nodes:
+                G_out += GG
+                H += GG * node_t(src)
+                if src[1] == 1:
+                    G_P += GG
+            else:
+                G_in += GG
+                H -= GG * node_t(src)
+
+    Q = (H - (G_out - G_in) * tx) * 0.001
+
+    return G_P, Q
+
+#---------------------------------------------------------------------------
+
 # [Claude 2026-10-18] Протокол отпущенного тепла: по каждому источнику считает расход и тепло (с учетом подпитки) и печатает баланс.
 def protocol_IS_OUT(G):
 
@@ -62,55 +108,18 @@ def protocol_IS_OUT(G):
             idP = nP.get('n1', idP) 
             idO = nP.get('n2', idO) 
 
-            nO = G.nodes.get((idO, 2), None)
+            # исправлено Claude, 2026-10-24: тепло источника по потокам через его границу. Было - по паре узлов
+            # (id, 1)/(id, 2): у источника из одного узла (обратка входит прямо в узел подачи) узла (id, 2) нет,
+            # t2 бралась 0, весь расход считался подпиткой и тепло завышалось примерно вдвое.
+            GP, Q = ist_balans(G, {n, (idP, 1), (idO, 2), (nP['id'], 2)}, ct5)
 
-
-            if not nO is None:
-                t2 = nO.get('t', -10000)
-                t2 = nO.get('t0', t2)
-            else:
-                t2 = 0
-            
-
-#            print('!!!!!!', name, idP, idO, nP)
-
-            GG_P, Gin_P, Gout_P, Gp_P, Gout_P =  n_ras(G, (idP, 1), False)
-            GG_O, Gin_O, Gout_O, Gp_O, Gout_O =  n_ras(G, (idO, 2), False) 
-
-
-#            if idP == idO:
-#                print(f"============>>> {t=} {t2=}")
-#                print(f'{GG_P=}, {Gin_P=}, {Gout_P=}, {Gp_P=}, {Gout_P=}')
-#                print(f'{GG_O=}, {Gin_O=}, {Gout_O=}, {Gp_O=}, {Gout_O=}')
-
-
-
-
-            if abs(Gin_P) < 0.000001:
+            if abs(GP) < 0.000001:
                 continue
 
-
-#            cprint(name)
-#            cprint(f'GG_P={GG_P}, Gin_P={Gin_P}, Gout_P={Gout_P}, Gp_P={Gp_P}')
-#            cprint(f'GG_O={GG_O}, Gin_O={Gin_O}, Gout_O={Gout_O}, Gp_O={Gp_O}')
-
-#            3.727272745355732
-#32.4675
-
-            Gpodp = Gin_P-Gin_O
-
-            t2_ispr = t2
-
-            if Gin_O != 0:
-                t2_ispr *= Gin_P/Gin_O
-
-
-#            print(t2, t2_ispr)
-
-#            print(f'пришло {Gin_O} t={t2_ispr} ушло {Gin_P} t={t} подпитка {Gpodp}')
-
-            GP = Gin_P
-            Q = (Gpodp*(t-ct5) + Gin_O*(t-t2_ispr))*0.001
+            # вставлено Claude, 2026-10-25: нет температуры (тепловой расчет сети не делался) - тепло не считаем,
+            # иначе остается только подпитка * tx со знаком минус
+            if t <= -10000:
+                Q = 0
 
 
 

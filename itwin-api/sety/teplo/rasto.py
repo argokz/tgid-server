@@ -401,6 +401,47 @@ def rasTO10(node, pr, pt_G, G, t, Tn, debug):
 
 #-----------------------------------------------------------------------------------
 
+# вставлено Claude, 2026-10-24: удельные расходы, равные 1, означают, что нагрузки потребителя заданы
+# расходом в т/ч (так конвертируются обобщенные потребители Zulu) - тепловой расчет потребителя невозможен
+UR_RASHOD = ('otoplz', 'otopln', 'ventil', 'kondiz', 'gvpr', 'gvsm', 'gvps', 'gvpw', 'gvo')
+UR_NOT_COEF = ('kodur', 'kod_ist', 'id', 'fileid', 'id_old')   # вставлено Claude, 2026-10-25: поля набора - не коэффициенты
+
+no_heat = set()   # потребители, у которых тепло не считалось
+no_temp = set()   # вставлено Claude, 2026-10-25: потребители без температуры подачи, тепло не считалось
+
+# вставлено Claude, 2026-10-25: температура подачи не рассчитана (-10000 - "не считали" в pt_out и выводе)
+def no_t1(t):
+    return t is None or t <= -10000
+
+def is_ur_rashod(node):
+    if config.args.is_tg:   # по ТГ расходы считаются из нагрузок, удельные расходы не используются
+        return False
+
+    ur = read_gid.map_ur.get(node.get('kodur', None), None)
+    if not ur:
+        return False
+
+    # исправлено Claude, 2026-10-25: расход - только если все коэффициенты 0 или 1; единицы бывают
+    # и в обычных наборах, в неиспользуемых коэффициентах (кондиционирование, техпроцессы)
+    for k, v in ur.items():
+        if k in UR_NOT_COEF:
+            continue
+        if not (v is None or v == 0 or v == 1):
+            return False
+
+    for k in UR_RASHOD:   # не any(): имя any здесь занято модулем sety.any
+        if ur.get(k, 0) == 1:
+            return True
+    return False
+
+# вставлено Claude, 2026-10-24: t2 = t1 - (расчетный перепад) без теплового расчета не ниже температуры
+# внутреннего воздуха; если вода пришла холоднее (тупики с малым расходом) - не остывает
+def t2_min(pr, t1, t2):
+    tv = pr.get('Tr_tv_co', pr.get('Tr_tv_co_zco', 18))
+    return max(t2, min(t1, tv))
+
+#-----------------------------------------------------------------------------------
+
 # [Claude 2026-10-18] Обертка над rasTO_pr: берет расчетные температуры потребителя по kodtr и возвращает
 # (t2, qq, tg, tv, tvv, Qotopl, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
@@ -413,6 +454,20 @@ def rasTO_pr2(node, pr, pt_G, G, t, Tn, debug):
 #    print(f't={t} tr = {tr}')
 
     tr = read_gid.map_tr.get(tr, None)
+
+    # вставлено Claude, 2026-10-25: тепловой расчет сети не делался (нет температуры подачи, t = -10000) -
+    # тепло не считаем, иначе ГВ из подачи и вентиляция считаются от -10000 и уходят в минус
+    if no_t1(t):
+        no_temp.add(node.get('id'))
+        return t, 0, None, None, None, 0, 0, 0, 0, 0, 0
+
+    # вставлено Claude, 2026-10-24: нагрузки заданы расходом (удельные расходы = 1, конвертация из Zulu) -
+    # тепло не считаем, t2 по расчетным температурам, как в тепловом расчете сети (get_t2)
+    if is_ur_rashod(node):
+        no_heat.add(node.get('id'))
+        tr2 = tr or {}
+        t2 = t2_min(node, t, t - (tr2.get('Tr_co_1_zco', 150) - tr2.get('Tr_co_2_zco', 70)))
+        return t2, 0, None, None, None, 0, 0, 0, 0, 0, 0
 
     v = rasTO_pr(node, pr, tr, pt_G, G, t, Tn, False, debug)
 

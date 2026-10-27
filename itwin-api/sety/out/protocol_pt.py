@@ -7,6 +7,7 @@ from sety.out.podpitka import n_ras
 from sety.any.colors import cprint
 from sety import w_print
 from sety.out.pt_out import print_bal
+from sety.teplo import rasto   # вставлено Claude, 2026-10-24
 
 
 # [Claude 2026-10-18] Протокол теплопотребления: суммирует по потребителям нагрузки и расходы (отопление зав./незав.,
@@ -152,4 +153,11 @@ def protocol_pt(G):
     print_bal('Всего из обратки', Q_gvoo0, G_gvoo0)
 
     print_bal('Всего', Qz + Q_gvop0 + Q_gvoo0, Gz + G_gvop0 + G_gvoo0)
+
+    # вставлено Claude, 2026-10-24: потребители с удельными расходами = 1 (нагрузки заданы расходом)
+    if rasto.no_heat:
+        cprint(f'Тепло не рассчитано у {len(rasto.no_heat)} потребителей: удельные расходы = 1, нагрузки заданы расходом', color='red')
+    # вставлено Claude, 2026-10-25: тепловой расчет сети не делался - нет температуры подачи
+    if rasto.no_temp:
+        cprint(f'Тепло не рассчитано у {len(rasto.no_temp)} потребителей: нет температуры подачи (не было теплового расчета сети)', color='red')
 

@@ -20,6 +20,9 @@ from sety import w_print
 
 
 from sety.teplo.rasto import rasTO_pr2
+from sety.teplo.rasto import t2_min   # вставлено Claude, 2026-10-24
+from sety.teplo.rasto import no_t1   # вставлено Claude, 2026-10-25
+from sety.teplo import rasto   # вставлено Claude, 2026-10-25
 from sety.teplo.rasto_po import rasTO_po
 from sety import read_gid
 from sety import read_tg
@@ -143,6 +146,11 @@ def Y(l):
 # Возвращает (t2, Qotoplz, Qotopln, Qvent, Qkond, Qgvz, Qgvop, Qgvoo).
 def rasTO_po2(po, G, t, Tn, debug):
 
+    # вставлено Claude, 2026-10-25: нет температуры подачи (тепловой расчет сети не делался) - тепло не считаем
+    if no_t1(t):
+        rasto.no_temp.add(po.get('id'))
+        return t, 0, 0, 0, 0, 0, 0, 0
+
     gv_ps = po.get('gv_ps', 0)
     gv_pw = po.get('gv_pw', 0)
     gv_pr = po.get('gv_pr', 0)
@@ -209,8 +217,8 @@ def get_t2(pr, t1):
     t01 = tr.get('Tr_co_1_zco', 150)
     t02 = tr.get('Tr_co_2_zco', 70)
 
-    return t1 - (t01-t02)
-    
+    return t2_min(pr, t1, t1 - (t01-t02))   # исправлено Claude, 2026-10-24: ограничение t2 снизу
+
 
 
 #-----------------------------------------------------------------------------------
