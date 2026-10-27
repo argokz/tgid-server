@@ -140,6 +140,23 @@ def test_protocol_routes_without_table(monkeypatch):
     assert client.get("/api/v1/calculations/35/protocol").status_code == 404
 
 
+def test_internal_line_by_label_matches_names_of_internal_scheme():
+    rows = [
+        {"id": 325861, "name1": "1КЗ-22Б", "name2": "1КЗ-22А"},
+        {"id": 324152, "name1": "1КЗ-22А", "name2": "1КЗ-22Б"},
+        {"id": 1, "name1": "Рег  вх", "name2": "Рег вых"},
+    ]
+    # порядок концов как в подписи важнее обратного
+    assert CP.internal_line_by_label(rows, "(6-8 УР2ЧАП) М2 1КЗ-22А О - М2 1КЗ-22Б О") == 324152
+    assert CP.internal_line_by_label(rows, "(6-8 УР2ЧАП) М2 1КЗ-22Б О - М2 1КЗ-22А О") == 325861
+    # вложенные скобки владельца и лишние пробелы в именах
+    assert CP.internal_line_by_label(rows, "(М5 НС5 (подпор)) М5 Рег вх О - М5 Рег вых О") == 1
+    # имя — целым словом: «1КЗ-22» не совпадает с «1КЗ-22А»
+    assert CP.internal_line_by_label([{"id": 9, "name1": "1КЗ-22", "name2": "1КЗ-22Б"}],
+                                     "(X) М2 1КЗ-22А О - М2 1КЗ-22Б О") is None
+    assert CP.internal_line_by_label(rows, "без разделителя") is None
+
+
 def test_locate_objects_resolves_pairs_and_internal_nodes(monkeypatch):
     point = {"type": "Point", "coordinates": [76.9, 43.2]}
     line = {"type": "LineString", "coordinates": [[76.9, 43.2], [76.91, 43.21]]}
@@ -149,18 +166,24 @@ def test_locate_objects_resolves_pairs_and_internal_nodes(monkeypatch):
             return [{"a": 2, "b": 1, "id": 900}]  # найден в обратном направлении
         if sql is CP._NODE_SQL:
             return [{"id": i, "shown_id": 100 if i == 5 else i, "geom": point} for i in args[0]]
-        return [{"id": i, "owner_id": None, "geom": line} for i in args[0]]
+        if sql is CP._INTERNAL_LINES_SQL:
+            return [{"owner": 8, "id": 950, "name1": "Рег вх", "name2": "Рег вых"}]
+        return [{"id": i, "owner_id": 8 if i == 950 else None, "geom": line} for i in args[0]]
 
     conn = _Conn(rows)
     r = _client(monkeypatch, conn).post("/api/v1/calculations/protocols/locate", json={"objects": [
         {"kind": "node", "id": 5},
         {"kind": "line2", "id1": 1, "id2": 2},
         {"kind": "line2", "id1": 7, "id2": 7},       # внутри одного узла — точка узла
+        # устройство внутренней схемы камеры 8: sety пишет оба конца владельцем — участок по подписи
+        {"kind": "line2", "id1": 8, "id2": 8, "label": "(НС-8) М1 Рег вх О - М1 Рег вых О"},
         {"kind": "line2", "id1": 3, "id2": 4},       # участка нет — первый узел
         {"kind": "line", "id": "bad"},
     ]})
     assert r.status_code == 200
     d = r.json()
-    assert d["pairs"] == {"1-2": {"line_id": 900}, "3-4": {"node_id": 3}}
-    assert sorted(d["nodes"]) == ["3", "5", "7"] and d["nodes"]["5"]["shown_id"] == 100
-    assert list(d["lines"]) == ["900"] and d["lines"]["900"]["geometry"]["type"] == "LineString"
+    assert d["pairs"] == {"1-2": {"line_id": 900}, "3-4": {"node_id": 3},
+                          "8-8|(НС-8) М1 Рег вх О - М1 Рег вых О": {"line_id": 950}}
+    assert sorted(d["nodes"]) == ["3", "5", "7", "8"] and d["nodes"]["5"]["shown_id"] == 100
+    assert sorted(d["lines"]) == ["900", "950"] and d["lines"]["900"]["geometry"]["type"] == "LineString"
+    assert d["lines"]["950"]["owner_id"] == 8

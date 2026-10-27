@@ -90,6 +90,59 @@ SELECT DISTINCT ON (q.a, q.b) q.a, q.b, l.id
  ORDER BY q.a, q.b, l.id"""
 
 
+# участки внутренней схемы узлов: ссылку line2 на устройство внутри камеры sety пишет с одинаковыми концами
+# (оба — узел-владелец), сам участок узнаётся по подписи «(владелец) A - B»
+_INTERNAL_LINES_SQL = """
+SELECT l.internalnodeid AS owner, l.id, n1.externalnodename AS name1, n2.externalnodename AS name2
+  FROM linesobj l
+  JOIN nodes n1 ON n1.id = l.nodeid1
+  JOIN nodes n2 ON n2.id = l.nodeid2
+ WHERE l.internalnodeid = ANY($1::int[]) AND COALESCE(l.removed, 0) = 0
+ ORDER BY l.id"""
+
+
+def same_node_pair_key(node_id: int, label: str) -> str:
+    """Ключ pairs для line2 с одинаковыми концами: в одной камере устройств может быть несколько"""
+    return f"{node_id}-{node_id}|{label}"
+
+
+def _words(text: Optional[str]) -> str:
+    return " ".join((text or "").split()).lower()
+
+
+def _strip_owner(label: str) -> str:
+    """«(6-8 УР2ЧАП) М2 1КЗ-22А О - …» → «М2 1КЗ-22А О - …»; скобки владельца бывают вложенными"""
+    if not label.startswith("("):
+        return label
+    depth = 0
+    for i, ch in enumerate(label):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0:
+            return label[i + 1:]
+    return label
+
+
+def internal_line_by_label(rows: list[Any], label: str) -> Optional[int]:
+    """Участок внутренней схемы, оба конца которого названы в подписи «A - B» (сначала в том же порядке)"""
+    parts = _words(_strip_owner(label)).split(" - ", 1)
+    if len(parts) != 2:
+        return None
+    a, b = (f" {p.strip()} " for p in parts)
+
+    def named(part: str, name: Optional[str]) -> bool:
+        n = _words(name)
+        return bool(n) and f" {n} " in part
+
+    for r in rows:
+        if named(a, r["name1"]) and named(b, r["name2"]):
+            return r["id"]
+    for r in rows:
+        if named(a, r["name2"]) and named(b, r["name1"]):
+            return r["id"]
+    return None
+
+
 async def locate_objects(conn, objects: list[dict[str, Any]]) -> dict[str, Any]:
     """Геометрия (WGS84 GeoJSON) объектов протокола.
 
@@ -99,6 +152,7 @@ async def locate_objects(conn, objects: list[dict[str, Any]]) -> dict[str, Any]:
     node_ids: set[int] = set()
     line_ids: set[int] = set()
     pairs: set[tuple[int, int]] = set()
+    same_node: set[tuple[int, str]] = set()   # line2 с одинаковыми концами: (узел, подпись)
     for o in objects:
         kind = o.get("kind")
         try:
@@ -110,6 +164,8 @@ async def locate_objects(conn, objects: list[dict[str, Any]]) -> dict[str, Any]:
                 a, b = int(o["id1"]), int(o["id2"])
                 if a == b:
                     node_ids.add(a)        # обе вершины внутри одного узла — его и показываем
+                    if o.get("label"):
+                        same_node.add((a, str(o["label"])))
                 else:
                     pairs.add((a, b))
         except (KeyError, TypeError, ValueError):
@@ -129,6 +185,18 @@ async def locate_objects(conn, objects: list[dict[str, Any]]) -> dict[str, Any]:
                 # узлы — внутренние схемы разных камер: показываем первый
                 pair_result[f"{a}-{b}"] = {"node_id": a}
                 node_ids.add(a)
+
+    if same_node:
+        rows = await conn.fetch(_INTERNAL_LINES_SQL, sorted({n for n, _ in same_node}))
+        by_owner: dict[int, list[Any]] = {}
+        for r in rows:
+            by_owner.setdefault(r["owner"], []).append(r)
+        for node_id, label in same_node:
+            line_id = internal_line_by_label(by_owner.get(node_id, []), label)
+            if line_id:
+                # участок внутренней схемы (регулятор, байпас, насос): на карте — узел-владелец, правка — по участку
+                pair_result[same_node_pair_key(node_id, label)] = {"line_id": line_id}
+                line_ids.add(line_id)
 
     nodes: dict[str, Any] = {}
     if node_ids:
