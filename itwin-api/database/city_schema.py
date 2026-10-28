@@ -181,15 +181,21 @@ async def ensure(conn, city: str, apply: bool = True) -> dict:
             # не ждать долго блокировок таблиц сети: лучше повторить в следующий раз
             await conn.execute("set local lock_timeout = '30s'")
             await conn.execute("set local statement_timeout = '15min'")
-            for item in todo:
+            # Проверять каждый пункт заново перед применением, по порядку: пункт может зависеть от
+            # предыдущего (колонка ai_summary «есть», пока нет самой таблицы calculation_protocol)
+            applied = []
+            for item in city_items(city):
+                if await conn.fetchval(item.check):
+                    continue
                 for path in item.files:
                     await conn.execute(path.read_text(encoding="utf-8-sig"))
+                applied.append(item.name)
             left = [i.name for i in await missing(conn, city)]
             if left:
                 raise RuntimeError("после применения всё ещё нет: " + ", ".join(left))
     except Exception as e:  # noqa: BLE001 — транзакция откатилась, база как была
         return {"status": "error", "missing": names, "applied": [], "error": str(e).strip()}
-    return {"status": "applied", "missing": [], "applied": names}
+    return {"status": "applied", "missing": [], "applied": applied}
 
 
 def upkeep_interval_s() -> float:

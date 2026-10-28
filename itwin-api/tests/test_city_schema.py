@@ -162,3 +162,47 @@ def test_reset_city_caches_clears_api_caches(monkeypatch):
     topology_transfer._NODE_REF_CACHE = [("nodes", "id")]
     cs.reset_city_caches()
     assert calls == ["outage", "catalog"] and topology_transfer._NODE_REF_CACHE is None
+
+
+class _FreshDbConn(_Conn):
+    """Только что переконвертированная база: таблиц веба нет; проверки считаются по состоянию,
+    поэтому пункт «колонка ai_summary» выполнен, пока нет самой таблицы calculation_protocol."""
+
+    def __init__(self, city):
+        super().__init__(city, present=set())
+        self.applied_files: set[str] = set()
+
+    async def fetchval(self, sql, *args):
+        if sql.startswith("select to_regclass('public.nodes')"):
+            return True
+        if sql == cs.BUSY_SQL:
+            return 0
+        if "pg_try_advisory_xact_lock" in sql:
+            return True
+        item = next((i for i in cs.city_items("almaty") if i.check == sql), None)
+        if item is None:
+            return False
+        done = all(p.name in self.applied_files for p in item.files)
+        if item.name == "колонка calculation_protocol.ai_summary":
+            return done or "20261015_calculation_protocol.sql" not in self.applied_files
+        if item.name == "колонка generalizedconsumers.name":
+            return True
+        return done
+
+    async def execute(self, sql, *args):
+        if sql.startswith("set local"):
+            return
+        for item in cs.city_items("almaty"):
+            for p in item.files:
+                if p.read_text(encoding="utf-8-sig") == sql:
+                    self.applied_files.add(p.name)
+
+
+def test_after_reconversion_dependent_items_are_applied_in_order():
+    # 28.10: проверка «до применения» пропускала ai_summary, а после создания таблицы его не было →
+    # откат всей доводки при каждой проверке. Теперь каждый пункт проверяется перед применением.
+    conn = _FreshDbConn("almaty")
+    res = run(cs.ensure(conn, "almaty"))
+    assert res["status"] == "applied", res
+    assert "колонка calculation_protocol.ai_summary" in res["applied"]
+    assert "20261023_calculation_protocol_ai_summary.sql" in conn.applied_files
