@@ -16,6 +16,13 @@
   ниже зоны»; их потребители идут отдельным списком. Кольцевание учитывается (есть обходной
   путь — питание сохраняется), гидравлика (достаточность напора/расхода по обходу) — нет,
   поэтому результат помечен как оценка (``model = topology_estimate``).
+- Минимальный набор задвижек (mincut, фаза 1): задвижка обязательна, если за ней после
+  отключения остаётся питание — она отсекает воду от зоны. Задвижки, за которыми питания нет
+  (тупик ниже зоны, «остров»), помечаются необязательными: вода оттуда в зону не придёт,
+  но закрыть их можно, чтобы не сливать систему потребителей.
+- Неисправные задвижки (``failed_valve_ids`` — «не держит», нет доступа) не останавливают обход:
+  зона расширяется до следующих задвижек. Узел-камера с неисправной задвижкой во внутренней
+  схеме целиком уходит в зону (какая ветка схемы на каком участке — по модели не определить).
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections.abc import Collection
 from typing import Any, Optional
 
 import asyncpg
@@ -196,6 +204,47 @@ def downstream_without_supply(
     return lost_nodes, lost_lines
 
 
+VALVE_SUPPLY = "supply"          # за задвижкой есть питание — закрыть обязательно
+VALVE_NO_SUPPLY = "no_supply"    # за задвижкой питания нет (тупик ниже зоны, остров)
+VALVE_INSIDE = "inside_zone"     # на аварийном участке или между узлами зоны
+
+
+def classify_valves(
+    net: dict[str, Any],
+    valves: list[dict[str, Any]],
+    *,
+    isolated_nodes: set[int],
+    lost_nodes: set[int],
+    target_line_id: Optional[int],
+) -> list[dict[str, Any]]:
+    """Копии задвижек с ``required``/``reason``: обязательна, если её внешняя сторона после
+    отключения сохраняет связь с питающими точками (mincut — минимальный набор отсечения)."""
+    supplied_before = net["baseline_reachable"]
+    line_info = net["line_info"]
+
+    def supplied(nid: int) -> bool:
+        return nid in supplied_before and nid not in lost_nodes
+
+    out = []
+    for v in valves:
+        owner = v.get("owner_node_id")
+        if owner is not None:
+            outside = [owner]
+        elif v["lineid"] == target_line_id or v["lineid"] not in line_info:
+            outside = []
+        else:
+            info = line_info[v["lineid"]]
+            outside = [n for n in (info["nodeid1"], info["nodeid2"]) if n not in isolated_nodes]
+        if not outside:
+            reason = VALVE_INSIDE
+        elif any(supplied(n) for n in outside):
+            reason = VALVE_SUPPLY
+        else:
+            reason = VALVE_NO_SUPPLY
+        out.append({**v, "required": reason == VALVE_SUPPLY, "reason": reason})
+    return out
+
+
 # Нагрузки в Гкал/ч (схема ТГИД full_tgid.sql). Состав — как во view потребителей десктопа
 # (sql/reports/_consumerview.sql): отопление обобщённого = зав. + незав. + отопл. части схем ГВС
 # (parall/mix/conseq/preON); ГВС = открытый водоразбор (подача + обратка) + закрытые схемы;
@@ -279,6 +328,7 @@ async def simulate_outage_isolation(
     *,
     line_id: Optional[int] = None,
     node_id: Optional[int] = None,
+    failed_valve_ids: Collection[int] = (),
 ) -> dict[str, Any]:
     """Выполняет локализацию аварийного участка и сбор всех зависимых объектов."""
     if line_id is None and node_id is None:
@@ -289,6 +339,7 @@ async def simulate_outage_isolation(
     dampers_by_line = net["dampers_by_line"]
     dampers_by_node = net["dampers_by_node"]
     adj = net["adj"]
+    failed_ids = set(failed_valve_ids)
 
     queue: list[int] = []
     isolated_lines: set[int] = set()
@@ -297,6 +348,14 @@ async def simulate_outage_isolation(
     processed_lines: set[int] = set()
     valves_to_close_map: dict[int, dict[str, Any]] = {}
     valves_closed_map: dict[int, dict[str, Any]] = {}
+    failed_hit_map: dict[int, dict[str, Any]] = {}
+
+    def working(valves: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Исправные задвижки; неисправные запоминаются — обход идёт сквозь них."""
+        for v in valves:
+            if v["id"] in failed_ids:
+                failed_hit_map[v["id"]] = v
+        return [v for v in valves if v["id"] not in failed_ids]
 
     def take_valves(valves: list[dict[str, Any]]) -> None:
         for v in valves:
@@ -307,9 +366,10 @@ async def simulate_outage_isolation(
         """Узел с задвижками во внутренней схеме — граница зоны, дальше не идём."""
         if nid in isolated_nodes or nid in boundary_nodes:
             return
-        if nid in dampers_by_node:
+        node_valves = dampers_by_node.get(nid)
+        if node_valves and len(working(node_valves)) == len(node_valves):
             boundary_nodes.add(nid)
-            take_valves(dampers_by_node[nid])
+            take_valves(node_valves)
             return
         isolated_nodes.add(nid)
         queue.append(nid)
@@ -343,7 +403,7 @@ async def simulate_outage_isolation(
 
         # Если на самой аварийной трубе установлена задвижка, добавляем её
         if line_id in dampers_by_line:
-            take_valves(dampers_by_line[line_id])
+            take_valves(working(dampers_by_line[line_id]))
 
         for n in (target["nodeid1"], target["nodeid2"]):
             if n:
@@ -365,16 +425,18 @@ async def simulate_outage_isolation(
                 continue
             processed_lines.add(lid)
 
-            if lid in dampers_by_line:
-                # Участок содержит отсекающую задвижку — закрываем её и не идем дальше
-                take_valves(dampers_by_line[lid])
+            line_valves = working(dampers_by_line.get(lid, []))
+            if line_valves:
+                # Участок содержит исправную отсекающую задвижку — закрываем её и не идем дальше
+                take_valves(line_valves)
             else:
-                # На участке нет задвижки — он попадает в зону отключения
+                # На участке нет задвижки (или все неисправны) — он попадает в зону отключения
                 isolated_lines.add(lid)
                 reach_node(neighbor)
 
     valves_to_close = sorted(valves_to_close_map.values(), key=lambda x: x["id"])
     valves_already_closed = sorted(valves_closed_map.values(), key=lambda x: x["id"])
+    failed_valves = sorted(failed_hit_map.values(), key=lambda x: x["id"])
 
     # 3. Сбор геометрии и метрик изолированных труб (геометрия — только для зоны)
     total_length_m = 0.0
@@ -425,6 +487,12 @@ async def simulate_outage_isolation(
     closed_valve_lines = {v["lineid"] for v in valves_to_close if v.get("owner_node_id") is None}
     lost_nodes, lost_lines = downstream_without_supply(
         net, isolated_lines=isolated_lines, isolated_nodes=isolated_nodes, closed_valve_lines=closed_valve_lines)
+    valves_to_close = classify_valves(net, valves_to_close, isolated_nodes=isolated_nodes,
+                                      lost_nodes=lost_nodes, target_line_id=line_id)
+    required_count = sum(1 for v in valves_to_close if v["required"])
+    # Питающая точка внутри зоны: задвижками её не отсечь — отключать на источнике или вводе
+    feed_points_in_zone = [{"node_id": n, "kind": net["source_kinds"].get(n, "heat_source")}
+                           for n in sorted(isolated_nodes & net["sources"])]
     downstream_consumers = await _consumers(conn, lost_nodes)
     downstream_load = sum(c["total_load"] for c in downstream_consumers)
     downstream_features = []
@@ -451,6 +519,7 @@ async def simulate_outage_isolation(
                     "name": v["display_name"],
                     "nominal_diameter": v["nominal_diameter"],
                     "state_name": v["state_name"],
+                    "required": v["required"],
                 },
             })
 
@@ -461,7 +530,10 @@ async def simulate_outage_isolation(
         "isolated_lines_count": len(isolated_lines),
         "isolated_nodes_count": len(isolated_nodes),
         "valves_count": len(valves_to_close),
+        "valves_required_count": required_count,
         "valves_already_closed_count": len(valves_already_closed),
+        "failed_valves_count": len(failed_valves),
+        "feed_points_in_zone_count": len(feed_points_in_zone),
         "boundary_nodes_count": len(boundary_nodes),
         "consumers_count": len(affected_consumers),
         "total_heating_load_gcal_h": round(total_q_ot, 4),
@@ -475,7 +547,9 @@ async def simulate_outage_isolation(
         "downstream_lines_count": len(lost_lines),
         "downstream_consumers_count": len(downstream_consumers),
         "downstream_load_gcal_h": round(downstream_load, 4),
-        "total_with_downstream_load_gcal_h": round(total_q_ot + total_q_gvs + total_q_vent + downstream_load, 4),
+        # Обе части — полная нагрузка (с технологией): downstream_load тоже полная
+        "total_with_downstream_load_gcal_h": round(
+            total_q_ot + total_q_gvs + total_q_vent + total_q_tech + downstream_load, 4),
         "sources_count": len(net["sources"]),
     }
 
@@ -485,13 +559,16 @@ async def simulate_outage_isolation(
         "summary": summary,
         "valves_to_close": valves_to_close,
         "valves_already_closed": valves_already_closed,
+        "failed_valves": failed_valves,
+        "feed_points_in_zone": feed_points_in_zone,
         "boundary_nodes": sorted(boundary_nodes),
         "affected_consumers": affected_consumers,
         "downstream_consumers": downstream_consumers,
         "model": "topology_estimate",
         "estimate": True,
         "estimate_note": ("Оценка по топологии: потребители ниже закрытых задвижек — узлы, потерявшие связь "
-                          "с источниками (кольца учитываются, достаточность напора и расхода — нет)."),
+                          "с источниками (кольца учитываются, достаточность напора и расхода — нет). "
+                          "Обязательные задвижки отсекают питание; за необязательными питания нет."),
         "geojson": {
             "isolated_pipes": {
                 "type": "FeatureCollection",

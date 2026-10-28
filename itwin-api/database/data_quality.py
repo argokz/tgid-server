@@ -94,6 +94,18 @@ RULES: dict[str, dict[str, Any]] = {
                " AND h.firstpicdatehp IS NULL AND h.lasttransdate IS NULL AND ($1::int IS NULL OR l.fileid = $1)",
         "order": "l.fileid, l.id",
     },
+    # Задвижка на линии без узлов расчётной схемы не видна графу сети: изоляция (mincut) идёт сквозь
+    # это место. В копии Алматы 28.10 таких 11,8 тыс. из 12,1 тыс. — линии без геометрии и узлов.
+    "valve_outside_network": {
+        "label": "Задвижка на участке без узлов расчётной схемы (в локализации аварий не участвует)",
+        "severity": "info", "kind": "line", "fix": "topology",
+        # без геометрии координаты NULL — строка есть в списке, на карте точки нет
+        "select": f"l.id, d.id AS valve_id, d.name, l.fileid AS fragment_id, {_LINE_GEOM}",
+        "sql": "FROM dampers d JOIN linesobj l ON l.id = d.lineid WHERE COALESCE(l.removed, 0) = 0"
+               " AND l.internalnodeid IS NULL AND (l.nodeid1 IS NULL OR l.nodeid2 IS NULL)"
+               " AND ($1::int IS NULL OR l.fileid = $1)",
+        "order": "(l.shape IS NULL), l.fileid, d.id",
+    },
     "contract_load_without_source": {
         "label": "Договорная нагрузка без источника тепла (АЛСЕКО: организации и жильё)",
         "severity": "info", "kind": "contract", "fix": "alseko",

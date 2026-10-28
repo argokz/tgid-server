@@ -248,12 +248,12 @@ def test_outage_rejects_line_of_internal_scheme():
         asyncio.run(simulate_outage_isolation(conn, line_id=77))
 
 
-def _downstream_case(extra_lines=()):
+def _downstream_case(extra_lines=(), extra_dampers=(), failed=(), target=2):
     invalidate_outage_cache()
     conn = AsyncMock()
     # источник 1 --L1(задв.)-- 2 --L2 (авария)-- 3 --L3(задв.)-- 4 --L4-- 5
     lines = [_line(1, 1, 2), _line(2, 2, 3), _line(3, 3, 4), _line(4, 4, 5), *extra_lines]
-    dampers = [_damper(301, 1), _damper(303, 3)]
+    dampers = [_damper(301, 1), _damper(303, 3), *extra_dampers]
     consumers = [
         {"ctype": "real", "id": 7, "nodeid": 3, "name": "в зоне", "heating_load": 0.4,
          "ventilation_load": 0.0, "hot_water_load": 0.1, "technology_load": 0.0},
@@ -261,7 +261,7 @@ def _downstream_case(extra_lines=()):
          "ventilation_load": 0.0, "hot_water_load": 0.5, "technology_load": 0.0},
     ]
     conn.fetch = _net_fetch(lines, dampers, consumers, sources=[1])
-    return asyncio.run(simulate_outage_isolation(conn, line_id=2))
+    return asyncio.run(simulate_outage_isolation(conn, line_id=target, failed_valve_ids=failed))
 
 
 def test_outage_counts_consumers_below_closed_valves_as_estimate():
@@ -281,6 +281,81 @@ def test_outage_ring_keeps_supply_through_bypass():
     result = _downstream_case(extra_lines=[_line(5, 1, 5)])
     assert result["downstream_consumers"] == []
     assert result["summary"]["downstream_nodes_count"] == 0
+
+
+def _valve_reasons(result):
+    return {v["id"]: (v["required"], v["reason"]) for v in result["valves_to_close"]}
+
+
+def test_mincut_marks_valve_without_supply_behind_as_optional():
+    """Задвижка 301 отсекает источник — обязательна; за 303 только тупик без питания."""
+    result = _downstream_case()
+    assert _valve_reasons(result) == {301: (True, "supply"), 303: (False, "no_supply")}
+    assert result["summary"]["valves_required_count"] == 1
+
+
+def test_mincut_ring_makes_far_valve_required():
+    """В кольце питание приходит в обход — задвижку 303 закрыть обязательно."""
+    result = _downstream_case(extra_lines=[_line(5, 1, 5)])
+    assert _valve_reasons(result) == {301: (True, "supply"), 303: (True, "supply")}
+
+
+def test_mincut_valve_on_damaged_line_is_inside_zone():
+    result = _downstream_case(extra_dampers=[_damper(302, 2)])
+    assert _valve_reasons(result)[302] == (False, "inside_zone")
+
+
+def test_feed_point_inside_zone_is_reported():
+    """Авария на участке у источника: источник в зоне, задвижками его не отсечь."""
+    result = _downstream_case(target=1)
+    assert result["feed_points_in_zone"] == [{"node_id": 1, "kind": "heat_source"}]
+    assert result["summary"]["feed_points_in_zone_count"] == 1
+    assert _valve_reasons(result) == {301: (False, "inside_zone"), 303: (False, "no_supply")}
+
+
+def test_failed_valve_extends_zone_to_next_valves():
+    """303 не держит: зона доходит до конца тупика, потребитель 8 уже в зоне, а не ниже."""
+    result = _downstream_case(failed=[303])
+    assert _valve_reasons(result) == {301: (True, "supply")}
+    assert [v["id"] for v in result["failed_valves"]] == [303]
+    assert result["summary"]["failed_valves_count"] == 1
+    assert result["summary"]["isolated_lines_count"] == 3          # L2, L3, L4
+    assert sorted(c["id"] for c in result["affected_consumers"]) == [7, 8]
+    assert result["downstream_consumers"] == []
+
+
+def test_failed_valve_in_chamber_takes_chamber_into_zone():
+    invalidate_outage_cache()
+    conn = AsyncMock()
+    lines = [_line(10, 1, 2), _line(20, 2, 3)]
+    conn.fetch = _net_fetch(lines, [_damper(201, 900, owner=2), _damper(203, 901, owner=2)])
+    result = asyncio.run(simulate_outage_isolation(conn, line_id=10, failed_valve_ids=[201]))
+    assert result["boundary_nodes"] == []
+    assert result["summary"]["isolated_lines_count"] == 2
+    assert [v["id"] for v in result["failed_valves"]] == [201]
+
+
+def test_total_with_downstream_includes_technology_load():
+    invalidate_outage_cache()
+    conn = AsyncMock()
+    consumers = [{"ctype": "real", "id": 1, "nodeid": 2, "name": "цех", "heating_load": 0.5,
+                  "ventilation_load": 0.0, "hot_water_load": 0.0, "technology_load": 0.3}]
+    conn.fetch = _net_fetch([_line(10, 1, 2)], [], consumers, sources=[1])
+    summary = asyncio.run(simulate_outage_isolation(conn, line_id=10))["summary"]
+    assert summary["total_load_gcal_h"] == pytest.approx(0.8)
+    assert summary["total_with_downstream_load_gcal_h"] == pytest.approx(0.8)
+
+
+def test_valve_isolation_request_limits_failed_valves():
+    from pydantic import ValidationError
+
+    from routers.analysis import ValveIsolationRequest
+
+    assert ValveIsolationRequest(line_id=1).failed_valve_ids == []
+    with pytest.raises(ValidationError):
+        ValveIsolationRequest(line_id=1, failed_valve_ids=[0])
+    with pytest.raises(ValidationError):
+        ValveIsolationRequest(line_id=1, failed_valve_ids=list(range(1, 502)))
 
 
 def test_reachable_from_sources_respects_blocked_lines_and_removed_nodes():

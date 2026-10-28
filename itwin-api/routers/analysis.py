@@ -29,12 +29,14 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["analysis"])
 
 
+_TRACE_IDS = Field(default_factory=list, max_length=500)
+
+
 class ValveIsolationRequest(BaseModel):
     line_id: Optional[int] = None
     node_id: Optional[int] = None
-
-
-_TRACE_IDS = Field(default_factory=list, max_length=500)
+    # Задвижки, которые «не держат» или недоступны: зона расширяется до следующих
+    failed_valve_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
 
 
 class TraceRequest(BaseModel):
@@ -214,7 +216,8 @@ async def admissibility_query(
 async def api_valve_isolation(req: ValveIsolationRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
     async with acquire_conn() as conn:
         try:
-            return await simulate_outage_isolation(conn, line_id=req.line_id, node_id=req.node_id)
+            return await simulate_outage_isolation(
+                conn, line_id=req.line_id, node_id=req.node_id, failed_valve_ids=req.failed_valve_ids)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
