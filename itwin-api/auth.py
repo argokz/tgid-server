@@ -599,4 +599,6 @@ PUBLIC_GET_PREFIXES: tuple[str, ...] = (
     # проверка доступа к GeoServer (nginx auth_request) и выход: сами разбирают cookie
     "/auth/check",
     "/auth/logout",
+    # метрики Prometheus: свой токен METRICS_TOKEN (observability.py)
+    "/metrics",
 )
