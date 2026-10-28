@@ -182,11 +182,15 @@ from activity import ActivityMiddleware  # noqa: E402
 
 app.add_middleware(ActivityMiddleware)
 
-# Метрики Prometheus (observability.py) — самый внешний слой: учитывает и отказы других слоёв
-from observability import MetricsMiddleware, router as metrics_router  # noqa: E402
-
-app.add_middleware(MetricsMiddleware)
-app.include_router(metrics_router)
+# Метрики Prometheus (observability.py) — самый внешний слой: учитывает и отказы других слоёв.
+# Скрипты выкатки не ставят зависимости: без prometheus-client API работает, метрик нет.
+try:
+    from observability import MetricsMiddleware, router as metrics_router  # noqa: E402
+except ImportError as exc:
+    logger.warning("Метрики /metrics выключены: %s (pip install -r requirements.txt)", exc)
+else:
+    app.add_middleware(MetricsMiddleware)
+    app.include_router(metrics_router)
 
 
 @app.exception_handler(asyncpg.exceptions.InsufficientPrivilegeError)
