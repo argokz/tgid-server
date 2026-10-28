@@ -109,6 +109,12 @@ async def health():
     status = "ok" if db_ok else "degraded"
     if db_ok and not redis_ok:
         status = "degraded"
+    # Схема базы города (database/city_schema.py): веб-добавки на месте, была ли переконвертация
+    from database.city_schema import STATE as city_schema_state
+
+    city_schema = {k: v for k, v in city_schema_state.items() if k not in ("db_oid", "reset_pending")}
+    if city_schema["status"] == "error":
+        status = "degraded"
 
     return {
         "status": status,
@@ -123,6 +129,7 @@ async def health():
             "error": redis_error,
             "note": None if redis_ok else "sety / heat-loss run требуют Redis + Celery worker",
         },
+        "city_schema": city_schema,
         "routes": len(_route_paths()),
         "russian_names_initialized": russian_names_manager.initialized,
         "flags": {

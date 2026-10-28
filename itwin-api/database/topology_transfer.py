@@ -178,6 +178,12 @@ async def _column_exists(conn, table: str, column: str) -> bool:
 
 _NODE_REF_CACHE: list[tuple[str, str]] | None = None
 
+
+def reset_node_ref_cache() -> None:
+    """После пересоздания базы десктопом набор колонок-ссылок на узел мог измениться."""
+    global _NODE_REF_CACHE
+    _NODE_REF_CACHE = None
+
 # Ссылки на узел, чьё имя не начинается с nodeid, но по смыслу — тот же FK на nodes.id:
 # internalnodeid — узел-владелец внутренней схемы (ИТП потребителя), remontnodeid — узел ремонта.
 EXTRA_NODE_REF_COLUMNS: tuple[tuple[str, str], ...] = (

@@ -124,6 +124,21 @@ class _StateCollector:
             size.add_metric(["idle"], idle)
         yield size
 
+        from database.city_schema import STATE as schema
+
+        ok = GaugeMetricFamily(
+            "tgid_city_schema_ok", "Веб-добавки в базе города на месте (1) или нет (0)", labels=["status"]
+        )
+        ok.add_metric([schema["status"]], 1 if schema["status"] in ("ok", "applied") else 0)
+        yield ok
+        yield GaugeMetricFamily(
+            "tgid_city_schema_missing", "Недостающие пункты схемы базы города", value=len(schema["missing"])
+        )
+        yield GaugeMetricFamily(
+            "tgid_city_db_recreated", "Сколько раз база пересоздана десктопом с запуска процесса",
+            value=schema["recreated"],
+        )
+
         up = GaugeMetricFamily("tgid_celery_queue_up", "Очередь расчётов доступна (1) или нет (0)")
         up.add_metric([], 0 if self.queue_length is None else 1)
         yield up

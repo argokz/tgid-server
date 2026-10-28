@@ -107,3 +107,58 @@ def test_mercator_kz_cities_need_no_own_srid():
         assert not any("SRID" in n for n in names)
         assert "колонка linesobj.internalnodeid" not in names and "функции tg_format*" in names
         assert "srid = 3857" in cs.ready_sql(city)
+
+
+class _OidConn(_Conn):
+    """База с oid: пересоздание десктопом (DROP + CREATE DATABASE) меняет oid при том же имени."""
+
+    oid = 100
+
+    async def fetchval(self, sql, *args):
+        if "from pg_database where datname = current_database()" in sql:
+            return self.oid
+        if "Find_SRID" in sql or sql.startswith("SELECT exists (SELECT 1 FROM information_schema.columns"):
+            return None  # load_net_srid: SRID и колонки сети не меняются
+        return await super().fetchval(sql, *args)
+
+
+class _Pool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+
+def test_recreated_database_resets_caches_now_and_when_ready(monkeypatch):
+    resets = []
+    monkeypatch.setattr(cs, "reset_city_caches", lambda: resets.append(1))
+    monkeypatch.setattr(cs, "STATE", {**cs.STATE, "db_oid": None, "recreated": 0, "reset_pending": False})
+    conn = _OidConn("almaty")
+    pool = _Pool(conn)
+
+    run(cs.run_once(pool, "almaty"))          # первый проход: запомнили базу
+    assert resets == [] and cs.STATE["recreated"] == 0 and cs.STATE["status"] == "ok"
+
+    conn.oid, conn.ready = 200, False           # десктоп пересоздал базу и ещё пишет в неё
+    run(cs.run_once(pool, "almaty"))
+    assert resets == [1] and cs.STATE["recreated"] == 1 and cs.STATE["status"] == "not_ready"
+
+    conn.ready = True                           # конвертер закончил — сбросить ещё раз
+    run(cs.run_once(pool, "almaty"))
+    assert resets == [1, 1] and cs.STATE["status"] == "ok" and not cs.STATE["reset_pending"]
+
+    run(cs.run_once(pool, "almaty"))            # дальше без лишних сбросов
+    assert resets == [1, 1] and cs.STATE["recreated"] == 1
+
+
+def test_reset_city_caches_clears_api_caches(monkeypatch):
+    from database import outage_simulation, sql_ident, topology_transfer
+
+    calls = []
+    monkeypatch.setattr(outage_simulation, "invalidate_outage_cache", lambda: calls.append("outage"))
+    monkeypatch.setattr(sql_ident, "reset_catalog_cache", lambda: calls.append("catalog"))
+    topology_transfer._NODE_REF_CACHE = [("nodes", "id")]
+    cs.reset_city_caches()
+    assert calls == ["outage", "catalog"] and topology_transfer._NODE_REF_CACHE is None

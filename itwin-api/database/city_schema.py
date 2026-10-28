@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -198,14 +199,61 @@ def upkeep_interval_s() -> float:
         return 600.0
 
 
+# Последняя проверка в этом процессе — для /health и метрик (observability.py)
+STATE: dict = {
+    "status": "unknown", "checked_at": None, "missing": [], "applied": [], "error": None,
+    "db_oid": None, "recreated": 0, "recreated_at": None, "reset_pending": False,
+}
+
+
+def reset_city_caches() -> None:
+    """Кеши API, построенные по прежней базе: граф отключений, каталог таблиц, ссылки на узлы."""
+    from database.outage_simulation import invalidate_outage_cache
+    from database.sql_ident import reset_catalog_cache
+    from database.topology_transfer import reset_node_ref_cache
+
+    invalidate_outage_cache()
+    reset_catalog_cache()
+    reset_node_ref_cache()
+
+
+async def _note_db_identity(conn, city: str) -> bool:
+    """True, если база пересоздана с прошлой проверки (переконвертация в десктопе: DROP + CREATE DATABASE).
+
+    oid базы в pg_database меняется при пересоздании, имя — нет.
+    """
+    oid = await conn.fetchval("select oid from pg_database where datname = current_database()")
+    prev = STATE["db_oid"]
+    STATE["db_oid"] = oid
+    if prev is None or prev == oid:
+        return False
+    STATE["recreated"] += 1
+    STATE["recreated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    logger.warning("База города %s пересоздана (переконвертация из десктопа): сбрасываю кеши API", city)
+    return True
+
+
 async def run_once(pool, city: str) -> dict:
-    """Один проход для пула API; после применения — перечитать SRID и колонки сети."""
+    """Один проход для пула API; после применения или пересоздания базы — перечитать SRID и кеши."""
     from database.net_srid import load_net_srid
 
     async with pool.acquire() as conn:
+        if await _note_db_identity(conn, city):
+            reset_city_caches()  # не отдавать данные прежней базы
+            STATE["reset_pending"] = True
         res = await ensure(conn, city)
-        if res["status"] == "applied":
+        ready = res["status"] in ("ok", "applied")
+        # конвертер мог ещё дописывать базу, пока кеши заново строились, — сбросить, когда готова
+        if ready and STATE.get("reset_pending"):
+            reset_city_caches()
+            STATE["reset_pending"] = False
             await load_net_srid(conn)
+        elif res["status"] == "applied":
+            await load_net_srid(conn)
+    STATE.update(
+        status=res["status"], checked_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        missing=res["missing"], applied=res["applied"], error=res.get("error"),
+    )
     status = res["status"]
     if status == "applied":
         logger.info("База города %s доведена: %s", city, ", ".join(res["applied"]))
