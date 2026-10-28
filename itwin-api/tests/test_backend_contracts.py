@@ -12,6 +12,8 @@ def test_openapi_builds_with_key_paths():
     paths = main.app.openapi()["paths"]
     for p in (
         "/api/analysis/valve-isolation",
+        "/api/analysis/trace",
+        "/api/analysis/subnetworks",
         "/api/network-queries/volume",
         "/api/calculations/{calculation_id}/results/geojson",
         "/api/piezometer/excel",

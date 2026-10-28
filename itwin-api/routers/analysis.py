@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -22,6 +22,7 @@ from database.network_queries import (
     query_network_volume,
 )
 from database.outage_simulation import simulate_outage_isolation
+from database.network_trace import list_subnetworks, run_trace
 from routers.piezometer import _build_route, _get_topology_graph
 
 logger = get_logger(__name__)
@@ -31,6 +32,19 @@ router = APIRouter(tags=["analysis"])
 class ValveIsolationRequest(BaseModel):
     line_id: Optional[int] = None
     node_id: Optional[int] = None
+
+
+_TRACE_IDS = Field(default_factory=list, max_length=500)
+
+
+class TraceRequest(BaseModel):
+    trace_type: Literal["connected", "upstream", "downstream", "subnetwork"]
+    start_line_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
+    start_node_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
+    barrier_line_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
+    barrier_node_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
+    stop_at_valves: bool = False
+    include_geometry: bool = True
 
 
 def _parse_fragments(
@@ -206,3 +220,39 @@ async def api_valve_isolation(req: ValveIsolationRequest, _: Annotated[AuthUser,
         except Exception as exc:
             logger.error(f"Error in valve isolation: {exc}", exc_info=True)
             raise HTTPException(status_code=500, detail="Не удалось выполнить анализ отключения")
+
+
+@router.post("/api/analysis/trace")
+async def api_network_trace(req: TraceRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
+    """Трассировка сети по топологии: связность, путь к источникам, ниже по потоку, зона."""
+    async with acquire_conn() as conn:
+        try:
+            return await run_trace(
+                conn,
+                trace_type=req.trace_type,
+                start_line_ids=req.start_line_ids,
+                start_node_ids=req.start_node_ids,
+                barrier_line_ids=req.barrier_line_ids,
+                barrier_node_ids=req.barrier_node_ids,
+                stop_at_valves=req.stop_at_valves,
+                include_geometry=req.include_geometry,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            logger.error(f"Error in network trace: {exc}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Не удалось выполнить трассировку")
+
+
+@router.get("/api/analysis/subnetworks")
+async def api_subnetworks(
+    _: Annotated[AuthUser, Depends(require_roles("viewer"))],
+    min_nodes: int = Query(1, ge=1, le=100_000),
+):
+    """Зоны (компоненты связности) сети и «острова» без источника."""
+    async with acquire_conn() as conn:
+        try:
+            return await list_subnetworks(conn, min_nodes=min_nodes)
+        except Exception as exc:
+            logger.error(f"Error in subnetworks: {exc}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Не удалось построить зоны сети")

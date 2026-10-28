@@ -9,7 +9,8 @@
   Открытые задвижки попадают в «закрыть», уже закрытые — в отдельный список.
 - Отключённые потребители (consumerstateid <> 1) не учитываются.
 - Потребители ниже закрытых задвижек (полная модель, оценка по топологии): обход графа от
-  источников (heatsources.nodeid) в нормальном режиме и после отключения — зона аварии
+  питающих точек (heatsources.nodeid и узлы заданного напора setpressnodes — вход квартальных
+  сетей из магистрали) в нормальном режиме и после отключения — зона аварии
   выведена, участки с закрываемыми и уже закрытыми задвижками не проводят воду, отключённые
   трубы не проводят. Узлы, которые были достижимы от источника и перестали, — «без питания
   ниже зоны»; их потребители идут отдельным списком. Кольцевание учитывается (есть обходной
@@ -124,15 +125,25 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
         adj.setdefault(n1, []).append((lid, n2))
         adj.setdefault(n2, []).append((lid, n1))
 
+    # Питающие точки: источники и узлы заданного напора (setPressNodes) — через них квартальные
+    # сети (отдельные фрагменты) получают воду из магистрали; без них такие сети «без источника».
     source_rows = await conn.fetch(
-        "SELECT DISTINCT h.nodeid FROM heatsources h JOIN nodes n ON n.id = h.nodeid "
+        "SELECT h.nodeid, 'heat_source' AS kind FROM heatsources h JOIN nodes n ON n.id = h.nodeid "
+        "WHERE COALESCE(n.removed, 0) = 0 "
+        "UNION ALL "
+        "SELECT s.nodeid, 'set_pressure' AS kind FROM setpressnodes s JOIN nodes n ON n.id = s.nodeid "
         "WHERE COALESCE(n.removed, 0) = 0")
-    sources = {r["nodeid"] for r in source_rows if r["nodeid"] in adj}
+    source_kinds: dict[int, str] = {}
+    for r in source_rows:
+        if r["nodeid"] in adj:
+            source_kinds.setdefault(r["nodeid"], r.get("kind") or "heat_source")
+    sources = set(source_kinds)
     normally_closed = {lid for lid, valves in dampers_by_line.items()
                        if any(v["state_id"] == DAMPER_CLOSED for v in valves)}
 
     _outage_cached_data = {
         "sources": sources,
+        "source_kinds": source_kinds,
         "normally_closed_lines": normally_closed,
         "baseline_reachable": reachable_from_sources(adj, sources, blocked_lines=normally_closed),
         "line_info": line_info,

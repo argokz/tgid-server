@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock
 import pytest
 from database.outage_simulation import (
+    get_outage_network_graph,
     invalidate_outage_cache,
     reachable_from_sources,
     simulate_outage_isolation,
@@ -301,3 +302,25 @@ def test_consumer_loads_sql_separates_hot_water_from_technology():
     rc_parts = real.split("::double precision,")
     assert "avghlgvsopenflow" in rc_parts[2] and "avghlgvsclosepreon" in rc_parts[2] and "closesys" not in rc_parts[2]
     assert "avghlclosesys" in rc_parts[3]
+
+
+def test_set_pressure_nodes_feed_quarter_networks():
+    """Квартальная сеть питается через узел заданного напора, а не от heatsources."""
+    invalidate_outage_cache()
+    conn = AsyncMock()
+
+    async def fetch(query, *args):
+        q = query.lower()
+        if "heatsources" in q:
+            assert "setpressnodes" in q
+            return [{"nodeid": 1, "kind": "set_pressure"}, {"nodeid": 99, "kind": "heat_source"}]
+        if "linesobj" in q and "heatpipesections" in q:
+            return [_line(10, 1, 2), _line(20, 2, 3)]
+        return []
+
+    conn.fetch = fetch
+    net = asyncio.run(get_outage_network_graph(conn, force_refresh=True))
+    assert net["sources"] == {1}  # узла 99 нет в графе
+    assert net["source_kinds"] == {1: "set_pressure"}
+    assert net["baseline_reachable"] == {1, 2, 3}
+    invalidate_outage_cache()
