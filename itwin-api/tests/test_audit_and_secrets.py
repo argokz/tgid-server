@@ -173,8 +173,9 @@ def test_no_out_file_means_nothing_to_write(tmp_path):
 def test_worker_masks_db_password(monkeypatch):
     monkeypatch.setenv("DB_PASSWORD", "S3cr-et!")
     cmd = worker._sety_base_cmd("out.txt", True)
-    assert "S3cr-et!" in cmd  # sety нужен пароль в аргументах...
-    assert "S3cr-et!" not in worker._masked(cmd)  # ...но в лог он не попадает
+    assert "S3cr-et!" not in cmd  # пароль не виден в списке процессов: sety берёт его из окружения
+    assert "-password" not in cmd
+    assert "S3cr-et!" not in worker._masked(cmd + ["-password", "S3cr-et!"])  # и в лог не попадает
     assert worker._redact("login failed S3cr-et!") == "login failed ***"
 
 

@@ -134,7 +134,8 @@ def _sety_base_cmd(out_file_path: str, dross: bool) -> list[str]:
         "-database", os.getenv("DB_NAME"),
         "-user", os.getenv("DB_USER"),
         "-port", os.getenv("DB_PORT"),
-        "-password", os.getenv("DB_PASSWORD"),
+        # Пароль не передаём аргументом (виден в списке процессов): sety берёт DB_PASSWORD
+        # из окружения (sety/config.py), а subprocess наследует окружение воркера.
         "-rdbms", "postgreSQL",
         "-out_file", out_file_path,
         "-color",
