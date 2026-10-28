@@ -171,6 +171,9 @@ def test_no_out_file_means_nothing_to_write(tmp_path):
 
 
 def test_worker_masks_db_password(monkeypatch):
+    # окружение воркера (в CI .env нет): без адреса базы в аргументах был бы None
+    for name, value in {"DB_HOST": "db", "DB_NAME": "almatygid", "DB_USER": "tgid", "DB_PORT": "5432"}.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("DB_PASSWORD", "S3cr-et!")
     cmd = worker._sety_base_cmd("out.txt", True)
     assert "S3cr-et!" not in cmd  # пароль не виден в списке процессов: sety берёт его из окружения

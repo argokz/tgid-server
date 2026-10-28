@@ -1,7 +1,8 @@
 """Фоновые файлы: «задача → статус → скачать файл».
 
 Тяжёлые выгрузки (паспорт 10–15 с, Excel-отчёты до 13 с, сверки АЛСЕКО / электросети) строятся
-в воркере Celery (задача ``build_file_job``); готовый файл кладётся в Redis с TTL, API отдаёт
+в воркере Celery (задача ``build_file_job``); готовый файл кладётся в хранилище file_storage.py
+(FILE_STORAGE: Redis по умолчанию, каталог на диске или MinIO/S3), описание — в Redis, оба с TTL; API отдаёт
 статус задачи и сам файл. Синхронные эндпоинты остаются для совместимости и используют те же
 построители.
 
@@ -260,7 +261,7 @@ def content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
-# --- хранилище результата (Redis, TTL) --------------------------------------------------
+# --- хранилище результата: описание в Redis, байты — в file_storage (FILE_STORAGE), TTL ---
 
 def ttl_seconds() -> int:
     try:
@@ -292,16 +293,34 @@ def _redis():
     return _client
 
 
+_storage_cache: dict[tuple, Any] = {}
+
+
+def _storage():
+    """Где лежат байты файла (file_storage.py, FILE_STORAGE): описание задачи всегда в Redis.
+
+    В режиме redis ключ данных прежний — <KEY_PREFIX><задача>:data.
+    """
+    import file_storage
+
+    kind = (os.getenv("FILE_STORAGE") or "redis").strip().lower()
+    if kind == "redis":
+        return file_storage.RedisStorage(_redis(), prefix=KEY_PREFIX)
+    key = (kind, os.getenv("FILE_STORAGE_DIR"), os.getenv("FILE_S3_ENDPOINT"), os.getenv("FILE_S3_BUCKET"))
+    if key not in _storage_cache:
+        _storage_cache[key] = file_storage.from_env(_redis)
+    return _storage_cache[key]
+
+
 def store_result(task_id: str, result: FileResult, *, owner: str = "", kind: str = "") -> dict[str, Any]:
     meta = {
         "filename": result.filename, "media_type": result.media_type, "size": len(result.content),
         "headers": result.headers, "owner": owner, "kind": kind,
     }
     ttl = ttl_seconds()
-    pipe = _redis().pipeline()
-    pipe.set(f"{KEY_PREFIX}{task_id}:data", result.content, ex=ttl)
-    pipe.set(f"{KEY_PREFIX}{task_id}:meta", json.dumps(meta, ensure_ascii=False), ex=ttl)
-    pipe.execute()
+    # данные — до описания: задача «готова» только когда файл уже лежит в хранилище
+    _storage().put(f"{task_id}:data", result.content, ttl)
+    _redis().set(f"{KEY_PREFIX}{task_id}:meta", json.dumps(meta, ensure_ascii=False), ex=ttl)
     return {**meta, "ttl": ttl}
 
 
@@ -314,7 +333,7 @@ def load_result(task_id: str) -> Optional[tuple[dict[str, Any], bytes]]:
     meta = load_meta(task_id)
     if meta is None:
         return None
-    data = _redis().get(f"{KEY_PREFIX}{task_id}:data")
+    data = _storage().get(f"{task_id}:data")
     if data is None:
         return None
     return meta, data

@@ -1,10 +1,18 @@
-# Local / stand stack for itwin-api + Celery (sety) + Redis.
+# Local / stand stack for itwin-api + Celery (sety) + Redis + S3-хранилище файлов.
 # Production cutover: point nginx /map-api upstream at the `api` service.
+# Порт API на хосте — API_PORT (по умолчанию 8011; на сервере прода 8011 занят — задайте другой).
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+
+  # Хранилище файлов (file_storage.py, FILE_STORAGE=s3): SeaweedFS, Apache-2.0, S3-совместимое.
+  # MinIO свои образы больше не публикует; клиент API работает с любым S3.
+  s3:
+    image: chrislusf/seaweedfs:3.97
+    command: ["server", "-dir=/data", "-s3"]
+    volumes:
+      - s3-data:/data
     restart: unless-stopped
 
   api:
@@ -13,16 +21,22 @@ services:
       dockerfile: Dockerfile
     env_file:
       - ./itwin-api/.env
-    environment:
+    environment: &stack-env
       REDIS_ADDR: redis:6379
+      FILE_STORAGE: ${FILE_STORAGE:-s3}
+      FILE_S3_ENDPOINT: s3:8333
+      FILE_S3_BUCKET: ${FILE_S3_BUCKET:-tgid-files}
+      FILE_S3_ACCESS_KEY: ${FILE_S3_ACCESS_KEY:-tgid}
+      FILE_S3_SECRET_KEY: ${FILE_S3_SECRET_KEY:-tgid}
       AUTH_DISABLED: ${AUTH_DISABLED:-false}
       MUTATIONS_ENABLED: ${MUTATIONS_ENABLED:-false}
       TOPOLOGY_MUTATIONS_ENABLED: ${TOPOLOGY_MUTATIONS_ENABLED:-false}
       STRICT_AUTH: ${STRICT_AUTH:-true}
     ports:
-      - "8011:8011"
+      - "${API_PORT:-8011}:8011"
     depends_on:
       - redis
+      - s3
     restart: unless-stopped
 
   worker:
@@ -32,9 +46,12 @@ services:
     command: ["celery", "-A", "worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
     env_file:
       - ./itwin-api/.env
-    environment:
-      REDIS_ADDR: redis:6379
+    environment: *stack-env
     depends_on:
       - redis
+      - s3
       - api
     restart: unless-stopped
+
+volumes:
+  s3-data:

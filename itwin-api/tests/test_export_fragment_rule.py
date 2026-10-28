@@ -88,8 +88,9 @@ def test_parse_fragment_ids_merges_dedupes_and_rejects_garbage():
 
 
 def test_shp_endpoint_rejects_bad_fragments_instead_of_exporting_whole_network():
-    with TestClient(main.app) as client:
-        assert client.get("/api/export/shp", params={"fragments": "74,abc"}).status_code == 400
+    # без with: старт приложения (пул БД) не нужен — построители подменены, в CI базы нет
+    client = TestClient(main.app)
+    assert client.get("/api/export/shp", params={"fragments": "74,abc"}).status_code == 400
 
 
 def test_dxf_endpoint_accepts_fragment_list():
@@ -191,8 +192,9 @@ def test_excel_endpoint_passes_fragments_and_exposes_completeness_headers(monkey
         return rg.ExcelReport(b"xlsx", rows=5, total=9, fragment_ids=fragment_ids, fragment_filter_applied=True)
 
     monkeypatch.setattr("routers.reports.build_excel_report", fake_build)
-    with TestClient(main.app) as client:
-        r = client.get("/api/reports/excel/ut", params={"fragments": "99,74"})
+    # без with: старт приложения (пул БД) не нужен — построители подменены, в CI базы нет
+    client = TestClient(main.app)
+    r = client.get("/api/reports/excel/ut", params={"fragments": "99,74"})
     assert r.status_code == 200
     assert captured == {"doc_type": "ut", "fragment_ids": [74, 99]}
     assert r.headers["x-report-truncated"] == "1"
@@ -210,8 +212,9 @@ def test_excel_endpoint_sends_body_in_one_response_with_length(monkeypatch):
         return rg.ExcelReport(body, rows=1, total=1, fragment_ids=None, fragment_filter_applied=False)
 
     monkeypatch.setattr("routers.reports.build_excel_report", fake_build)
-    with TestClient(main.app) as client:
-        r = client.get("/api/reports/excel/pt")
+    # без with: старт приложения (пул БД) не нужен — построители подменены, в CI базы нет
+    client = TestClient(main.app)
+    r = client.get("/api/reports/excel/pt")
     assert r.status_code == 200
     assert r.content == body
     assert r.headers["content-length"] == str(len(body))
