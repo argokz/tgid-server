@@ -7,6 +7,8 @@
   TGID_CITIES="almaty:Алматы,astana:Астана,shatura:Шатура" — справочник: код:название[:путь веба], путь по умолчанию /tgid/<код>/
   TGID_CITY="astana"                         — код города этого API; без него — из DB_NAME
                                                (almatygid → almaty, astanagid_2026_09_22 → astana, shatura → shatura, tarazgid → taraz)
+  TGID_CITY_DBS="almaty=almatygid,astana=astanagid_2026_09_22" — один API на несколько городов: город запроса —
+                                               по префиксу пути /city/<код>/ (city_context.py), база — из этого списка
 Мастер-учётке доступны все города. Пользователи PostgreSQL (AUTH_BACKEND=pg) городом не ограничиваются:
 им доступ к базе города даёт сам PostgreSQL (GRANT CONNECT).
 """
@@ -15,10 +17,13 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Iterable, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterable, Iterator, Optional
 
 DEFAULT_CITIES = "almaty:Алматы,astana:Астана,shatura:Шатура,taraz:Тараз,aktobe:Актобе,shymkent:Шымкент,karaganda:Караганда,ekibastuz:Экибастуз,atbasar:Атбасар,kokshetau:Кокшетау,shakhtinsk:Шахтинск"
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
+_DB_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 # база названа иначе, чем код города: shahtinskgid → shakhtinsk
 _DB_CITY_ALIASES = {"shahtinsk": "shakhtinsk"}
 
@@ -48,8 +53,89 @@ def city_codes() -> list[str]:
     return [c["code"] for c in cities_catalog()]
 
 
+# Город запроса или задачи в API на несколько городов (TGID_CITY_DBS); задаёт city_context.py и воркер
+_city_var: ContextVar[Optional[str]] = ContextVar("tgid_city", default=None)
+
+
+def city_databases() -> dict[str, str]:
+    """TGID_CITY_DBS → {код: база}; пусто — API одного города (DB_NAME)."""
+    raw = os.getenv("TGID_CITY_DBS", "").strip()
+    result: dict[str, str] = {}
+    for part in raw.split(","):
+        code, sep, db = (b.strip() for b in part.partition("="))
+        code = code.lower()
+        if not sep or not _CODE_RE.match(code) or not _DB_RE.match(db):
+            if part.strip():
+                raise CityError(f"TGID_CITY_DBS: неверный элемент «{part.strip()}» (нужно код=база)")
+            continue
+        if code in result:
+            raise CityError(f"TGID_CITY_DBS: город {code} указан дважды")
+        result[code] = db
+    return result
+
+
+def multi_city() -> bool:
+    return bool(os.getenv("TGID_CITY_DBS", "").strip())
+
+
+def city_db_name(code: Optional[str] = None) -> str:
+    """База города (по умолчанию — города запроса); у API одного города — DB_NAME."""
+    if not multi_city():
+        return os.getenv("DB_NAME", "")
+    code = current_city() if code is None else code
+    db = city_databases().get(code)
+    if not db:
+        raise CityError(f"Город «{code or '—'}» не обслуживается этим API")
+    return db
+
+
+def cache_key() -> str:
+    """Ключ кешей процесса, построенных по базе: город запроса в API на несколько городов, иначе ''."""
+    return current_city() if multi_city() else ""
+
+
+# Очереди Celery API на несколько городов: tgid.<город> (FILE_JOBS_QUEUE и т. п. — <очередь>.<город>).
+# Воркер слушает очереди своих городов: общий — все, отдельный для крупного города — одну.
+TASK_QUEUE = "tgid"
+
+
+def task_queue(explicit: Optional[str] = None) -> Optional[str]:
+    """Очередь задачи Celery: у API одного города — заданная (None — по умолчанию), иначе — очередь города."""
+    if not multi_city():
+        return explicit
+    city = current_city()
+    if not city:
+        raise CityError("Задача вне запроса города: не определить очередь")
+    return f"{explicit or TASK_QUEUE}.{city}"
+
+
+def city_task_queues() -> list[str]:
+    """Очереди задач всех городов TGID_CITY_DBS (воркер, метрики)."""
+    return [f"{TASK_QUEUE}.{code}" for code in city_databases()]
+
+
+@contextmanager
+def use_city(code: str) -> Iterator[str]:
+    """Выполнить блок от имени города (фоновые задачи, воркер, доводка базы)."""
+    token = _city_var.set(code)
+    try:
+        yield code
+    finally:
+        _city_var.reset(token)
+
+
+def set_request_city(code: Optional[str]) -> None:
+    """Город текущей задачи asyncio (middleware и сигналы воркера — до обработчика, в той же задаче/потоке)."""
+    _city_var.set(code)
+
+
 def current_city() -> str:
-    """Код города этого API: TGID_CITY, иначе по имени базы (almatygid_copy → almaty)."""
+    """Код города: города запроса (API на несколько городов), иначе TGID_CITY или по имени базы (almatygid_copy → almaty)."""
+    scoped = _city_var.get()
+    if scoped:
+        return scoped
+    if multi_city():
+        return ""  # вне запроса города нет: молча брать DB_NAME значило бы читать чужую базу
     explicit = os.getenv("TGID_CITY", "").strip().lower()
     if explicit:
         return explicit
@@ -93,12 +179,13 @@ def to_stored(codes: Optional[list[str]]) -> Optional[str]:
 
 
 def allowed(cities: Optional[list[str]], city: Optional[str] = None) -> bool:
-    """Доступен ли город пользователю. Город API не из справочника (стенд, тесты) — без ограничения."""
+    """Доступен ли город пользователю. Город API одного города не из справочника (стенд, тесты) — без ограничения."""
     if cities is None:
         return True
     city = current_city() if city is None else city
     if city not in city_codes():
-        return True
+        # API на несколько городов: город вне справочника открыт только пользователям «все города»
+        return not multi_city()
     return city in cities
 
 

@@ -35,17 +35,17 @@ from typing import Any, Optional
 
 import asyncpg
 
-_outage_cached_data = None
-_outage_cached_time = 0.0
+# граф и время его постройки — по городам (cities.cache_key)
+_outage_cache: dict[str, tuple[dict, float]] = {}
 
 DAMPER_CLOSED = 2      # damperarmaturestates: 1 открыта, 2 закрыта, 4 частично открыта
 PIPE_DISCONNECTED = 2  # pipeSectStateID == 2 → isOtkl
 
 
 def invalidate_outage_cache():
-    global _outage_cached_data, _outage_cached_time
-    _outage_cached_data = None
-    _outage_cached_time = 0.0
+    from cities import cache_key
+
+    _outage_cache.pop(cache_key(), None)
 
 
 async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool = False, store: bool = True):
@@ -53,10 +53,12 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
 
     store=False — собрать по conn и не класть в кеш: так проверяют данные незавершённой транзакции
     (предпросмотр переноса сценария), которые не должны увидеть другие запросы."""
-    global _outage_cached_data, _outage_cached_time
+    from cities import cache_key
+
     now = time.time()
-    if store and not force_refresh and _outage_cached_data is not None and (now - _outage_cached_time) < 60.0:
-        return _outage_cached_data
+    cached = _outage_cache.get(cache_key())
+    if store and not force_refresh and cached is not None and (now - cached[1]) < 60.0:
+        return cached[0]
 
     # 1. Магистральные участки (без внутренних схем узлов) и состояние их труб
     q_lines = """
@@ -164,7 +166,7 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
         "adj": adj,
     }
     if store:
-        _outage_cached_data, _outage_cached_time = graph, now
+        _outage_cache[cache_key()] = (graph, now)
     return graph
 
 

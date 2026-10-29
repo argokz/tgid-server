@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from app_logging import get_logger
 from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
+from cities import cache_key
 from database.connect import get_pool
 from database.piezo_excel import generate_piezometer_excel
 from database.ut_out_columns import (
@@ -51,15 +52,15 @@ router = APIRouter(tags=["piezometer"])
 # Каждая пара соседних точек — отдельный поиск пути и запросы к БД
 MAX_WAYPOINTS = 200
 
-_piezo_cached_graph = None
-_piezo_cached_graph_time = 0.0
+# граф и время его постройки — по городам (cities.cache_key)
+_piezo_graphs: dict[str, tuple[nx.Graph, float]] = {}
 
 
 async def _get_topology_graph(conn):
-    global _piezo_cached_graph, _piezo_cached_graph_time
     now = time.time()
-    if _piezo_cached_graph is not None and (now - _piezo_cached_graph_time) < 60.0:
-        return _piezo_cached_graph
+    cached = _piezo_graphs.get(cache_key())
+    if cached is not None and (now - cached[1]) < 60.0:
+        return cached[0]
 
     q_lines = '''
         SELECT L.id, L.nodeid1, L.nodeid2, COALESCE(HPS.pipesectlength, 10.0) as length
@@ -75,14 +76,12 @@ async def _get_topology_graph(conn):
         if prev is None or row['length'] < prev.get('weight', 1e18):
             G.add_edge(row['nodeid1'], row['nodeid2'], id=row['id'], weight=row['length'])
 
-    _piezo_cached_graph = G
-    _piezo_cached_graph_time = now
+    _piezo_graphs[cache_key()] = (G, now)
     return G
 
 
 def invalidate_topology_cache():
-    global _piezo_cached_graph
-    _piezo_cached_graph = None
+    _piezo_graphs.pop(cache_key(), None)
 
 
 def _build_route(G: nx.Graph, waypoints: list[int]) -> list[int]:

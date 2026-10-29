@@ -27,6 +27,7 @@ load_dotenv()
 
 from auth import (  # noqa: E402
     PUBLIC_GET_PREFIXES,
+    apply_live_user_status,
     assert_production_auth_safe,
     auth_disabled,
     auth_required_get,
@@ -46,17 +47,26 @@ from utils.ini import storage  # noqa: E402
 from utils.russian_names import russian_names_manager  # noqa: E402
 
 
-def _start_db_upkeep():
-    """Доводка базы города (database/city_schema.py) — при запуске и периодически, в фоне."""
-    from cities import current_city
+def _start_db_upkeep() -> list[asyncio.Task]:
+    """Доводка базы города (database/city_schema.py) — при запуске и периодически, в фоне.
+
+    API на несколько городов доводит базу каждого города своей задачей (в контексте этого города).
+    """
+    from cities import city_databases, current_city, multi_city, use_city
     from database.city_schema import upkeep_interval_s, upkeep_loop
     from database.connect import get_pool
 
     interval = upkeep_interval_s()
     if not interval:
         logger.info("Доводка базы города выключена (DB_UPKEEP_INTERVAL_S=0)")
-        return None
-    return asyncio.create_task(upkeep_loop(get_pool(), current_city(), interval))
+        return []
+    if not multi_city():
+        return [asyncio.create_task(upkeep_loop(get_pool(), current_city(), interval))]
+    tasks = []
+    for code in city_databases():
+        with use_city(code):  # задача копирует контекст при создании
+            tasks.append(asyncio.create_task(upkeep_loop(None, code, interval)))
+    return tasks
 
 
 @asynccontextmanager
@@ -83,8 +93,8 @@ async def lifespan(app: FastAPI):
         logger.error(f"Ошибка при инициализации русских названий: {str(e)}")
 
     yield
-    if upkeep is not None:
-        upkeep.cancel()
+    for task in upkeep:
+        task.cancel()
     logger.info("Завершение приложения...")
     await close_users_db_pool()
     await close_db_pool()
@@ -136,7 +146,10 @@ class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         try:
-            decode_access_token(auth_header.split(" ", 1)[1].strip())
+            user = decode_access_token(auth_header.split(" ", 1)[1].strip())
+            # живая сверка: блокировка и доступ к городу запроса (users.cities) — для всех маршрутов,
+            # а не только с зависимостью get_current_user: токен общий для городов
+            await apply_live_user_status(user)
         except Exception as exc:  # noqa: BLE001
             detail = getattr(exc, "detail", str(exc))
             status_code = getattr(exc, "status_code", 401)
@@ -191,6 +204,12 @@ except ImportError as exc:
 else:
     app.add_middleware(MetricsMiddleware)
     app.include_router(metrics_router)
+
+# API на несколько городов (TGID_CITY_DBS): город — по префиксу /city/<код>/ (city_context.py).
+# Самый внешний слой: остальные слои и метрики видят путь уже без префикса и контекст города.
+from city_context import CityPathMiddleware  # noqa: E402
+
+app.add_middleware(CityPathMiddleware)
 
 
 @app.exception_handler(asyncpg.exceptions.InsufficientPrivilegeError)

@@ -26,8 +26,15 @@ FORBIDDEN_TABLES: frozenset[str] = frozenset(
 )
 
 _CACHE_TTL_S = 300.0
-_tables_cache: tuple[float, dict[str, str]] | None = None
-_columns_cache: dict[str, tuple[float, dict[str, str]]] = {}
+# по городам (cities.cache_key): город → (время, таблицы); (город, таблица) → (время, колонки)
+_tables_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_columns_cache: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
+
+
+def _city() -> str:
+    from cities import cache_key
+
+    return cache_key()
 
 
 class UnknownIdentifierError(ValueError):
@@ -51,30 +58,31 @@ def quote_ident(name: str) -> str:
 
 
 def reset_catalog_cache() -> None:
-    global _tables_cache
-    _tables_cache = None
-    _columns_cache.clear()
+    city = _city()
+    _tables_cache.pop(city, None)
+    for key in [k for k in _columns_cache if k[0] == city]:
+        del _columns_cache[key]
 
 
 async def _public_tables(conn) -> dict[str, str]:
     """{lower(name): name} для таблиц и представлений схемы public (кэш 5 мин)."""
-    global _tables_cache
     now = time.monotonic()
-    if _tables_cache and now - _tables_cache[0] < _CACHE_TTL_S:
-        return _tables_cache[1]
+    cached = _tables_cache.get(_city())
+    if cached and now - cached[0] < _CACHE_TTL_S:
+        return cached[1]
     rows = await conn.fetch(
         """SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'public'"""
     )
     mapping = {str(r["table_name"]).lower(): str(r["table_name"]) for r in rows}
-    _tables_cache = (now, mapping)
+    _tables_cache[_city()] = (now, mapping)
     return mapping
 
 
 async def _table_columns(conn, table: str) -> dict[str, str]:
     """{lower(column): column} для таблицы из каталога (кэш 5 мин)."""
     now = time.monotonic()
-    cached = _columns_cache.get(table)
+    cached = _columns_cache.get((_city(), table))
     if cached and now - cached[0] < _CACHE_TTL_S:
         return cached[1]
     rows = await conn.fetch(
@@ -83,7 +91,7 @@ async def _table_columns(conn, table: str) -> dict[str, str]:
         table,
     )
     mapping = {str(r["column_name"]).lower(): str(r["column_name"]) for r in rows}
-    _columns_cache[table] = (now, mapping)
+    _columns_cache[(_city(), table)] = (now, mapping)
     return mapping
 
 

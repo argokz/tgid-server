@@ -159,9 +159,9 @@ def test_reset_city_caches_clears_api_caches(monkeypatch):
     calls = []
     monkeypatch.setattr(outage_simulation, "invalidate_outage_cache", lambda: calls.append("outage"))
     monkeypatch.setattr(sql_ident, "reset_catalog_cache", lambda: calls.append("catalog"))
-    topology_transfer._NODE_REF_CACHE = [("nodes", "id")]
+    monkeypatch.setattr(topology_transfer, "_NODE_REF_CACHE", {"": [("nodes", "id")]})
     cs.reset_city_caches()
-    assert calls == ["outage", "catalog"] and topology_transfer._NODE_REF_CACHE is None
+    assert calls == ["outage", "catalog"] and topology_transfer._NODE_REF_CACHE == {}
 
 
 class _FreshDbConn(_Conn):
@@ -221,4 +221,14 @@ def test_martin_functions_item_from_env(monkeypatch, tmp_path):
     assert "public.tgid_mvt_heatpipesections(integer,integer,integer,json)" in item.check
     assert "public.tgid_mvt_uzel(integer,integer,integer,json)" in item.check
     monkeypatch.setenv("MARTIN_SQL_FILE", str(tmp_path / "missing.sql"))
+    assert "функции тайлов martin" not in [i.name for i in cs.city_items("almaty")]
+
+
+def test_martin_functions_from_city_dir(monkeypatch, tmp_path):
+    """API на несколько городов: MARTIN_SQL_DIR/<город>.sql — у каждого города свой файл."""
+    monkeypatch.delenv("MARTIN_SQL_FILE", raising=False)
+    monkeypatch.setenv("MARTIN_SQL_DIR", str(tmp_path))
+    (tmp_path / "astana.sql").write_text("CREATE OR REPLACE FUNCTION public.tgid_mvt_uzel(z integer) ...;\n",
+                                         encoding="utf-8")
+    assert cs.city_items("astana")[-1].files == (tmp_path / "astana.sql",)
     assert "функции тайлов martin" not in [i.name for i in cs.city_items("almaty")]

@@ -19,6 +19,8 @@ from typing import Any, Optional
 
 import asyncpg
 
+from cities import city_db_name
+
 from database.connect import DATABASE_CONFIG, acquire_conn
 from database.db_role import NO_ROLE, quote_role, reset_db_role, set_db_role
 from utils.scram import scram_sha256_verifier
@@ -111,7 +113,7 @@ async def verify_pg_password(role: str, password: str) -> bool:
         try:
             conn = await asyncpg.connect(
                 host=DATABASE_CONFIG["host"], port=DATABASE_CONFIG["port"],
-                database=DATABASE_CONFIG["database"], user=role, password=password, timeout=10,
+                database=city_db_name(), user=role, password=password, timeout=10,
             )
         except asyncpg.InvalidPasswordError:
             return False

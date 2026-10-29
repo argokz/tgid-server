@@ -1,3 +1,4 @@
+import asyncio
 import asyncpg
 from typing import Optional
 from dotenv import load_dotenv
@@ -34,6 +35,9 @@ USERS_DB_CONFIG = {
 
 pool: Optional[asyncpg.Pool] = None
 users_pool: Optional[asyncpg.Pool] = None
+# API на несколько городов (TGID_CITY_DBS): пул на базу каждого города
+city_pools: dict[str, asyncpg.Pool] = {}
+_pool_locks: dict[str, asyncio.Lock] = {}
 
 
 def safe_db_config(config: dict) -> dict:
@@ -61,12 +65,22 @@ class DatabaseConnectionError(Exception):
     """Пользовательское исключение для ошибок подключения к базе данных."""
     pass
 
-async def init_db_pool():
-    """Инициализация пула соединений для основной базы."""
-    global pool
-    if pool is not None:
-        logger.warning("Пул уже инициализирован, пропускаем повторную инициализацию")
-        return
+def city_db_config(code: Optional[str] = None) -> dict:
+    """Подключение к базе города (по умолчанию — города запроса): общие хост и учётка, своя база."""
+    from cities import city_db_name
+
+    return {**DATABASE_CONFIG, "database": city_db_name(code)}
+
+
+def _pool_key() -> str:
+    """Ключ пула: код города запроса в API на несколько городов, пустой — API одного города."""
+    from cities import cache_key
+
+    return cache_key()
+
+
+async def _open_pool(config: dict) -> asyncpg.Pool:
+    """Пул базы и SRID её сети; ошибки подключения — DatabaseConnectionError."""
     try:
         # Размер пула и таймаут запроса — из окружения: под нагрузкой 10 соединений
         # мало, а «вечный» запрос удерживает соединение и копит очередь.
@@ -74,13 +88,13 @@ async def init_db_pool():
         max_size = int(os.getenv("DB_POOL_MAX_SIZE", "20"))
         command_timeout = float(os.getenv("DB_COMMAND_TIMEOUT", "60"))
         logger.info(
-            f"🔄 Инициализация пула для основной базы (min={min_size}, max={max_size}, "
+            f"🔄 Инициализация пула для базы {config['database']} (min={min_size}, max={max_size}, "
             f"command_timeout={command_timeout}s)..."
         )
         from database.db_role import apply_db_role
 
-        pool = await asyncpg.create_pool(
-            **DATABASE_CONFIG,
+        created = await asyncpg.create_pool(
+            **config,
             min_size=min_size,
             max_size=max_size,
             command_timeout=command_timeout,
@@ -93,17 +107,79 @@ async def init_db_pool():
         logger.info("✅ Пул успешно инициализирован")
         # SRID колонок shape сети (9998 в Алматы и Шатуре, 9995 в Астане) — для запросов правки сети
         from database.net_srid import load_net_srid
-        async with pool.acquire() as conn:
+        async with created.acquire() as conn:
             await load_net_srid(conn)
+        return created
     except socket.gaierror as e:
-        logger.error(f"❌ Не удалось разрешить хост {DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}: {e}")
-        raise DatabaseConnectionError(f"Не удалось подключиться к основной базе данных: хост {DATABASE_CONFIG['host']} недоступен")
+        logger.error(f"❌ Не удалось разрешить хост {config['host']}:{config['port']}: {e}")
+        raise DatabaseConnectionError(f"Не удалось подключиться к основной базе данных: хост {config['host']} недоступен")
     except asyncpg.exceptions.ConnectionDoesNotExistError as e:
         logger.error(f"❌ Соединение с основной базой было разорвано: {e}")
         raise DatabaseConnectionError(f"Соединение с основной базой данных было неожиданно закрыто: {e}")
     except Exception as e:
-        logger.error(f"❌ Ошибка инициализации пула: {e}", exc_info=True)
-        raise DatabaseConnectionError(f"Ошибка подключения к основной базе данных: {e}")
+        logger.error(f"❌ Ошибка инициализации пула базы {config['database']}: {e}", exc_info=True)
+        raise DatabaseConnectionError(f"Ошибка подключения к базе {config['database']}: {e}")
+
+
+async def ensure_city_pool(code: str) -> asyncpg.Pool:
+    """Пул базы города (API на несколько городов); открывается при первом обращении."""
+    from cities import use_city
+
+    existing = city_pools.get(code)
+    if existing is not None:
+        return existing
+    lock = _pool_locks.setdefault(code, asyncio.Lock())
+    async with lock:
+        existing = city_pools.get(code)
+        if existing is None:
+            with use_city(code):  # SRID сети запоминается за этим городом
+                existing = await _open_pool(city_db_config(code))
+            city_pools[code] = existing
+    return existing
+
+
+async def init_db_pool():
+    """Пул основной базы; у API на несколько городов — пулы всех городов (недоступная база не мешает остальным)."""
+    global pool
+    from cities import city_databases, multi_city
+
+    if multi_city():
+        for code in city_databases():
+            try:
+                await ensure_city_pool(code)
+            except DatabaseConnectionError as e:
+                logger.error("Город %s: база недоступна при запуске (%s), повторю при первом запросе", code, e)
+        return
+    if pool is not None:
+        logger.warning("Пул уже инициализирован, пропускаем повторную инициализацию")
+        return
+    pool = await _open_pool(DATABASE_CONFIG)
+
+
+@asynccontextmanager
+async def task_db_pool():
+    """Пул базы на время фоновой задачи воркера (свой цикл asyncio): основной базы или города задачи."""
+    from cities import multi_city
+
+    key = _pool_key()
+    if not key and multi_city():
+        raise DatabaseConnectionError("Задача без города: базу не выбрать")
+    if not key:
+        await init_db_pool()
+        try:
+            yield get_pool()
+        finally:
+            await close_db_pool()
+        return
+    opened = await _open_pool(city_db_config(key))
+    city_pools[key] = opened
+    try:
+        yield opened
+    finally:
+        city_pools.pop(key, None)
+        _pool_locks.pop(key, None)  # замок привязан к циклу этой задачи
+        await opened.close()
+
 
 async def init_users_db_pool():
     """Инициализация пула соединений для базы пользователей и создание базы, если её нет."""
@@ -156,6 +232,9 @@ async def close_db_pool():
         await pool.close()
         logger.info("✅ Пул соединений основной базы закрыт")
         pool = None
+    for code in list(city_pools):
+        await city_pools.pop(code).close()
+        logger.info("✅ Пул базы города %s закрыт", code)
 
 async def close_users_db_pool():
     """Закрытие пула для БД пользователей."""
@@ -166,30 +245,43 @@ async def close_users_db_pool():
         users_pool = None
 
 def get_pool():
-    global pool
-    return pool
+    """Пул базы города запроса (API на несколько городов) или основной базы."""
+    key = _pool_key()
+    if not key:
+        from cities import multi_city
 
-async def get_connection() -> asyncpg.Connection:
-    """Получение соединения из пула основной базы."""
-    global pool
-    if not pool:
+        if multi_city():
+            raise DatabaseConnectionError("Город запроса не определён: путь API должен начинаться с /city/<код>/")
+        return pool
+    found = city_pools.get(key)
+    if found is None:
+        raise DatabaseConnectionError(f"База города {key} недоступна")
+    return found
+
+
+async def _current_pool() -> asyncpg.Pool:
+    key = _pool_key()
+    current = await ensure_city_pool(key) if key else get_pool()
+    if not current:
         raise DatabaseConnectionError("Пул основной базы данных не инициализирован")
-    logger.debug("Acquiring connection from main pool")
-    try:
-        return await pool.acquire()
-    except asyncpg.exceptions.ConnectionDoesNotExistError as e:
-        logger.error(f"❌ Соединение в пуле основной базы было разорвано: {e}")
-        raise DatabaseConnectionError(f"Соединение с основной базой было неожиданно закрыто во время операции")
+    return current
+
 
 @asynccontextmanager
 async def acquire_conn():
-    """Контекстный менеджер для основной базы."""
-    conn = await get_connection()
+    """Контекстный менеджер для основной базы (базы города запроса)."""
+    current = await _current_pool()
+    logger.debug("Acquiring connection from main pool")
+    try:
+        conn = await current.acquire()
+    except asyncpg.exceptions.ConnectionDoesNotExistError as e:
+        logger.error(f"❌ Соединение в пуле основной базы было разорвано: {e}")
+        raise DatabaseConnectionError(f"Соединение с основной базой было неожиданно закрыто во время операции")
     try:
         logger.debug("Main connection acquired")
         yield conn
     finally:
-        await pool.release(conn)
+        await current.release(conn)
         logger.debug("Main connection released")
 
 async def get_users_connection() -> asyncpg.Connection:

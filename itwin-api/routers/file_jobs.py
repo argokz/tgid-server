@@ -62,6 +62,8 @@ async def start_file_job(body: FileJobBody, user: Viewer):
 async def file_job_status(task_id: str, user: Viewer):
     from worker import celery_app
 
+    if not await run_in_threadpool(file_jobs.task_in_request_city, task_id):
+        raise HTTPException(status_code=404, detail="Задача не найдена")
     res = AsyncResult(task_id, app=celery_app)
     state = res.status
     out: dict[str, Any] = {"task_id": task_id, "state": state, "ready": state in ("SUCCESS", "FAILURE"),
@@ -89,6 +91,8 @@ async def file_job_status(task_id: str, user: Viewer):
 
 @router.get("/api/v1/file-jobs/{task_id}/download")
 async def file_job_download(task_id: str, user: Viewer):
+    if not await run_in_threadpool(file_jobs.task_in_request_city, task_id):
+        raise HTTPException(status_code=404, detail="Файл не готов или срок хранения истёк")
     stored = await run_in_threadpool(file_jobs.load_result, task_id)
     if stored is None:
         raise HTTPException(status_code=404, detail="Файл не готов или срок хранения истёк")

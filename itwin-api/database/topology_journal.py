@@ -33,8 +33,9 @@ from database.topology_transfer import _ident
 
 JOURNAL_TABLE = "topology_undo_log"
 
-_GEOMETRY_COLUMNS: dict[str, tuple[str, ...]] = {}
-_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {}
+# ключ — (город cities.cache_key, таблица)
+_GEOMETRY_COLUMNS: dict[tuple[str, str], tuple[str, ...]] = {}
+_TABLE_COLUMNS: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
 async def journal_available(conn) -> bool:
@@ -42,21 +43,26 @@ async def journal_available(conn) -> bool:
 
 
 async def table_columns(conn, table: str) -> tuple[str, ...]:
-    """Колонки таблицы (public), в порядке объявления; кэшируется на процесс."""
-    if table not in _TABLE_COLUMNS:
+    """Колонки таблицы (public), в порядке объявления; кэшируется на процесс (по городам)."""
+    from cities import cache_key
+
+    key = (cache_key(), table)
+    if key not in _TABLE_COLUMNS:
         rows = await conn.fetch(
             "SELECT column_name, udt_name FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position",
             table,
         )
-        _TABLE_COLUMNS[table] = tuple(r["column_name"] for r in rows)
-        _GEOMETRY_COLUMNS[table] = tuple(r["column_name"] for r in rows if r["udt_name"] == "geometry")
-    return _TABLE_COLUMNS[table]
+        _TABLE_COLUMNS[key] = tuple(r["column_name"] for r in rows)
+        _GEOMETRY_COLUMNS[key] = tuple(r["column_name"] for r in rows if r["udt_name"] == "geometry")
+    return _TABLE_COLUMNS[key]
 
 
 async def geometry_columns(conn, table: str) -> tuple[str, ...]:
+    from cities import cache_key
+
     await table_columns(conn, table)
-    return _GEOMETRY_COLUMNS.get(table, ())
+    return _GEOMETRY_COLUMNS.get((cache_key(), table), ())
 
 
 def row_image_sql(table: str, geom_cols: Iterable[str], alias: str = "_r") -> str:

@@ -248,8 +248,11 @@ def _user_status_ttl() -> float:
 def invalidate_user_status(user_id: Optional[object] = None) -> None:
     if user_id is None:
         _user_status_cache.clear()
-    else:
-        _user_status_cache.pop(user_id, None)
+        return
+    _user_status_cache.pop(user_id, None)
+    # роль PostgreSQL кешируется по городу: (город, роль)
+    for key in [k for k in _user_status_cache if isinstance(k, tuple) and k[1] == user_id]:
+        del _user_status_cache[key]
 
 
 async def _load_user_status(user_id: int) -> Optional[tuple]:
@@ -314,7 +317,10 @@ async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> 
     if not _env_bool("AUTH_LIVE_USER_CHECK", "true"):
         return user
     if user.sub.startswith(PG_USER_PREFIX):
-        key: object = user.sub
+        from cities import cache_key
+
+        # статус роли читается из базы города (tgid_auth.me()): у каждого города свой
+        key: object = (cache_key(), user.sub)
         loader = lambda: _load_pg_user_status(user.sub)  # noqa: E731
     elif user.sub.isdigit():
         key = int(user.sub)

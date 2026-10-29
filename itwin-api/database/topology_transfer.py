@@ -176,13 +176,15 @@ async def _column_exists(conn, table: str, column: str) -> bool:
     )
 
 
-_NODE_REF_CACHE: list[tuple[str, str]] | None = None
+# по городам (cities.cache_key)
+_NODE_REF_CACHE: dict[str, list[tuple[str, str]]] = {}
 
 
 def reset_node_ref_cache() -> None:
     """После пересоздания базы десктопом набор колонок-ссылок на узел мог измениться."""
-    global _NODE_REF_CACHE
-    _NODE_REF_CACHE = None
+    from cities import cache_key
+
+    _NODE_REF_CACHE.pop(cache_key(), None)
 
 # Ссылки на узел, чьё имя не начинается с nodeid, но по смыслу — тот же FK на nodes.id:
 # internalnodeid — узел-владелец внутренней схемы (ИТП потребителя), remontnodeid — узел ремонта.
@@ -207,8 +209,10 @@ async def _node_ref_columns(conn) -> list[tuple[str, str]]:
     nodeid* числового типа + EXTRA_NODE_REF_COLUMNS. Кэшируется — набор таблиц
     в рамках одной БД не меняется.
     """
-    global _NODE_REF_CACHE
-    if _NODE_REF_CACHE is None:
+    from cities import cache_key
+
+    key = cache_key()
+    if key not in _NODE_REF_CACHE:
         rows = await conn.fetch(
             """
             SELECT table_name, column_name
@@ -220,12 +224,12 @@ async def _node_ref_columns(conn) -> list[tuple[str, str]]:
               AND data_type IN ('integer', 'bigint', 'smallint', 'numeric')
             """
         )
-        _NODE_REF_CACHE = [
+        _NODE_REF_CACHE[key] = [
             (r["table_name"], r["column_name"])
             for r in rows
             if _is_node_ref_column(r["table_name"], r["column_name"])
         ]
-    return _NODE_REF_CACHE
+    return _NODE_REF_CACHE[key]
 
 
 async def node_dependency_report(conn, node_id: int) -> dict:

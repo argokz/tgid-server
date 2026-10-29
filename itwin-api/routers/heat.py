@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
+from cities import task_queue
 from database.connect import acquire_conn
 from database.consumer_load_diagnostics import (
     get_consumer_load_diagnostic,
@@ -340,7 +341,7 @@ async def run_heat_losses_norm(
             )
     kwargs = body.model_dump()
     kwargs["user"] = user.username
-    queue = os.getenv("HEAT_LOSSES_QUEUE") or None
+    queue = task_queue(os.getenv("HEAT_LOSSES_QUEUE") or None)
     task = task_fn.apply_async(kwargs=kwargs, queue=queue) if queue else task_fn.apply_async(kwargs=kwargs)
     await write_audit_log(
         changed_by=user.username,

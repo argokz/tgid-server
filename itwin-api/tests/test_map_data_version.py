@@ -28,7 +28,7 @@ def _client(monkeypatch, conn):
         yield conn
 
     monkeypatch.setattr(core, "acquire_conn", _acq)
-    monkeypatch.setattr(core, "_data_version_cache", {"value": None, "at": 0.0})
+    monkeypatch.setattr(core, "_data_version_cache", {})
     return TestClient(main.app)
 
 
@@ -39,6 +39,6 @@ def test_data_version_cached_then_refreshed(monkeypatch):
     # в пределах 10 с — из кеша процесса, база не опрашивается
     assert client.get("/api/v1/map/data-version").json() == {"version": "1200"}
     assert conn.calls == 1
-    core._data_version_cache["at"] -= core.DATA_VERSION_TTL_S + 1
+    core._data_version_cache[""]["at"] -= core.DATA_VERSION_TTL_S + 1
     assert client.get("/api/v1/map/data-version").json() == {"version": "1305"}
     assert conn.calls == 2

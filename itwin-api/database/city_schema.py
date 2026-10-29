@@ -130,12 +130,22 @@ CITIES: dict[str, City] = {
 }
 
 
-def martin_item() -> Optional[Item]:
+def martin_sql_path(city: str) -> Path:
+    """Файл функций тайлов города: MARTIN_SQL_FILE (API одного города) или MARTIN_SQL_DIR/<город>.sql."""
+    explicit = os.getenv("MARTIN_SQL_FILE", "").strip()
+    if explicit:
+        return Path(explicit)
+    folder = os.getenv("MARTIN_SQL_DIR", "").strip()
+    return Path(folder) / f"{city}.sql" if folder and city else Path("-")
+
+
+def martin_item(city: str = "") -> Optional[Item]:
     """Функции тайлов martin (scripts/martin): SQL сгенерирован на сервере из рабочей области GeoServer города
-    и лежит вне репозитория — путь задаёт MARTIN_SQL_FILE службы API (ставит install-martin.ps1). После
-    переконвертации базы функции возвращаются, как остальные объекты веба. В комплект конвертера десктопа
-    (scripts/export_web_schema.py, только COMMON и CITIES) не входит."""
-    path = Path(os.getenv("MARTIN_SQL_FILE", "").strip() or "-")
+    и лежит вне репозитория — путь задаёт MARTIN_SQL_FILE службы API или каталог MARTIN_SQL_DIR у API на
+    несколько городов (ставит install-martin.ps1). После переконвертации базы функции возвращаются, как
+    остальные объекты веба. В комплект конвертера десктопа (scripts/export_web_schema.py, только COMMON и
+    CITIES) не входит."""
+    path = martin_sql_path(city)
     if not path.is_file():
         return None
     names = sorted(set(re.findall(r"FUNCTION public\.(tgid_mvt_\w+)\(", path.read_text(encoding="utf-8-sig"))))
@@ -150,7 +160,7 @@ def city_items(city: str) -> list[Item]:
     """Пункты города: его особые (SRID — первым), общие и функции тайлов martin (если заданы).
     Неизвестный город — только общие."""
     spec = CITIES.get(city, City(base_srid=None))
-    local = martin_item()
+    local = martin_item(city)
     return [*spec.items, *COMMON, *([local] if local else [])]
 
 
@@ -231,11 +241,25 @@ def upkeep_interval_s() -> float:
         return 600.0
 
 
-# Последняя проверка в этом процессе — для /health и метрик (observability.py)
-STATE: dict = {
-    "status": "unknown", "checked_at": None, "missing": [], "applied": [], "error": None,
-    "db_oid": None, "recreated": 0, "recreated_at": None, "reset_pending": False,
-}
+def _new_state() -> dict:
+    return {
+        "status": "unknown", "checked_at": None, "missing": [], "applied": [], "error": None,
+        "db_oid": None, "recreated": 0, "recreated_at": None, "reset_pending": False,
+    }
+
+
+# Последняя проверка в этом процессе — для /health и метрик (observability.py).
+# STATE — API одного города; API на несколько городов ведёт состояние каждого (STATES, cities.cache_key)
+STATE: dict = _new_state()
+STATES: dict[str, dict] = {}
+
+
+def state() -> dict:
+    """Состояние доводки базы города запроса (или единственного города API — STATE)."""
+    from cities import cache_key
+
+    key = cache_key()
+    return STATES.setdefault(key, _new_state()) if key else STATE
 
 
 def reset_city_caches() -> None:
@@ -255,12 +279,13 @@ async def _note_db_identity(conn, city: str) -> bool:
     oid базы в pg_database меняется при пересоздании, имя — нет.
     """
     oid = await conn.fetchval("select oid from pg_database where datname = current_database()")
-    prev = STATE["db_oid"]
-    STATE["db_oid"] = oid
+    st = state()
+    prev = st["db_oid"]
+    st["db_oid"] = oid
     if prev is None or prev == oid:
         return False
-    STATE["recreated"] += 1
-    STATE["recreated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    st["recreated"] += 1
+    st["recreated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     logger.warning("База города %s пересоздана (переконвертация из десктопа): сбрасываю кеши API", city)
     return True
 
@@ -269,20 +294,21 @@ async def run_once(pool, city: str) -> dict:
     """Один проход для пула API; после применения или пересоздания базы — перечитать SRID и кеши."""
     from database.net_srid import load_net_srid
 
+    st = state()
     async with pool.acquire() as conn:
         if await _note_db_identity(conn, city):
             reset_city_caches()  # не отдавать данные прежней базы
-            STATE["reset_pending"] = True
+            st["reset_pending"] = True
         res = await ensure(conn, city)
         ready = res["status"] in ("ok", "applied")
         # конвертер мог ещё дописывать базу, пока кеши заново строились, — сбросить, когда готова
-        if ready and STATE.get("reset_pending"):
+        if ready and st.get("reset_pending"):
             reset_city_caches()
-            STATE["reset_pending"] = False
+            st["reset_pending"] = False
             await load_net_srid(conn)
         elif res["status"] == "applied":
             await load_net_srid(conn)
-    STATE.update(
+    st.update(
         status=res["status"], checked_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
         missing=res["missing"], applied=res["applied"], error=res.get("error"),
     )
@@ -297,10 +323,16 @@ async def run_once(pool, city: str) -> dict:
 
 
 async def upkeep_loop(pool, city: str, interval_s: float) -> None:
-    """Фоновая доводка: сразу при запуске и далее раз в interval_s (база могла быть переконвертирована)."""
+    """Фоновая доводка: сразу при запуске и далее раз в interval_s (база могла быть переконвертирована).
+
+    pool=None — API на несколько городов: пул города берётся (и при недоступной базе — открывается
+    заново) на каждом проходе; задача должна выполняться в контексте города (cities.use_city).
+    """
+    from database.connect import ensure_city_pool
+
     while True:
         try:
-            await run_once(pool, city)
+            await run_once(pool if pool is not None else await ensure_city_pool(city), city)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — нет подключения и т. п.: попробовать в следующий раз

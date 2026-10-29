@@ -271,7 +271,9 @@ def ttl_seconds() -> int:
 
 
 def queue_name() -> Optional[str]:
-    return os.getenv("FILE_JOBS_QUEUE") or None
+    from cities import task_queue
+
+    return task_queue(os.getenv("FILE_JOBS_QUEUE") or None)
 
 
 def redis_url() -> str:
@@ -291,6 +293,26 @@ def _redis():
 
         _client = redis.Redis.from_url(redis_url(), socket_timeout=10)
     return _client
+
+
+# API на несколько городов: город задачи Celery (ставится при публикации, worker._stamp_city) —
+# статус, результат и файл задачи отдаются только запросу того же города
+TASK_CITY_PREFIX = "tgid:task-city:"
+TASK_CITY_TTL_S = 7 * 24 * 3600  # дольше хранения результатов Celery (сутки) и файлов
+
+
+def remember_task_city(task_id: str, city: str) -> None:
+    _redis().set(f"{TASK_CITY_PREFIX}{task_id}", city, ex=TASK_CITY_TTL_S)
+
+
+def task_in_request_city(task_id: str) -> bool:
+    """Задача принадлежит городу запроса; у API одного города — всегда. Неизвестная задача — нет."""
+    from cities import current_city, multi_city
+
+    if not multi_city():
+        return True
+    stored = _redis().get(f"{TASK_CITY_PREFIX}{task_id}")
+    return stored is not None and stored.decode("utf-8") == current_city()
 
 
 _storage_cache: dict[tuple, Any] = {}

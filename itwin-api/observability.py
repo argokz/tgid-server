@@ -82,8 +82,11 @@ class MetricsMiddleware:
 
 
 def _celery_queue_length() -> int | None:
-    """Ожидающие задачи в очереди Celery (расчёты, выгрузки) — список `celery` в Redis воркера."""
+    """Ожидающие задачи в очереди Celery (расчёты, выгрузки) — список `celery` в Redis воркера;
+    у API на несколько городов — сумма очередей городов tgid.<город>."""
     import redis as redis_lib
+
+    from cities import city_task_queues, multi_city
 
     addr = os.getenv("REDIS_ADDR", "127.0.0.1:6379")
     host, _, port_s = addr.partition(":")
@@ -96,7 +99,8 @@ def _celery_queue_length() -> int | None:
         socket_connect_timeout=_QUEUE_CHECK_TIMEOUT_S,
     )
     try:
-        return int(client.llen("celery"))
+        queues = city_task_queues() if multi_city() else ["celery"]
+        return sum(int(client.llen(q)) for q in queues)
     finally:
         client.close()
 
@@ -107,37 +111,45 @@ class _StateCollector:
     def __init__(self, queue_length: int | None):
         self.queue_length = queue_length
 
+    @staticmethod
+    def _cities() -> list[tuple[str, str, object, dict]]:
+        """(город, база, пул, состояние доводки) — один город API или все города TGID_CITY_DBS."""
+        from cities import city_databases, current_city, multi_city
+        from database import city_schema, connect
+
+        if not multi_city():
+            return [(current_city(), os.getenv("DB_NAME", ""), connect.pool, city_schema.STATE)]
+        return [
+            (code, db, connect.city_pools.get(code), city_schema.STATES.get(code) or city_schema._new_state())
+            for code, db in city_databases().items()
+        ]
+
     def collect(self):
-        from cities import current_city
-        from database.connect import get_pool
-
+        cities = self._cities()
         info = GaugeMetricFamily("tgid_info", "Город и база этого API", labels=["city", "database"])
-        info.add_metric([current_city(), os.getenv("DB_NAME", "")], 1)
-        yield info
-
-        pool = get_pool()
-        size = GaugeMetricFamily("tgid_db_pool_connections", "Соединения пула базы города", labels=["state"])
-        if pool is not None:
-            total = pool.get_size()
-            idle = pool.get_idle_size()
-            size.add_metric(["busy"], total - idle)
-            size.add_metric(["idle"], idle)
-        yield size
-
-        from database.city_schema import STATE as schema
-
+        size = GaugeMetricFamily(
+            "tgid_db_pool_connections", "Соединения пула базы города", labels=["city", "state"]
+        )
         ok = GaugeMetricFamily(
-            "tgid_city_schema_ok", "Веб-добавки в базе города на месте (1) или нет (0)", labels=["status"]
+            "tgid_city_schema_ok", "Веб-добавки в базе города на месте (1) или нет (0)", labels=["city", "status"]
         )
-        ok.add_metric([schema["status"]], 1 if schema["status"] in ("ok", "applied") else 0)
-        yield ok
-        yield GaugeMetricFamily(
-            "tgid_city_schema_missing", "Недостающие пункты схемы базы города", value=len(schema["missing"])
+        missing = GaugeMetricFamily(
+            "tgid_city_schema_missing", "Недостающие пункты схемы базы города", labels=["city"]
         )
-        yield GaugeMetricFamily(
-            "tgid_city_db_recreated", "Сколько раз база пересоздана десктопом с запуска процесса",
-            value=schema["recreated"],
+        recreated = GaugeMetricFamily(
+            "tgid_city_db_recreated", "Сколько раз база пересоздана десктопом с запуска процесса", labels=["city"]
         )
+        for city, db, pool, schema in cities:
+            info.add_metric([city, db], 1)
+            if pool is not None:
+                total = pool.get_size()
+                idle = pool.get_idle_size()
+                size.add_metric([city, "busy"], total - idle)
+                size.add_metric([city, "idle"], idle)
+            ok.add_metric([city, schema["status"]], 1 if schema["status"] in ("ok", "applied") else 0)
+            missing.add_metric([city], len(schema["missing"]))
+            recreated.add_metric([city], schema["recreated"])
+        yield from (info, size, ok, missing, recreated)
 
         up = GaugeMetricFamily("tgid_celery_queue_up", "Очередь расчётов доступна (1) или нет (0)")
         up.add_metric([], 0 if self.queue_length is None else 1)

@@ -14,6 +14,8 @@ from typing import Iterable, Optional
 
 import psycopg2
 
+from cities import city_db_name
+
 PASSPORT_TABLES = ("linesobj", "nodes", "uchastok_ms", "uchastok_rs")
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -111,14 +113,14 @@ def build_passport_xlsx(table: str, obj_id: int, fragments: Optional[Iterable[in
         "server": os.getenv("DB_HOST"),
         "user": os.getenv("DB_USER"),
         "password": os.getenv("DB_PASSWORD"),
-        "db": os.getenv("DB_NAME"),
+        "db": city_db_name(),
         "port": os.getenv("DB_PORT"),
     }
 
     # Отдельное соединение для определения участка объекта
     conn = psycopg2.connect(
         host=os.getenv("DB_HOST"),
-        database=os.getenv("DB_NAME"),
+        database=city_db_name(),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         port=os.getenv("DB_PORT"),
@@ -270,7 +272,7 @@ def build_chief_passports_zip(nach_id: int, kinds: Iterable[str] = ("ms", "rs"),
 
     kinds = tuple(k for k in ("ms", "rs") if k in set(kinds))
     conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"), database=os.getenv("DB_NAME"), user=os.getenv("DB_USER"),
+        host=os.getenv("DB_HOST"), database=city_db_name(), user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"), port=os.getenv("DB_PORT"),
     )
     try:

@@ -9,6 +9,7 @@ import locale
 import logging
 from typing import Optional
 from celery import Celery
+from celery.signals import before_task_publish, task_postrun, task_prerun
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,6 +25,7 @@ redis_addr = os.getenv('REDIS_ADDR', '127.0.0.1:6379')
 redis_password = os.getenv('REDIS_PASSWORD', '').strip()
 # Номер БД Redis: разные стенды на одном Redis (прод и копия) обязаны иметь разные REDIS_DB,
 # иначе воркер одного стенда заберёт задачи другого и выполнит их на своей БД.
+# API на несколько городов (TGID_CITY_DBS) делит одну БД Redis: у каждого города своя очередь.
 redis_db = os.getenv('REDIS_DB', '').strip() or '0'
 
 if redis_password:
@@ -46,6 +48,61 @@ celery_app.conf.update(
 )
 
 logger = logging.getLogger(__name__)
+
+# --- API на несколько городов (TGID_CITY_DBS, cities.py) ---
+# Задача уходит в очередь своего города (tgid.<город>) и несёт город в заголовке tgid_city.
+# Воркер выполняет её от имени этого города: база — cities.city_db_name(), а не DB_NAME.
+CITY_HEADER = "tgid_city"
+
+
+def _route_by_city(name, args, kwargs, options, task=None, **kw):
+    from cities import multi_city, task_queue
+
+    return {"queue": task_queue()} if multi_city() else None
+
+
+celery_app.conf.task_routes = (_route_by_city,)
+
+
+@before_task_publish.connect
+def _stamp_city(headers=None, **_):
+    from cities import current_city, multi_city
+
+    if multi_city() and headers is not None:
+        headers[CITY_HEADER] = current_city()
+        if headers.get("id"):
+            from database.file_jobs import remember_task_city
+
+            # статус и результат задачи — только запросам этого города (file_jobs.task_in_request_city)
+            remember_task_city(headers["id"], current_city())
+
+
+@task_prerun.connect
+def _enter_city(task=None, **_):
+    from cities import city_databases, multi_city, set_request_city
+
+    if not multi_city():
+        return
+    city = task.request.get(CITY_HEADER) if task is not None else None
+    if city not in city_databases():
+        # без города задача не выполняется: база берётся из города (cities.city_db_name — CityError)
+        logger.error("Задача %s без города (%r): выполнить нельзя", getattr(task, "name", "?"), city)
+        city = None
+    set_request_city(city)
+
+
+@task_postrun.connect
+def _leave_city(**_):
+    from cities import multi_city, set_request_city
+
+    if multi_city():
+        set_request_city(None)
+
+
+def _city_db() -> str:
+    from cities import city_db_name
+
+    return city_db_name()
 
 # Флаги подключения и вывода задаёт сам воркер; из пользовательских параметров
 # их принимать нельзя (argparse берёт последнее значение — переопределили бы БД/файл).
@@ -131,7 +188,7 @@ def _sety_base_cmd(out_file_path: str, dross: bool) -> list[str]:
         sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sety", "ww.py"),
         "-type_of_net", "1",
         "-server", os.getenv("DB_HOST"),
-        "-database", os.getenv("DB_NAME"),
+        "-database", _city_db(),
         "-user", os.getenv("DB_USER"),
         "-port", os.getenv("DB_PORT"),
         # Пароль не передаём аргументом (виден в списке процессов): sety берёт DB_PASSWORD
@@ -218,14 +275,14 @@ def _read_sety_text(path: str) -> str:
 
 
 def _po_db_connect():
-    """Соединение с той же БД, в которой считал sety (те же DB_* из окружения)."""
+    """Соединение с той же БД, в которой считал sety (те же DB_* из окружения, база города задачи)."""
     import psycopg2
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
-        dbname=os.getenv("DB_NAME"),
+        dbname=_city_db(),
     )
 
 
@@ -316,7 +373,8 @@ def _run_one(cmd: list[str], request_id: str, label: str) -> dict:
 
 
 _PROTOCOL_SQL = os.path.join(_APP_DIR, "sql", "migrations", "20261015_calculation_protocol.sql")
-_protocol_table_ready = False
+# базы (cities.city_db_name), где таблица протоколов уже проверена
+_protocol_table_ready: set[str] = set()
 PROTOCOL_KEEP_DAYS = int(os.getenv("CALC_PROTOCOL_KEEP_DAYS", "365") or 365)
 
 
@@ -348,7 +406,6 @@ def _save_protocol(*, request_id: str, task_id: str | None, run: dict, file_id: 
     Таблицы нет — создаёт её (sql/migrations/20261015_calculation_protocol.sql); любая ошибка —
     предупреждение в лог, расчёт не ломается. Возвращает id протокола.
     """
-    global _protocol_table_ready
     import json
     from utils.calc_protocol import parse_protocol
 
@@ -364,12 +421,12 @@ def _save_protocol(*, request_id: str, task_id: str | None, run: dict, file_id: 
         conn = _po_db_connect()
         try:
             with conn.cursor() as cur:
-                if not _protocol_table_ready:
+                if _city_db() not in _protocol_table_ready:
                     cur.execute("SELECT to_regclass('public.calculation_protocol') IS NOT NULL")
                     if not cur.fetchone()[0]:
                         with open(_PROTOCOL_SQL, encoding="utf-8") as fh:
                             cur.execute(fh.read())
-                    _protocol_table_ready = True
+                    _protocol_table_ready.add(_city_db())
                 calc_id = None
                 if file_id is not None:
                     cur.execute("SELECT max(id) FROM calculation WHERE fileid = %s AND id > %s",
@@ -505,7 +562,7 @@ def run_heat_losses_norm(self, season_id: int, heat_source_ids: list[int] | None
     async def _go():
         conn = await asyncpg.connect(
             host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT") or 5432), user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"), database=os.getenv("DB_NAME"), timeout=60,
+            password=os.getenv("DB_PASSWORD"), database=_city_db(), timeout=60,
         )
         try:
             return await run(conn, season_id=season_id, heat_source_ids=heat_source_ids,
@@ -531,13 +588,10 @@ def build_file_job(self, kind: str, params: dict, user: str = ""):
     from database import file_jobs
 
     async def _go():
-        from database.connect import close_db_pool, init_db_pool
+        from database.connect import task_db_pool
 
-        await init_db_pool()
-        try:
+        async with task_db_pool():
             return await file_jobs.build(kind, params)
-        finally:
-            await close_db_pool()
 
     self.update_state(state="PROGRESS", meta={"message": "Формирование файла", "kind": kind})
     # ход работы построителя («Участок 3 из 40: РС 227») — в статус задачи для UI. Построитель
@@ -575,7 +629,7 @@ def run_wear_index(self, fragment_ids: list[int] | None = None, user: str = "", 
     async def _go():
         conn = await asyncpg.connect(
             host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT") or 5432), user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"), database=os.getenv("DB_NAME"), timeout=60,
+            password=os.getenv("DB_PASSWORD"), database=_city_db(), timeout=60,
         )
         try:
             return await run(conn, fragment_ids=fragment_ids, user=user, name=name)

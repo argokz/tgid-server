@@ -1,6 +1,7 @@
 """Базовые маршруты: фрагменты, русские названия, карточки линий/узлов, справочники."""
 
 import json
+from contextlib import nullcontext
 import time
 from typing import Optional
 
@@ -66,23 +67,38 @@ async def _add_russian_names_to_response(data: dict, table: str) -> dict:
         return data
 
 
+async def _db_check() -> tuple[bool, Optional[str]]:
+    from database.connect import acquire_conn
+
+    try:
+        async with acquire_conn() as conn:
+            await conn.fetchval("SELECT 1")
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
 @router.get("/health")
 @router.get("/api/health")
 async def health():
     """Проверка живости: БД, Redis/Celery broker, число маршрутов."""
     import os
 
-    from database.connect import acquire_conn
+    from cities import city_databases, current_city, multi_city, use_city
+    from database.city_schema import state as city_schema_state
 
-    db_ok = False
-    db_error = None
     started = time.monotonic()
-    try:
-        async with acquire_conn() as conn:
-            await conn.fetchval("SELECT 1")
-        db_ok = True
-    except Exception as e:  # noqa: BLE001
-        db_error = str(e)
+    # API на несколько городов без префикса города (/health процесса) — проверка базы каждого города
+    every_city = multi_city() and not current_city()
+    per_city: dict[str, dict] = {}
+    for code in (city_databases() if every_city else [current_city()]):
+        with use_city(code) if every_city else nullcontext():
+            ok, error = await _db_check()
+            schema = {k: v for k, v in city_schema_state().items() if k not in ("db_oid", "reset_pending")}
+        per_city[code] = {"ok": ok, "error": error, "city_schema": schema}
+    db_ok = all(c["ok"] for c in per_city.values())
+    db_error = next((f"{code}: {c['error']}" if every_city else c["error"]
+                     for code, c in per_city.items() if c["error"]), None)
 
     redis_ok = False
     redis_error = None
@@ -110,19 +126,24 @@ async def health():
     if db_ok and not redis_ok:
         status = "degraded"
     # Схема базы города (database/city_schema.py): веб-добавки на месте, была ли переконвертация
-    from database.city_schema import STATE as city_schema_state
-
-    city_schema = {k: v for k, v in city_schema_state.items() if k not in ("db_oid", "reset_pending")}
-    if city_schema["status"] == "error":
+    schemas = [c["city_schema"] for c in per_city.values()]
+    if any(s["status"] == "error" for s in schemas):
         status = "degraded"
+    city_schema = schemas[0] if not every_city else {
+        "status": "error" if any(s["status"] == "error" for s in schemas) else "ok",
+        "cities": {code: c["city_schema"] for code, c in per_city.items()},
+    }
 
+    database = {
+        "ok": db_ok,
+        "latency_ms": round((time.monotonic() - started) * 1000, 1),
+        "error": db_error,
+    }
+    if every_city:
+        database["cities"] = {code: {"ok": c["ok"], "error": c["error"]} for code, c in per_city.items()}
     return {
         "status": status,
-        "database": {
-            "ok": db_ok,
-            "latency_ms": round((time.monotonic() - started) * 1000, 1),
-            "error": db_error,
-        },
+        "database": database,
         "redis": {
             "ok": redis_ok,
             "latency_ms": round((time.monotonic() - redis_started) * 1000, 1),
@@ -227,18 +248,22 @@ SELECT COALESCE(SUM(n_tup_ins + n_tup_upd + n_tup_del), 0)::bigint
 FROM pg_stat_user_tables WHERE schemaname = 'public'
 """
 DATA_VERSION_TTL_S = 10.0
-_data_version_cache: dict = {"value": None, "at": 0.0}
+# по городам (cities.cache_key): {"value", "at"}
+_data_version_cache: dict[str, dict] = {}
 
 
 @router.get("/api/v1/map/data-version")
 async def get_map_data_version():
     """Версия данных для сброса кеша тайлов: {"version": "<число>"}; опрос раз в 30–60 с."""
+    from cities import cache_key
+
     now = time.monotonic()
-    if _data_version_cache["value"] is None or now - _data_version_cache["at"] >= DATA_VERSION_TTL_S:
+    entry = _data_version_cache.setdefault(cache_key(), {"value": None, "at": 0.0})
+    if entry["value"] is None or now - entry["at"] >= DATA_VERSION_TTL_S:
         async with acquire_conn() as conn:
-            _data_version_cache["value"] = str(await conn.fetchval(DATA_VERSION_SQL))
-        _data_version_cache["at"] = now
-    return {"version": _data_version_cache["value"]}
+            entry["value"] = str(await conn.fetchval(DATA_VERSION_SQL))
+        entry["at"] = now
+    return {"version": entry["value"]}
 
 
 @router.get("/russian-names")

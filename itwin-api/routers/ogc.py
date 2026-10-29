@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 
 from auth import AuthUser, require_roles
+from cities import cache_key
 from database.connect import acquire_conn
 from database.ogc_features import COLLECTIONS, DEFAULT_LIMIT, MAX_LIMIT, get_item, get_items, parse_bbox
 
@@ -41,7 +42,8 @@ def _link(href: str, rel: str, type_: str = "application/json", title: Optional[
 
 
 async def _network_extent() -> list[float]:
-    if "bbox" not in _extent:
+    key = cache_key()
+    if key not in _extent:
         async with acquire_conn() as conn:
             # без 0,1 % крайних точек: узлы с нулевыми координатами десктопа уводят охват в океан
             row = await conn.fetchrow(
@@ -51,9 +53,9 @@ async def _network_extent() -> list[float]:
                           percentile_disc(0.999) WITHIN GROUP (ORDER BY ST_Y(p)) y2
                      FROM (SELECT ST_Transform(shape, 4326) p FROM nodes
                             WHERE shape IS NOT NULL AND COALESCE(removed, 0) = 0) t""")
-        _extent["bbox"] = [row["x1"], row["y1"], row["x2"], row["y2"]] if row and row["x1"] is not None \
+        _extent[key] = [row["x1"], row["y1"], row["x2"], row["y2"]] if row and row["x1"] is not None \
             else [-180.0, -90.0, 180.0, 90.0]
-    return _extent["bbox"]
+    return _extent[key]
 
 
 def _collection_meta(base: str, cid: str, bbox: list[float]) -> dict:

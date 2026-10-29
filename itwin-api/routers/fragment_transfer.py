@@ -6,7 +6,6 @@ import/merge с dry_run=false — admin + MUTATIONS_ENABLED + TOPOLOGY_MUTATIONS
 отмена — POST /api/topology/undo (удаляет созданные строки). Формат — database/fragment_transfer.py.
 """
 
-import os
 import re
 from typing import Annotated, Optional
 from urllib.parse import quote
@@ -17,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app_logging import get_logger
 from auth import AuthUser, require_roles, require_permission
+from cities import city_db_name
 from database.connect import get_pool
 from database.fragment_transfer import (
     MAX_UPLOAD_BYTES,
@@ -61,7 +61,7 @@ async def export_fragment(fileid: int, _: Annotated[AuthUser, Depends(require_ro
     async with pool.acquire() as conn:
         try:
             data, counts, name = await export_fragment_zip(
-                conn, fileid, {"database": os.getenv("DB_NAME", ""), "user": "itwin"}
+                conn, fileid, {"database": city_db_name(), "user": "itwin"}
             )
         except LookupError as e:
             raise HTTPException(status_code=404, detail=str(e))

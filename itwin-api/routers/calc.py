@@ -9,6 +9,7 @@ from datetime import datetime
 from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
@@ -21,6 +22,7 @@ from database.calculation_admin import (
     list_calculations,
 )
 from database.calc_protocols import get_protocols, list_protocols, locate_objects
+from database.file_jobs import task_in_request_city
 from database.calculations import (
     get_calculation_results_excel,
     get_calculation_results_geojson,
@@ -91,6 +93,8 @@ async def run_sety_cmd(
 @router.get("/task/{task_id}")
 @router.get("/api/v1/task/{task_id}")
 async def get_task_status(task_id: str):
+    if not await run_in_threadpool(task_in_request_city, task_id):
+        raise HTTPException(status_code=404, detail="Задача не найдена")
     task_result = AsyncResult(task_id, app=celery_app)
 
     response = {

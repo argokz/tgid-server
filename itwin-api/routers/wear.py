@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from audit import write_audit_log
 from auth import AuthUser, require_permission, require_roles
+from cities import task_queue
 from database import wear
 from database.connect import acquire_conn
 
@@ -30,7 +31,7 @@ async def wear_calculate(body: WearRunBody, user: Annotated[AuthUser, Depends(re
         if not await wear.table_exists(conn):
             raise HTTPException(status_code=503, detail="Нет таблицы wear_out: API доводит схему при старте (city_schema)")
     kwargs = {"fragment_ids": body.fragment_ids, "user": user.username, "name": body.name}
-    queue = os.getenv("HEAT_LOSSES_QUEUE") or None
+    queue = task_queue(os.getenv("HEAT_LOSSES_QUEUE") or None)
     task = task_fn.apply_async(kwargs=kwargs, queue=queue) if queue else task_fn.apply_async(kwargs=kwargs)
     await write_audit_log(changed_by=user.username, operation="RUN", table_name="wear_out",
                           new_data={"fragment_ids": body.fragment_ids, "task_id": task.id})

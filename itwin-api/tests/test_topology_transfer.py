@@ -171,14 +171,14 @@ def test_plan_node_merge_classifies_transfer_conflicts_and_results(monkeypatch):
 
     import database.topology_transfer as tt
 
-    monkeypatch.setattr(tt, "_NODE_REF_CACHE", [
+    monkeypatch.setattr(tt, "_NODE_REF_CACHE", {"": [
         ("realconsumers", "nodeid"),
         ("heatchambers", "nodeid"),
         ("setpressnodes", "nodeid"),
         ("nodes", "internalnodeid"),
         ("us_out", "nodeid"),
         ("wdodevices", "nodeid"),
-    ])
+    ]})
     conn = _CountConn({
         ("realconsumers", "nodeid", 2): 1,
         ("heatchambers", "nodeid", 2): 1,
