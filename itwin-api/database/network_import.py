@@ -1,4 +1,8 @@
-"""Импорт сети из файлов (этап 10): SHP, Excel/CSV и координаты узлов.
+"""Импорт сети из файлов (этап 10): файлы ГИС, Excel/CSV и координаты узлов.
+
+Файлы ГИС читает GDAL (pyogrio, фаза 1 — мастер импорта): Shapefile, GeoPackage, GeoJSON и ESRI JSON
+(выгрузка слоя ArcGIS), FlatGeobuf, SXF+RSC («Панорама»), GML, KML, MapInfo, база ArcGIS *.gdb в zip.
+У многослойных файлов слой выбирается (params.layer); система координат берётся из файла.
 
 Эталон десктопа: в gid8 импорта SHP в сеть нет — `python/convertor/shape_pg/shp_ms.py`
 грузит SHP (fiona + pyproj) в отдельную «сырую» таблицу MS SQL с перепроецированием,
@@ -63,7 +67,7 @@ MAX_SNAP_TOLERANCE_M = 50.0
 MODES = ("nodes", "lines", "coords")
 SOURCE_CRS = ("auto", "wgs84", "local", "desktop")
 # источники с геометрией (остальное — таблицы X/Y); GPX и DXF — только линии
-GEOMETRY_KINDS = ("shp", "gpx", "dxf")
+GEOMETRY_KINDS = ("shp", "vector", "gpx", "dxf")
 LINE_ONLY_KINDS = ("gpx", "dxf")
 
 # Поля назначения по режимам: ключ → (подпись, обязательное)
@@ -123,7 +127,7 @@ class _RowError(Exception):
 
 @dataclass
 class ParsedSource:
-    kind: str  # "shp" | "gpx" | "dxf" | "table"
+    kind: str  # "shp" | "vector" (GDAL: GPKG, SXF, ESRI JSON…) | "gpx" | "dxf" | "table"
     columns: list[str]
     rows: list[dict[str, Any]]
     # номер строки для отчёта: строка Excel/CSV (с заголовком) или номер объекта SHP с 1
@@ -135,6 +139,10 @@ class ParsedSource:
     sheet: Optional[str] = None
     sheets: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # векторные форматы GDAL: формат, выбранный слой и слои файла [{name, geometry_type, count}]
+    format: Optional[str] = None
+    layer: Optional[str] = None
+    source_layers: list[dict] = field(default_factory=list)
 
 
 def _json_safe(value: Any) -> Any:
@@ -240,50 +248,141 @@ def _parse_csv(content: bytes, encoding: Optional[str]) -> ParsedSource:
     return ParsedSource("table", header, rows, numbers)
 
 
-def _parse_shp(files: list[tuple[str, bytes]], encoding: Optional[str]) -> ParsedSource:
+# Векторные форматы GDAL (pyogrio): файл (или главный файл набора) по расширению → драйвер для подписи
+VECTOR_EXTS: dict[str, str] = {
+    ".shp": "ESRI Shapefile", ".gpkg": "GeoPackage", ".geojson": "GeoJSON", ".json": "GeoJSON/ESRIJSON",
+    ".fgb": "FlatGeobuf", ".sxf": "SXF («Панорама»)", ".gml": "GML", ".kml": "KML", ".mif": "MapInfo MIF",
+    ".tab": "MapInfo TAB", ".sqlite": "SpatiaLite",
+}
+# Наборы файлов: спутники главного файла (в zip или рядом)
+_SIDECAR_EXTS = frozenset({".shx", ".dbf", ".prj", ".cpg", ".rsc", ".mid", ".dat", ".map", ".id", ".xsd", ".qix"})
+MAX_UNZIPPED_BYTES = 200 * 1024 * 1024  # zip-бомба: сумма распакованного
+MAX_ARCHIVE_MEMBERS = 2000
+
+
+def _safe_name(name: str) -> str:
+    base = os.path.basename(name.replace("\\", "/"))
+    if not base or base.startswith(".") or base in (".", ".."):
+        return ""
+    return base
+
+
+def _extract(files: list[tuple[str, bytes]], tmp: str) -> None:
+    """Загрузка → каталог: zip распаковывается без путей (кроме каталога *.gdb — база ArcGIS)."""
+    total = 0
+    for name, content in files:
+        base = _safe_name(name)
+        if not base:
+            continue
+        if not base.lower().endswith(".zip"):
+            with open(os.path.join(tmp, base), "wb") as f:
+                f.write(content)
+            continue
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                members = zf.infolist()
+                if len(members) > MAX_ARCHIVE_MEMBERS:
+                    raise ValueError(f"В архиве больше {MAX_ARCHIVE_MEMBERS} файлов")
+                for member in members:
+                    parts = [p for p in member.filename.replace("\\", "/").split("/") if p]
+                    mbase = _safe_name(parts[-1]) if parts and not member.is_dir() else ""
+                    if not mbase:
+                        continue
+                    if member.file_size > MAX_UPLOAD_BYTES:
+                        raise ValueError(f"Файл {mbase} в архиве больше 20 МБ")
+                    total += member.file_size
+                    if total > MAX_UNZIPPED_BYTES:
+                        raise ValueError("Архив распаковывается больше чем в 200 МБ")
+                    gdb = next((_safe_name(p) for p in parts[:-1] if p.lower().endswith(".gdb")), "")
+                    folder = os.path.join(tmp, gdb) if gdb else tmp
+                    os.makedirs(folder, exist_ok=True)
+                    with open(os.path.join(folder, mbase), "wb") as f:
+                        f.write(zf.read(member))
+        except zipfile.BadZipFile as e:
+            raise ValueError("Архив повреждён или это не zip") from e
+
+
+def _main_dataset(tmp: str) -> tuple[str, str]:
+    """(путь, подпись формата) — главный файл набора: shapefile, база ArcGIS *.gdb или файл GDAL."""
+    entries = sorted(os.listdir(tmp))
+    gdbs = [n for n in entries if n.lower().endswith(".gdb") and os.path.isdir(os.path.join(tmp, n))]
+    if gdbs:
+        return os.path.join(tmp, gdbs[0]), "ArcGIS File Geodatabase"
+    for ext, label in VECTOR_EXTS.items():
+        found = [n for n in entries if n.lower().endswith(ext)]
+        if found:
+            return os.path.join(tmp, found[0]), label
+    raise ValueError(
+        "В загрузке нет данных ГИС: нужен shapefile (zip или .shp+.shx+.dbf), GeoPackage, GeoJSON/ESRI JSON, "
+        "FlatGeobuf, SXF+RSC, GML, KML, MapInfo или база ArcGIS (*.gdb в zip)")
+
+
+def _pick_layer(path: str, wanted: Optional[str]) -> tuple[str, list[dict]]:
+    """Слой набора: заданный или первый с объектами; → (слой, [{name, geometry_type, count}])."""
+    import pyogrio
+
+    try:
+        listed = pyogrio.list_layers(path)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"Не удалось открыть файл: {e}") from e
+    layers = []
+    for name, geom in listed:
+        try:
+            count = int(pyogrio.read_info(path, layer=str(name)).get("features") or 0)
+        except Exception:  # noqa: BLE001 — слой не читается: показать без числа
+            count = -1
+        layers.append({"name": str(name), "geometry_type": geom, "count": count})
+    if not layers:
+        raise ValueError("В файле нет слоёв")
+    if wanted:
+        if wanted not in {l["name"] for l in layers}:
+            raise ValueError(f"Слоя «{wanted}» в файле нет")
+        return wanted, layers
+    with_features = [l for l in layers if l["count"] and l["geometry_type"]]
+    return (with_features or layers)[0]["name"], layers
+
+
+def _parse_vector(files: list[tuple[str, bytes]], encoding: Optional[str], layer: Optional[str]) -> ParsedSource:
+    """Векторный слой любого формата GDAL: Shapefile, GeoPackage, GeoJSON и ESRI JSON (выгрузка слоя
+    ArcGIS), FlatGeobuf, SXF+RSC («Панорама»), GML, KML, MapInfo, база ArcGIS *.gdb (в zip)."""
     import geopandas as gpd
 
     with tempfile.TemporaryDirectory(prefix="tgid_import_") as tmp:
-        for name, content in files:
-            base = os.path.basename(name.replace("\\", "/"))
-            if base.lower().endswith(".zip"):
-                try:
-                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                        for member in zf.infolist():
-                            mbase = os.path.basename(member.filename.replace("\\", "/"))
-                            if member.is_dir() or not mbase or mbase.startswith("."):
-                                continue
-                            if member.file_size > MAX_UPLOAD_BYTES:
-                                raise ValueError(f"Файл {mbase} в архиве больше 20 МБ")
-                            with open(os.path.join(tmp, mbase), "wb") as f:
-                                f.write(zf.read(member))
-                except zipfile.BadZipFile as e:
-                    raise ValueError("Архив повреждён или это не zip") from e
-            else:
-                with open(os.path.join(tmp, base), "wb") as f:
-                    f.write(content)
-        shps = sorted(n for n in os.listdir(tmp) if n.lower().endswith(".shp"))
-        if not shps:
-            raise ValueError("В загрузке нет .shp (нужен zip или файлы .shp + .shx + .dbf [+ .prj, .cpg])")
-        warnings = []
-        if len(shps) > 1:
-            warnings.append(f"В архиве несколько слоёв, взят первый: {shps[0]} (есть: {', '.join(shps)})")
-        stem = shps[0][:-4]
-        present = {n.lower() for n in os.listdir(tmp)}
-        for ext in (".shx", ".dbf"):
-            if f"{stem.lower()}{ext}" not in present:
-                raise ValueError(f"Нет файла {stem}{ext} — shapefile неполный")
+        _extract(files, tmp)
+        path, label = _main_dataset(tmp)
+        warnings: list[str] = []
+        is_shp = path.lower().endswith(".shp")
         kwargs: dict[str, Any] = {}
-        if encoding:
-            kwargs["encoding"] = encoding
-        elif f"{stem.lower()}.cpg" not in present:
-            # Без .cpg dbf десктопных выгрузок — в Windows-1251
-            kwargs["encoding"] = "cp1251"
-            warnings.append("Нет .cpg — атрибуты прочитаны в кодировке Windows-1251")
+        if is_shp:
+            stem = os.path.basename(path)[:-4]
+            present = {n.lower() for n in os.listdir(tmp)}
+            shps = sorted(n for n in os.listdir(tmp) if n.lower().endswith(".shp"))
+            if len(shps) > 1:
+                warnings.append(f"В архиве несколько слоёв, взят первый: {shps[0]} (есть: {', '.join(shps)})")
+            for ext in (".shx", ".dbf"):
+                if f"{stem.lower()}{ext}" not in present:
+                    raise ValueError(f"Нет файла {stem}{ext} — shapefile неполный")
+            if encoding:
+                kwargs["encoding"] = encoding
+            elif f"{stem.lower()}.cpg" not in present:
+                # Без .cpg dbf десктопных выгрузок — в Windows-1251
+                kwargs["encoding"] = "cp1251"
+                warnings.append("Нет .cpg — атрибуты прочитаны в кодировке Windows-1251")
+            layers: list[dict] = []
+            chosen = None
+        else:
+            chosen, layers = _pick_layer(path, layer)
+            kwargs["layer"] = chosen
+            if encoding:
+                kwargs["encoding"] = encoding
+            if len(layers) > 1 and not layer:
+                warnings.append(f"Слоёв в файле: {len(layers)}, взят «{chosen}» — другой выберите в списке слоёв")
+            if path.lower().endswith(".sxf") and not any(n.lower().endswith(".rsc") for n in os.listdir(tmp)):
+                warnings.append("Нет классификатора .rsc — слои и атрибуты SXF без названий; загрузите .sxf и .rsc вместе")
         try:
-            gdf = gpd.read_file(os.path.join(tmp, shps[0]), **kwargs)
+            gdf = gpd.read_file(path, **kwargs)
         except Exception as e:  # noqa: BLE001
-            raise ValueError(f"Не удалось прочитать shapefile: {e}") from e
+            raise ValueError(f"Не удалось прочитать {label}: {e}") from e
     if len(gdf) > MAX_ROWS:
         raise ValueError(f"В слое больше {MAX_ROWS} объектов — разбейте импорт на части")
     crs_text = None
@@ -294,30 +393,32 @@ def _parse_shp(files: list[tuple[str, bytes]], encoding: Optional[str]) -> Parse
             gdf = gdf.to_crs(4326)
         srid = 4326
     else:
-        warnings.append("Нет .prj — укажите систему координат вручную")
+        warnings.append("Система координат в файле не указана — укажите её вручную")
     columns = [str(c) for c in gdf.columns if c != gdf.geometry.name]
     rows = [{c: _json_safe(v) for c, v in zip(columns, rec)} for rec in gdf[columns].itertuples(index=False, name=None)]
     geoms = list(gdf.geometry)
     types = sorted({g.geom_type for g in geoms if g is not None and not g.is_empty})
     return ParsedSource(
-        "shp", columns, rows, list(range(1, len(rows) + 1)),
+        "shp" if is_shp else "vector", columns, rows, list(range(1, len(rows) + 1)),
         geometries=geoms, geometry_type="/".join(types) or None, crs=crs_text, geometry_srid=srid,
-        warnings=warnings,
+        warnings=warnings, format=label, layer=chosen, source_layers=layers,
     )
 
 
 def parse_upload(
     files: list[tuple[str, bytes]], *, encoding: Optional[str] = None, sheet: Optional[str] = None,
+    layer: Optional[str] = None,
 ) -> ParsedSource:
-    """Файлы загрузки → таблица атрибутов (+ геометрия для SHP)."""
+    """Файлы загрузки → таблица атрибутов (+ геометрия у форматов ГИС; layer — слой многослойного файла)."""
     if not files:
         raise ValueError("Файл не передан")
     total = sum(len(c) for _, c in files)
     if total > MAX_UPLOAD_BYTES:
         raise ValueError("Загрузка больше 20 МБ")
     exts = {os.path.splitext(n.lower())[1] for n, _ in files}
-    if exts & {".zip", ".shp"}:
-        return _parse_shp(files, encoding)
+    # .json — GeoJSON или ESRI JSON (выгрузка слоя ArcGIS); формат определит GDAL
+    if exts & ({".zip"} | set(VECTOR_EXTS)):
+        return _parse_vector(files, encoding, layer)
     if len(files) != 1:
         raise ValueError("Excel/CSV, GPX и DXF загружаются одним файлом")
     name, content = files[0]
@@ -339,7 +440,8 @@ def parse_upload(
         return _parse_csv(content, encoding)
     if ext == ".xls":
         raise ValueError("Формат .xls (Excel 97–2003) не поддерживается — сохраните файл как .xlsx или CSV")
-    raise ValueError(f"Неподдерживаемый файл {name}: нужен .zip/.shp, .xlsx, .csv, .gpx или .dxf")
+    raise ValueError(f"Неподдерживаемый файл {name}: нужен файл ГИС (shapefile, GeoPackage, GeoJSON, SXF, "
+                     f"FlatGeobuf, GML, KML, MapInfo, zip), .xlsx, .csv, .gpx или .dxf")
 
 
 def _norm(name: str) -> str:
@@ -392,6 +494,10 @@ def describe_source(src: ParsedSource, mode: str) -> dict:
         "suggested_mapping": suggest_mapping(mode, src.columns, has_geometry),
         # слои DXF: можно взять только нужные (params.layers)
         "layers": _layer_counts(src) if src.kind == "dxf" else [],
+        # файлы ГИС: формат и слои файла (GPKG, SXF, *.gdb — несколько), выбранный — params.layer
+        "format": src.format,
+        "layer": src.layer,
+        "source_layers": src.source_layers,
     }
 
 
@@ -954,6 +1060,9 @@ def validate_params(params: dict) -> dict:
     layers = params.get("layers")
     if layers is not None and (not isinstance(layers, list) or not all(isinstance(x, str) for x in layers)):
         raise ValueError("layers — список имён слоёв DXF")
+    layer = params.get("layer")
+    if layer is not None and (not isinstance(layer, str) or len(layer) > 200):
+        raise ValueError("layer — имя слоя файла ГИС")
     tol = float(params.get("snap_tolerance_m", 1.0))
     if not (0 <= tol <= MAX_SNAP_TOLERANCE_M):
         raise ValueError(f"Допуск привязки — 0…{MAX_SNAP_TOLERANCE_M:g} м")

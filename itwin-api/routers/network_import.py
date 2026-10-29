@@ -44,15 +44,18 @@ async def _read_files(files: list[UploadFile]) -> list[tuple[str, bytes]]:
 @router.post("/api/v1/import/inspect")
 async def import_inspect(
     user: Annotated[AuthUser, Depends(require_permission("import", kind="line", action="create"))],
-    files: list[UploadFile] = File(..., description="zip с shapefile, файлы .shp/.shx/.dbf/.prj/.cpg, .xlsx, .csv, .gpx или .dxf"),
+    files: list[UploadFile] = File(..., description="файл ГИС (zip с shapefile или *.gdb, .gpkg, .geojson, ESRI .json, "
+                                                    ".fgb, .sxf+.rsc, .gml, .kml, .mif/.mid, .tab), .xlsx, .csv, .gpx или .dxf"),
     mode: str = Form("nodes", description="nodes | lines | coords"),
     encoding: Optional[str] = Form(None),
     sheet: Optional[str] = Form(None),
+    layer: Optional[str] = Form(None, max_length=200, description="слой многослойного файла (GPKG, SXF, *.gdb)"),
 ):
     """Разбор файла: колонки, образец строк, поля назначения режима, предложенное сопоставление."""
     try:
         validate_params({"mode": mode})
-        src = parse_upload(await _read_files(files), encoding=encoding or None, sheet=sheet or None)
+        src = parse_upload(await _read_files(files), encoding=encoding or None, sheet=sheet or None,
+                           layer=layer or None)
         return describe_source(src, mode)
     except HTTPException:
         raise
@@ -66,7 +69,8 @@ async def import_run(
     user: Annotated[AuthUser, Depends(require_permission("import", kind="line", action="create"))],
     files: list[UploadFile] = File(...),
     params: str = Form(..., description="JSON: mode, fileid, source_crs, mapping, match_by, snap_tolerance_m, "
-                                        "recalc_lengths, build_missing_lines, skip_errors, encoding, sheet, layers (DXF)"),
+                                        "recalc_lengths, build_missing_lines, skip_errors, encoding, sheet, layers (DXF), "
+                                        "layer (слой файла ГИС)"),
     dry_run: bool = Form(True),
 ):
     """Превью (dry_run) или применение импорта; ошибки строк при применении без skip_errors — 422."""
@@ -84,6 +88,7 @@ async def import_run(
         validate_params(parsed)
         src = parse_upload(
             await _read_files(files), encoding=parsed.get("encoding") or None, sheet=parsed.get("sheet") or None,
+            layer=str(parsed.get("layer") or "")[:200] or None,
         )
         return await run_import(src, parsed, dry_run=dry_run, actor=user.username)
     except ImportRowErrors as e:
