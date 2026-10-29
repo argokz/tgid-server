@@ -3,7 +3,7 @@
 import os
 from typing import Annotated, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
 from app_logging import get_logger
@@ -13,6 +13,7 @@ from database.topology_cad import ChainValidationError, convert_point, create_ch
 from database.topology_diagnostics import get_topology_diagnostics
 from database.topology_dissolve import dissolve_node, line_delete_preview, node_delete_preview
 from database.topology_history import operation_history, undo_to
+from database.topology_rules import AREA_LIMIT, check_area, operation_area
 from database.bends import line_bends
 from database.line_types import (
     LINE_TYPE_LABELS,
@@ -853,6 +854,28 @@ async def api_undo_to(req: UndoToRequest, user: Net):
     """Откатить свои операции от последней до выбранной включительно; первая неотменяемая — стоп."""
     require_topology_mutations_enabled()
     return await undo_to(user.username, req.operation_id)
+
+
+class AreaCheckRequest(BaseModel):
+    node_ids: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list, max_length=AREA_LIMIT)
+    line_ids: list[Annotated[int, Field(ge=1)]] = Field(default_factory=list, max_length=AREA_LIMIT)
+
+
+@router.post("/api/v1/topology/check-area")
+async def api_check_area(req: AreaCheckRequest, _: Net):
+    """Правила связности для узлов и участков и всего, что к ним примыкает (без записи)."""
+    async with acquire_conn() as conn:
+        return await check_area(conn, req.node_ids, req.line_ids)
+
+
+@router.get("/api/v1/topology/operations/{operation_id}/check")
+async def api_check_operation(operation_id: Annotated[int, Path(ge=1)], _: Net):
+    """Проверка после правки: правила связности для области операции журнала. 404 — операции нет."""
+    async with acquire_conn() as conn:
+        area = await operation_area(conn, operation_id)
+        if area is None:
+            raise HTTPException(status_code=404, detail=f"Операция {operation_id} не найдена в журнале")
+        return {"operation_id": operation_id, **await check_area(conn, *area)}
 
 
 @router.get("/api/v1/topology/redo")
