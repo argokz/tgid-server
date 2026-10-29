@@ -80,6 +80,9 @@ COMMON: tuple[Item, ...] = (
     Item("таблица object_authorship",
          "select to_regclass('public.object_authorship') is not null",
          (_m("20261020_object_authorship.sql"),)),
+    Item("таблицы сценариев tgid_scenario",
+         "select to_regclass('public.tgid_scenario_object') is not null",
+         (_m("20261029_scenarios.sql"),)),
     Item("колонка generalizedconsumers.name",
          "select to_regclass('public.generalizedconsumers') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'generalizedconsumers' and column_name = 'name')",

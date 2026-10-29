@@ -251,11 +251,18 @@ def _value(raw: Optional[str], data_type: str) -> Optional[str]:
     return raw
 
 
-async def import_sections(conn, op, sections: dict[str, dict], name: Optional[str] = None) -> dict:
-    """Вставляет фрагмент из разобранного файла новыми id; возвращает отчёт."""
+async def import_sections(conn, op, sections: dict[str, dict], name: Optional[str] = None,
+                          id_map: Optional[dict[str, dict[int, int]]] = None,
+                          restore_geometry: bool = True) -> dict:
+    """Вставляет фрагмент из разобранного файла новыми id; возвращает отчёт.
+
+    id_map (если передан) заполняется соответствием {таблица: {id в файле: новый id}} —
+    по нему сценарий (database/scenarios.py) сравнивает копию с фрагментом-основой.
+    restore_geometry=False — геометрию строит вызывающий (сценарий копирует её из основы)."""
     import json
 
-    id_map: dict[str, dict[int, int]] = {}
+    if id_map is None:
+        id_map = {}
     counts: dict[str, int] = {}
     unresolved: dict[str, int] = {}
     skipped_tables = sorted(t for t in sections if t not in LIST_TAB and t != "heatsystem")
@@ -367,7 +374,7 @@ async def import_sections(conn, op, sections: dict[str, dict], name: Optional[st
             "FROM nodes n1 WHERE n1.id = l.nodeid1 AND l.id = ANY($1::int[])",
             new_lines,
         )
-    geometry = await _restore_geometry(conn, new_nodes, new_lines)
+    geometry = await _restore_geometry(conn, new_nodes, new_lines) if restore_geometry else {}
     return {
         "fileid": new_fileid,
         "tables": counts,
