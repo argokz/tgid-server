@@ -51,6 +51,8 @@ GENERAL: dict[str, str] = {
     "refs": "Справочники и шаблоны карточек",
     "audit_view": "Просмотр журнала действий",
     "users_admin": "Управление пользователями",
+    # маскирование в ответах API — database/pii.py
+    "pii_view": "Персональные данные потребителей полностью (ФИО, телефоны, счета)",
 }
 
 # Роль → подпись, описание, уровень (уровень — для прежних проверок require_roles)
@@ -104,7 +106,7 @@ ROLE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "editor": {
         "matrix": _matrix(_fill(_ALL_KINDS, edit="all", create="all", move="all", delete="own")),
-        "general": {"calc_run", "calc_save", "export", "import", "journals", "refs"},
+        "general": {"calc_run", "calc_save", "export", "import", "journals", "refs", "pii_view"},
     },
     "admin": {
         "matrix": _matrix(_fill(_ALL_KINDS, edit="all", create="all", move="all", delete="all")),
@@ -121,7 +123,7 @@ _CAP_GENERAL: dict[str, set[str]] = {
     "network_struct": {"import"},
     "pts": {"journals"},
     "repairs": {"journals"},
-    "acts": {"journals"},
+    "acts": {"journals", "pii_view"},
     "corrosion": {"journals"},
     "geo": {"refs"},
 }

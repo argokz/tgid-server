@@ -24,6 +24,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 import asyncpg
 
+from database import pii
+
 KCAL_TO_GCAL = 1e6
 LOAD_TOLERANCE = 1e-6
 MAX_CONSUMER_BUILDINGS = 500
@@ -487,7 +489,9 @@ async def bind_consumer_buildings(
 
 # --- Excel: отчёт несоответствий -----------------------------------------------------
 
-async def reconciliation_workbook(conn: asyncpg.Connection, kinds: Optional[list[str]] = None) -> bytes:
+async def reconciliation_workbook(conn: asyncpg.Connection, kinds: Optional[list[str]] = None, *,
+                                  mask_pii: bool = False) -> bytes:
+    """mask_pii — без права «Персональные данные»: владельцы-физлица, телефоны, договоры замаскированы."""
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
@@ -516,6 +520,7 @@ async def reconciliation_workbook(conn: asyncpg.Connection, kinds: Optional[list
         for cell in ws[2]:
             cell.font = Font(bold=True)
         for record in rows[:EXCEL_ROW_LIMIT]:
+            record = pii.mask_record(dict(record)) if mask_pii else record
             ws.append([
                 ", ".join(map(str, v)) if isinstance(v, list) else _clean(v) for v in record.values()
             ])

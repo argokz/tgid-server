@@ -193,6 +193,11 @@ class DbRoleMiddleware:
 
 app.add_middleware(DbRoleMiddleware)
 
+# Персональные данные в JSON-ответах (pii_middleware.py): без права pii_view — замаскированными
+from pii_middleware import PiiMaskMiddleware  # noqa: E402
+
+app.add_middleware(PiiMaskMiddleware)
+
 # Журнал действий пользователей (activity.py): правки, расчёты, выгрузки, выходы — после ответа
 from activity import ActivityMiddleware  # noqa: E402
 

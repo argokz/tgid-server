@@ -15,8 +15,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from audit import write_audit_log
-from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
+from auth import AuthUser, get_optional_user, require_mutations_enabled, require_roles, require_permission
 from database import alseko_binding as ab
+from database import pii
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["alseko"])
@@ -73,12 +74,13 @@ async def alseko_reconciliation_issues(
 
 @router.get("/api/alseko/reconciliation/report.xlsx")
 async def alseko_reconciliation_report(
+    user: Annotated[Optional[AuthUser], Depends(get_optional_user)],
     kinds: Optional[str] = Query(None, description="виды через запятую; пусто — все"),
 ):
     selected = [k.strip() for k in (kinds or "").split(",") if k.strip()] or None
     async with acquire_conn() as conn:
         try:
-            content = await ab.reconciliation_workbook(conn, selected)
+            content = await ab.reconciliation_workbook(conn, selected, mask_pii=not pii.can_view(user))
         except ab.AlsekoError as exc:
             raise _http(exc)
     filename = f"alseko_reconciliation_{date.today().isoformat()}.xlsx"
