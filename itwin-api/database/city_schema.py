@@ -88,6 +88,9 @@ COMMON: tuple[Item, ...] = (
          "select to_regclass('public.tgid_scenario_object') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'tgid_scenario_object' and column_name = 'merge_group_id')",
          (_m("20261029_scenario_merge.sql"),)),
+    Item("таблица tgid_trace_config",
+         "select to_regclass('public.tgid_trace_config') is not null",
+         (_m("20261029_trace_config.sql"),)),
     Item("колонка generalizedconsumers.name",
          "select to_regclass('public.generalizedconsumers') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'generalizedconsumers' and column_name = 'name')",

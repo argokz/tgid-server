@@ -22,6 +22,7 @@ from database.network_queries import (
     query_network_volume,
 )
 from database.outage_simulation import simulate_outage_isolation
+from database import trace_configs
 from database.network_trace import list_subnetworks, run_trace
 from routers.piezometer import _build_route, _get_topology_graph
 
@@ -40,7 +41,10 @@ class ValveIsolationRequest(BaseModel):
 
 
 class TraceRequest(BaseModel):
-    trace_type: Literal["connected", "upstream", "downstream", "subnetwork"]
+    # тип и барьеры по условию — явно или из именованной настройки (config_id, /api/v1/trace-configs)
+    trace_type: Optional[Literal["connected", "upstream", "downstream", "subnetwork"]] = None
+    config_id: Optional[str] = Field(None, max_length=64)
+    stop_at: list[Literal["valves", "pumpstations", "setpress", "sources"]] = Field(default_factory=list, max_length=8)
     start_line_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
     start_node_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
     barrier_line_ids: list[Annotated[int, Field(ge=1)]] = _TRACE_IDS
@@ -226,20 +230,37 @@ async def api_valve_isolation(req: ValveIsolationRequest, _: Annotated[AuthUser,
 
 
 @router.post("/api/analysis/trace")
-async def api_network_trace(req: TraceRequest, _: Annotated[AuthUser, Depends(require_roles("viewer"))]):
-    """Трассировка сети по топологии: связность, путь к источникам, ниже по потоку, зона."""
+async def api_network_trace(req: TraceRequest, user: Annotated[AuthUser, Depends(require_roles("viewer"))]):
+    """Трассировка сети по топологии: связность, путь к источникам, ниже по потоку, зона.
+
+    config_id — именованная настройка (тип и барьеры по условию); явные trace_type и stop_at её дополняют."""
     async with acquire_conn() as conn:
+        trace_type, stop_at, config = req.trace_type, list(req.stop_at), None
+        if req.config_id:
+            try:
+                config = await trace_configs.get_config(conn, req.config_id, user.username)
+            except trace_configs.TraceConfigError as exc:
+                raise HTTPException(status_code=exc.status, detail=exc.message)
+            trace_type = trace_type or config["params"]["trace_type"]
+            stop_at = sorted(set(stop_at) | set(config["params"]["stop_at"]))
+        if trace_type is None:
+            raise HTTPException(status_code=422, detail="Укажите trace_type или config_id")
         try:
-            return await run_trace(
+            result = await run_trace(
                 conn,
-                trace_type=req.trace_type,
+                trace_type=trace_type,
                 start_line_ids=req.start_line_ids,
                 start_node_ids=req.start_node_ids,
                 barrier_line_ids=req.barrier_line_ids,
                 barrier_node_ids=req.barrier_node_ids,
                 stop_at_valves=req.stop_at_valves,
+                stop_at=stop_at,
                 include_geometry=req.include_geometry,
             )
+            result["stop_at"] = sorted(set(stop_at) | ({"valves"} if req.stop_at_valves else set()))
+            if config is not None:
+                result["config"] = {"id": config["id"], "name": config["name"]}
+            return result
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:

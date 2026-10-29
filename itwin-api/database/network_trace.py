@@ -15,9 +15,16 @@
 (``setpressnodes``), через которые квартальные сети берут воду из магистрали.
 - ``subnetwork`` — зона (подсеть), в которую входит начальная точка, и её источники.
 
-Дополнительно пользователь задаёт барьеры (участки, узлы) и может остановить обход на
-задвижках (``stop_at_valves``): участок с задвижкой и узел с задвижками во внутренней схеме
-попадают в результат, но дальше обход не идёт.
+Дополнительно пользователь задаёт барьеры (участки, узлы) и барьеры по условию (``stop_at``,
+у трассировок «связанные» и «зона»): объект-барьер попадает в результат, но дальше обход не идёт.
+
+- ``valves`` — задвижки: участок с задвижкой и узел с задвижками во внутренней схеме
+  (прежний флаг ``stop_at_valves``);
+- ``pumpstations`` — узлы насосных станций (в т. ч. ЦТП, заведённые насосными);
+- ``setpress`` — узлы заданного напора (вход квартальной сети из магистрали);
+- ``sources`` — источники тепла.
+
+Набор «тип + барьеры по условию» сохраняется как именованная настройка (database/trace_configs.py).
 
 Это оценка по связности: направление потока и достаточность напора не учитываются
 (``model = topology``), направление «вверх/вниз» задают источники. Схему базы модуль не меняет.
@@ -42,6 +49,14 @@ from database.outage_simulation import (
 )
 
 TRACE_TYPES = ("connected", "upstream", "downstream", "subnetwork")
+# Барьеры по условию (stop_at) и трассировки, к которым они применяются
+STOP_KINDS = ("valves", "pumpstations", "setpress", "sources")
+STOP_TRACE_TYPES = ("connected", "subnetwork")
+_STOP_NODE_SQL = {
+    "pumpstations": "SELECT nodeid FROM pumpstations WHERE nodeid IS NOT NULL",
+    "setpress": "SELECT nodeid FROM setpressnodes WHERE nodeid IS NOT NULL",
+    "sources": "SELECT nodeid FROM heatsources WHERE nodeid IS NOT NULL",
+}
 
 # Больше этого геометрия участков не отдаётся (только id): карта всё равно не покажет
 # сотню тысяч объектов GeoJSON-ом, а ответ раздувается до десятков мегабайт.
@@ -292,6 +307,20 @@ def _sources_out(net: dict[str, Any], nodes: Iterable[int]) -> list[dict[str, An
     return [{"node_id": n, "kind": kinds.get(n, "heat_source")} for n in sorted(nodes)]
 
 
+async def stop_barriers(conn: asyncpg.Connection, net: dict[str, Any],
+                        stop_at: Iterable[str]) -> tuple[set[int], set[int]]:
+    """Барьеры по условию → (участки, узлы), где обход останавливается."""
+    kinds = set(stop_at)
+    unknown = kinds - set(STOP_KINDS)
+    if unknown:
+        raise ValueError(f"Неизвестный барьер: {', '.join(sorted(unknown))}")
+    lines: set[int] = set(net["dampers_by_line"]) if "valves" in kinds else set()
+    nodes: set[int] = set(net["dampers_by_node"]) if "valves" in kinds else set()
+    for kind in sorted(kinds & set(_STOP_NODE_SQL)):
+        nodes |= {r["nodeid"] for r in await conn.fetch(_STOP_NODE_SQL[kind])}
+    return lines, nodes
+
+
 def _check_ids(kind: str, ids: Iterable[int], known: Iterable[int] | dict) -> None:
     missing = [i for i in ids if i not in known]
     if missing:
@@ -308,10 +337,12 @@ async def run_trace(
     barrier_line_ids: list[int] | None = None,
     barrier_node_ids: list[int] | None = None,
     stop_at_valves: bool = False,
+    stop_at: Iterable[str] = (),
     include_geometry: bool = True,
 ) -> dict[str, Any]:
     if trace_type not in TRACE_TYPES:
         raise ValueError(f"Неизвестный тип трассировки: {trace_type}")
+    stop_kinds = set(stop_at) | ({"valves"} if stop_at_valves else set())
     if not start_line_ids and not start_node_ids:
         raise ValueError("Укажите хотя бы одну начальную точку: участок или узел.")
 
@@ -329,9 +360,8 @@ async def run_trace(
     for lid in start_line_ids:
         starts |= {line_info[lid]["nodeid1"], line_info[lid]["nodeid2"]}
 
+    stop_lines, stop_nodes = await stop_barriers(conn, net, stop_kinds if trace_type in STOP_TRACE_TYPES else ())
     if trace_type == "connected":
-        stop_lines = set(net["dampers_by_line"]) if stop_at_valves else set()
-        stop_nodes = set(net["dampers_by_node"]) if stop_at_valves else set()
         res = trace_connected(adj, starts, blocked_lines=blocked, removed_nodes=user_nodes,
                               stop_lines=stop_lines, stop_nodes=stop_nodes - starts)
         res = TraceResult(nodes=res.nodes, lines=res.lines | set(start_line_ids),
@@ -353,9 +383,10 @@ async def run_trace(
         res = trace_downstream(adj, sources, start_nodes=set(start_node_ids), start_lines=set(start_line_ids),
                                blocked_lines=blocked, removed_nodes=user_nodes)
     else:  # subnetwork
-        zone = trace_connected(adj, starts, blocked_lines=blocked, removed_nodes=user_nodes)
+        zone = trace_connected(adj, starts, blocked_lines=blocked, removed_nodes=user_nodes,
+                               stop_lines=stop_lines, stop_nodes=stop_nodes - starts)
         res = TraceResult(nodes=zone.nodes, lines=zone.lines | set(start_line_ids),
-                          sources=frozenset(zone.nodes & sources))
+                          sources=frozenset(zone.nodes & sources), stopped_at=zone.stopped_at)
 
     return await _trace_response(conn, net, trace_type, res, include_geometry=include_geometry,
                                  start={"line_ids": start_line_ids, "node_ids": start_node_ids})
