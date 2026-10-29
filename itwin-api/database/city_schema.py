@@ -91,6 +91,9 @@ COMMON: tuple[Item, ...] = (
     Item("таблица tgid_trace_config",
          "select to_regclass('public.tgid_trace_config') is not null",
          (_m("20261029_trace_config.sql"),)),
+    Item("таблица tgid_layer_style",
+         "select to_regclass('public.tgid_layer_style') is not null",
+         (_m("20261029_layer_style.sql"),)),
     Item("колонка generalizedconsumers.name",
          "select to_regclass('public.generalizedconsumers') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'generalizedconsumers' and column_name = 'name')",
