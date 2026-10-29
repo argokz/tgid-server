@@ -34,7 +34,7 @@
 | almaty72_plan | almatygid_copy | 72 | −20 | плановый |
 | almaty74_fact | almatygid_copy | 74 | −20 | фактический, эквивалентные сопротивления (`-a`) |
 | shatura3252_plan | shatura_copy | 3252 | −25 | плановый |
-| astana_plan | astanagid_copy | 3179 | −20 | плановый — **нет копии**, см. ниже |
+| astana_plan_tg | astanagid_copy | 3179 | −31,2 | плановый по температурному графику (`-tg`) |
 
 Tн −20 у Алматы: при −25…−30 sety останавливается проверкой «должна быть от −25 до 8» у части
 температурных графиков.
@@ -97,17 +97,25 @@ sety не меняется. Наблюдения пишутся в `meta.json` �
 `--set поле=значение` меняет параметр случая (поле `SetyRunRequest`), например `--set trtp=1`.
 Эталон снимается только без зондов и без `--set`. Итоги проверки — `docs/sety-review-section2-check.md`.
 
-## Астана: что нужно от пользователя
+## Астана: копия базы
 
-Рабочие базы Астаны (`astanagid_2026_09_22`, `astana`) только для чтения, расчёт пишет результаты в
-`calculation` и `*_out`, поэтому нужна копия. Её создание — снимок базы стенда/прода:
+Рабочие базы Астаны (`astanagid_2026_09_22`, `astana`) только для чтения, а расчёт пишет в
+`calculation` и `*_out`. Поэтому 29.10.2026 сделана копия `astanagid_copy` — дамп
+`H:\tgid-backups\astanagid_2026_09_22_20261029.dump` (1,2 ГБ, восстановление около 2 мин).
+Пересоздать её из свежей базы:
 
 ```bash
 pg_dump -h 127.0.0.1 -p 5440 -U postgres -Fc -f H:\tgid-backups\astanagid_2026_09_22.dump astanagid_2026_09_22
-createdb -h 127.0.0.1 -p 5440 -U postgres astanagid_copy
-pg_restore -h 127.0.0.1 -p 5440 -U postgres -d astanagid_copy H:\tgid-backups\astanagid_2026_09_22.dump
+dropdb -h 127.0.0.1 -p 5440 -U postgres astanagid_copy
+createdb -h 127.0.0.1 -p 5440 -U postgres -T template0 astanagid_copy
+pg_restore -h 127.0.0.1 -p 5440 -U postgres -d astanagid_copy --no-owner -j 4 H:\tgid-backups\astanagid_2026_09_22.dump
 ```
 
-`CREATE DATABASE … TEMPLATE astanagid_2026_09_22` не подойдёт: к базе стенда/прода всегда есть
-подключения. После восстановления — `run_reference.py capture --cases astana_plan` (фрагмент
-3179 «Магистрали 2026-2027 c приростом»; если считать нужно другой — поменять случай в `CASES`).
+После этого эталон нужно снять заново: `run_reference.py capture --cases astana_plan_tg`.
+`CREATE DATABASE … TEMPLATE astanagid_2026_09_22` не подойдёт: к базе стенда и прода всегда есть
+подключения.
+
+У потребителей Астаны не заданы коды удельных расходов, поэтому плановый расчёт без `-tg`
+останавливается сообщением «Не задан Код удельных расходов в потребителе». Все расчёты Астаны
+идут по температурному графику, и случай тоже: Tн −31,2, фрагмент 3179 «Магистрали 2026-2027
+c приростом». Расчёт идёт около 5 мин, с прогревом — около 10.
