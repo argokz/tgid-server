@@ -32,6 +32,7 @@ from routers.pts import router as pts_router
 from routers.registries import router as registries_router
 from routers.reports import router as reports_router
 from routers.scenarios import router as scenarios_router
+from routers.ogc import router as ogc_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -56,6 +57,7 @@ all_routers = [
     network_import_router,
     fragment_transfer_router,
     scenarios_router,
+    ogc_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,
