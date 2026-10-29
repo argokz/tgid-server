@@ -594,3 +594,23 @@ async def _run(conn, spec: SelectSpec, bbox, with_geometry: bool) -> dict[str, A
     if with_geometry:
         out["geojson"] = {"type": "FeatureCollection", "features": features}
     return out
+
+
+def result_features(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки выборки с геометрией → объекты GeoJSON для выгрузки в файл (database/vector_export.py)."""
+    geometry = {f["id"]: f["geometry"] for f in (result.get("geojson") or {}).get("features", [])}
+    out = []
+    for item in result["items"]:
+        geom = geometry.get(item["id"])
+        if geom is None:
+            continue
+        props: dict[str, Any] = {"id": item["id"], "fileid": item.get("fileid"), "title": item.get("title")}
+        if result["target"] == "lines":
+            props["length"] = item.get("length")
+        else:
+            props.update(node_type=item.get("node_type"), card_type=item.get("card_type"))
+        if "distance_m" in item:
+            props["distance_m"] = item["distance_m"]
+        props.update(item.get("values", {}))
+        out.append({"type": "Feature", "geometry": geom, "properties": props})
+    return out

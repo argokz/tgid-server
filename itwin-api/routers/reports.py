@@ -13,7 +13,8 @@ from typing import Optional
 from app_logging import get_logger
 from database import excel_reports
 from database.connect import acquire_conn
-from database.export_shp import export_network_to_shp
+from database import vector_export
+from database.export_shp import export_network, export_network_to_shp
 from database.network_export import export_headers
 from database.passport_diagnostics import get_passport_site_diagnostics
 from database.passport_excel import XLSX_MEDIA_TYPE, PassportError, build_passport_xlsx
@@ -187,6 +188,29 @@ async def export_shp_endpoint(
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=network_export{suffix}.zip", **headers},
     )
+
+
+@router.get("/api/export/network")
+async def export_network_endpoint(
+    format: str = Query("gpkg", max_length=10, description=", ".join(vector_export.FORMATS)),
+    fragment_id: Optional[int] = Query(None, ge=1),
+    fragments: Optional[str] = Query(None, description="Фрагменты через запятую (fileid)"),
+    limit: int = Query(50000, ge=1, le=200000),
+):
+    """Сеть фрагментов (слои lines и nodes) в GeoPackage, FlatGeobuf или Shapefile (zip)."""
+    try:
+        fmt = vector_export.get_format(format)
+    except vector_export.VectorExportError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    frags = parse_fragment_ids(fragment_id, fragments)
+    stats: dict = {}
+    suffix = f"_f{frags[0]}" if frags and len(frags) == 1 else ("_frag" if frags else "")
+    content, media_type, filename = await export_network(frags, fmt, limit=limit, stats=stats,
+                                                         base_name=f"network_export{suffix}")
+    headers = export_headers(max(stats.get("lines", 0), stats.get("nodes", 0)), limit,
+                             bool(stats.get("truncated")), expose=("Content-Disposition",))
+    return Response(content, media_type=media_type,
+                    headers={"Content-Disposition": f"attachment; filename={filename}", **headers})
 
 
 @router.get("/api/reports/html/{form_id}")

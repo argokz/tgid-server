@@ -1,27 +1,36 @@
-﻿"""SHP export of nodes/lines (optional fragment filter)."""
+﻿"""Выгрузка сети фрагментов (узлы и участки) в файлы ГИС: Shapefile, GeoPackage, FlatGeobuf.
+
+Слои: lines (участки: узлы концов, признак, фрагмент, Ду и длина по паспорту) и nodes (узлы фрагментов
+и концы их участков). Запись — database/vector_export.py.
+"""
 
 from __future__ import annotations
 
-import io
 import json
-import os
-import tempfile
-import zipfile
 from typing import Optional, Sequence
 
 import geopandas as gpd
 from fastapi import HTTPException
+from fastapi.concurrency import run_in_threadpool
 
+from app_logging import get_logger
+from database import vector_export as ve
 from database.connect import acquire_conn
 from database.fragment_filter import LINE_IN_FRAGMENTS_SQL, LIVE_LINE_SQL
 from database.network_export import split_limited
 
+logger = get_logger(__name__)
 
-# Участки фрагмента — по linesobj.fileid (единое правило database.fragment_filter, QA F13)
+# Участки фрагмента — по linesobj.fileid (единое правило database.fragment_filter, QA F13);
+# паспорт — самый длинный (как в износе и тематических картах)
 _LINES_SQL = f"""
     SELECT lo.id, lo.nodeid1, lo.nodeid2, lo.externalsignlineid, lo.fileid,
+           h.diametercondit AS diameter, h.pipesectlength AS length,
            ST_AsGeoJSON(ST_Transform(lo.shape, 4326)) AS geom
       FROM linesobj lo
+      LEFT JOIN LATERAL (SELECT hp.diametercondit, hp.pipesectlength FROM heatpipesections hp
+                          WHERE hp.lineid = lo.id
+                          ORDER BY hp.pipesectlength DESC NULLS LAST, hp.id DESC LIMIT 1) h ON true
      WHERE {LIVE_LINE_SQL}
        AND {LINE_IN_FRAGMENTS_SQL}
        AND lo.shape IS NOT NULL
@@ -47,79 +56,46 @@ _NODES_SQL = f"""
 """
 
 
+def _features(rows) -> list[dict]:
+    return [{"type": "Feature", "geometry": json.loads(r["geom"]),
+             "properties": {k: v for k, v in dict(r).items() if k != "geom"}}
+            for r in rows if r["geom"]]
+
+
+async def network_layers(fragment_ids: Optional[Sequence[int]], *, limit: int,
+                         stats: Optional[dict] = None) -> dict[str, gpd.GeoDataFrame]:
+    """Слои lines и nodes; stats получает lines/nodes/truncated (запрос limit + 1 строки, QA F84)."""
+    frags = sorted({int(f) for f in fragment_ids}) if fragment_ids else None
+    async with acquire_conn() as conn:
+        res_lines, lines_cut = split_limited(await conn.fetch(_LINES_SQL, frags, limit + 1), limit)
+        res_nodes, nodes_cut = split_limited(await conn.fetch(_NODES_SQL, frags, limit + 1), limit)
+    if stats is not None:
+        stats.update(lines=len(res_lines), nodes=len(res_nodes), truncated=lines_cut or nodes_cut)
+    return {"nodes": ve.frame(_features(res_nodes)), "lines": ve.frame(_features(res_lines))}
+
+
+async def export_network(fragment_ids: Optional[Sequence[int]], fmt: ve.VectorFormat, *, limit: int = 50000,
+                         stats: Optional[dict] = None, base_name: str = "network_export",
+                         allow_empty: bool = False) -> tuple[bytes, str, str]:
+    """Сеть фрагментов в формате fmt: (содержимое, тип, имя файла)."""
+    try:
+        layers = await network_layers(fragment_ids, limit=limit, stats=stats)
+        return await run_in_threadpool(ve.write_layers, layers, fmt, base_name, allow_empty=allow_empty)
+    except ve.VectorExportError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Выгрузка сети (%s) не удалась", fmt.key, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Не удалось выгрузить сеть в {fmt.title}") from exc
+
+
 async def export_network_to_shp(
     fragment_ids: Optional[Sequence[int]] = None,
     *,
     limit: int = 50000,
     stats: Optional[dict] = None,
 ) -> bytes:
-    """ZIP с nodes.shp и lines.shp. stats (если передан) получает lines/nodes/truncated:
-    запрос limit + 1 строки показывает, что выгрузка обрезана (QA F84)."""
-    try:
-        frags = sorted({int(f) for f in fragment_ids}) if fragment_ids else None
-        async with acquire_conn() as conn:
-            res_lines, lines_cut = split_limited(await conn.fetch(_LINES_SQL, frags, limit + 1), limit)
-            res_nodes, nodes_cut = split_limited(await conn.fetch(_NODES_SQL, frags, limit + 1), limit)
-        if stats is not None:
-            stats.update(lines=len(res_lines), nodes=len(res_nodes), truncated=lines_cut or nodes_cut)
-
-        features_nodes = []
-        for r in res_nodes:
-            if not r["geom"]:
-                continue
-            props = {k: v for k, v in dict(r).items() if k != "geom"}
-            features_nodes.append(
-                {"type": "Feature", "geometry": json.loads(r["geom"]), "properties": props}
-            )
-
-        features_lines = []
-        for r in res_lines:
-            if not r["geom"]:
-                continue
-            props = {k: v for k, v in dict(r).items() if k != "geom"}
-            features_lines.append(
-                {"type": "Feature", "geometry": json.loads(r["geom"]), "properties": props}
-            )
-
-        gdf_nodes = (
-            gpd.GeoDataFrame.from_features(features_nodes) if features_nodes else gpd.GeoDataFrame()
-        )
-        if not gdf_nodes.empty:
-            gdf_nodes.set_crs(epsg=4326, inplace=True, allow_override=True)
-
-        gdf_lines = (
-            gpd.GeoDataFrame.from_features(features_lines) if features_lines else gpd.GeoDataFrame()
-        )
-        if not gdf_lines.empty:
-            gdf_lines.set_crs(epsg=4326, inplace=True, allow_override=True)
-
-        memory_file = io.BytesIO()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as zf:
-                if not gdf_nodes.empty:
-                    nodes_path = os.path.join(tmpdir, "nodes.shp")
-                    gdf_nodes.to_file(nodes_path, driver="ESRI Shapefile")
-                    for ext in ["shp", "shx", "dbf", "prj", "cpg"]:
-                        fpath = os.path.join(tmpdir, f"nodes.{ext}")
-                        if os.path.exists(fpath):
-                            zf.write(fpath, f"nodes.{ext}")
-
-                if not gdf_lines.empty:
-                    lines_path = os.path.join(tmpdir, "lines.shp")
-                    gdf_lines.to_file(lines_path, driver="ESRI Shapefile")
-                    for ext in ["shp", "shx", "dbf", "prj", "cpg"]:
-                        fpath = os.path.join(tmpdir, f"lines.{ext}")
-                        if os.path.exists(fpath):
-                            zf.write(fpath, f"lines.{ext}")
-
-        memory_file.seek(0)
-        return memory_file.getvalue()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error exporting SHP: {e}") from e
-
+    """ZIP с nodes.shp и lines.shp (прежний адрес /api/export/shp)."""
+    content, _, _ = await export_network(fragment_ids, ve.FORMATS["shp"], limit=limit, stats=stats, allow_empty=True)
+    return content
