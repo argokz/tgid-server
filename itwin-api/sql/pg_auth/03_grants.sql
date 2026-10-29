@@ -114,6 +114,8 @@ SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY[
     -- нарушения, шурфовки, осмотры, опрессовки (journal_specs) и их дочерние таблицы
     'defect', 'defectdocuments', 'defectchannel', 'defectkamera', 'defectmeropr', 'defectopis', 'defecttube',
     'defectsforshurfy',
+    -- наряды и заявки (database/work_orders.py, таблицы веба)
+    'tgid_work_order', 'tgid_work_order_event',
     'shurfy', 'shurfdocuments', 'vidy_elementov_for_shurfy', 'nalichie_vblizi_kommunikacij_for_shurfy',
     'osmotr', 'osmotrdeployed', 'osmotrdocuments',
     'opres', 'opresdeployed', 'opresdocuments', 'opresacts', 'opresmeropr',
@@ -128,7 +130,7 @@ SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY[
     -- направления пьезометра, температурные графики
     'directions', 'deployeddirections', 'deployedtempgraphs', 'deployedtempgraphsfact',
     -- справочники (database/dictionaries.DICTIONARIES)
-    'administrativnyy_rayon', 'calctemperatures', 'gvsloadgraphs', 'organizations',
+    'administrativnyy_rayon', 'brigades', 'calctemperatures', 'gvsloadgraphs', 'organizations',
     'rayon_ekspluatatsii', 'responsibles', 'specexpends', 'varcoefficients'
 ], ARRAY['tgid_editor']);
 

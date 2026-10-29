@@ -146,6 +146,15 @@ _DICTS: tuple[DictSpec, ...] = (
               Usage("organizatsii", "administrativnyy_rayon_po_obektu", "Договоры АЛСЕКО", "name")),
              unique_label=True, labels={"name": "Наименование"},
              note="Ссылки хранят наименование района, а не id: переименование не обновляет их."),
+    DictSpec("brigades", "Бригады", "brigades", "name",
+             (Usage("defect", "brigadesid", "Нарушения"),
+              Usage("tgid_work_order", "brigade_id", "Наряды")),
+             unique_label=True,
+             labels={"name": "Название бригады", "responsiblesid": "Мастер (техник)",
+                     "subdivisionsid": "Подразделение", "kolichestvoСhelovek": "Численность, чел."},
+             lookups={"responsiblesid": Lookup("responsibles"), "subdivisionsid": Lookup("subdivisions")},
+             note="Бригады назначаются нарядам и нарушениям (журнал дефектов).",
+             desktop="GID.lookup defect.brigadesID (brigades)"),
     DictSpec("responsibles", "Техники (ответственные)", "responsibles", "name", _RESPONSIBLE_USAGES,
              labels={"name": "ФИО", "statusid": "Статус"}, defaults={"statusid": 15},
              note="Установщик «ФИО техников» (gid8 aSetOtv) показывает техников со статусом 15.",
@@ -196,7 +205,9 @@ async def fields(conn, spec: DictSpec) -> list[dict[str, Any]]:
     """Редактируемые поля: колонки таблицы из каталога минус служебные."""
     table = await _table(conn, spec)
     rows = await conn.fetch(
-        """SELECT column_name, data_type, character_maximum_length FROM information_schema.columns
+        """SELECT column_name, data_type, character_maximum_length,
+                  is_nullable = 'NO' AND column_default IS NULL AS not_null
+             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position""",
         table,
     )
@@ -212,7 +223,8 @@ async def fields(conn, spec: DictSpec) -> list[dict[str, Any]]:
         item: dict[str, Any] = {
             "column": column, "kind": kind, "label": label,
             "max_length": r["character_maximum_length"],
-            "required": column == spec.label_column or (column.lower() == "fileid"),
+            # NOT NULL без умолчания (brigades.responsiblesid у десктопа) — тоже обязательное: иначе 500 от базы
+            "required": column == spec.label_column or column.lower() == "fileid" or bool(r.get("not_null")),
         }
         if column in spec.lookups:
             item["lookup"] = spec.lookups[column].table

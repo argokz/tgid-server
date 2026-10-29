@@ -94,6 +94,9 @@ COMMON: tuple[Item, ...] = (
     Item("таблица tgid_layer_style",
          "select to_regclass('public.tgid_layer_style') is not null",
          (_m("20261029_layer_style.sql"),)),
+    Item("таблицы нарядов tgid_work_order",
+         "select to_regclass('public.tgid_work_order_event') is not null",
+         (_m("20261030_work_orders.sql"),)),
     Item("пространственные индексы зданий",
          "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
          " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"
