@@ -128,3 +128,61 @@ def test_status_endpoint(monkeypatch):
 def test_scenarios_require_auth(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     assert TestClient(main.app).get("/api/v1/scenarios").status_code == 401
+
+
+# --- Сравнение расчётов сценария и основы (database/scenario_compare.py) ---
+
+import database.scenario_compare as cmp  # noqa: E402
+
+
+def _cons(head=30.0, supply=105.0, flow=10.0):
+    return {"head": head, "supply": supply, "flow": flow, "load": 1.0}
+
+
+def _line(flow=100.0, velocity=1.0, loss=40.0):
+    return {"flow": flow, "velocity": velocity, "loss": loss}
+
+
+def test_consumer_change_kinds():
+    assert cmp.consumer_change(_cons(), _cons(head=30.2)) is None             # шум
+    assert cmp.consumer_change(_cons(), _cons(head=28.0)) == "changed"         # напор −2 м
+    assert cmp.consumer_change(_cons(), _cons(supply=80.0)) == "became_underheated"
+    assert cmp.consumer_change(_cons(supply=90.0), _cons()) == "recovered"
+    assert cmp.consumer_change(_cons(), None) == "lost"                         # отключён в сценарии
+    assert cmp.consumer_change(None, _cons()) == "new"
+    assert cmp.consumer_change(_cons(supply=None), _cons(supply=None)) is None
+
+
+def test_line_change_kinds():
+    assert cmp.line_change(_line(), _line(flow=100.5)) is None
+    assert cmp.line_change(_line(), _line(flow=120.0)) == "changed"
+    assert cmp.line_change(_line(flow=5.0), _line(flow=5.2)) is None            # < 1 т/ч
+    assert cmp.line_change(_line(), _line(loss=95.0)) == "became_overloaded"
+    assert cmp.line_change(_line(loss=95.0), _line()) == "relieved"
+    assert cmp.line_change(_line(), _line(velocity=1.8)) == "became_fast"
+    assert cmp.line_change(_line(), None) == "lost"
+
+
+def test_pair_matches_through_scenario_map():
+    base = {1: "b1", 2: "b2"}
+    scen = {101: "s1", 150: "s-new"}          # 102 (копия 2) без результата, 150 — новый
+    pairs = sorted(cmp._pair(base, scen, {101: 1, 102: 2}), key=str)
+    assert pairs == sorted([(1, 101, "b1", "s1"), (2, 102, "b2", None), (None, 150, None, "s-new")], key=str)
+
+
+def test_compare_endpoint_errors(monkeypatch):
+    async def fake_compare(conn, scenario_id, base_calculation_id, scenario_calculation_id, limit):
+        if scenario_id == 404:
+            return None
+        if base_calculation_id == 9:
+            raise cmp.ScenarioCompareError("Расчёт 9 — не по фрагменту-основе #74")
+        return {"scenario_id": scenario_id, "limit": limit}
+
+    client = _client(monkeypatch, compare_scenario_calculations=fake_compare)
+    url = "/api/v1/scenarios/{}/compare"
+    ok = client.get(url.format(4), params={"base_calculation_id": 1, "scenario_calculation_id": 2, "limit": 10})
+    assert ok.status_code == 200 and ok.json() == {"scenario_id": 4, "limit": 10}
+    bad = client.get(url.format(4), params={"base_calculation_id": 9, "scenario_calculation_id": 2})
+    assert bad.status_code == 409 and "основе" in bad.json()["detail"]
+    assert client.get(url.format(404), params={"base_calculation_id": 1, "scenario_calculation_id": 2}).status_code == 404
+    assert client.get(url.format(4), params={"base_calculation_id": 1}).status_code == 422

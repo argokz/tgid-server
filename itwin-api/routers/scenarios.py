@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from auth import AuthUser, require_permission, require_roles
 from database.connect import acquire_conn
 from database.outage_simulation import invalidate_outage_cache
+from database.scenario_compare import ITEMS_LIMIT, ScenarioCompareError, compare_scenario_calculations
 from database.scenarios import (
     DIFF_LIMIT,
     ScenarioError,
@@ -44,7 +45,7 @@ class ScenarioStatus(BaseModel):
 
 
 def _error(e: Exception, what: str) -> HTTPException:
-    if isinstance(e, ScenarioError):
+    if isinstance(e, (ScenarioError, ScenarioCompareError)):
         return HTTPException(status_code=409, detail=str(e))
     if isinstance(e, LookupError):
         return HTTPException(status_code=404, detail=str(e))
@@ -89,6 +90,25 @@ async def api_scenario_diff(
     """Отличия сценария от основы по полям: правки сценария, конфликты, правки основы после создания."""
     async with acquire_conn() as conn:
         result = await scenario_diff(conn, scenario_id, limit=limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Сценарий {scenario_id} не найден")
+    return result
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/compare")
+async def api_scenario_compare(
+    scenario_id: ScenarioId, _: Viewer,
+    base_calculation_id: int = Query(..., ge=1, description="Расчёт фрагмента-основы"),
+    scenario_calculation_id: int = Query(..., ge=1, description="Расчёт фрагмента сценария"),
+    limit: int = Query(ITEMS_LIMIT, ge=1, le=2000, description="Не больше стольких изменений в items"),
+):
+    """Режим сценария против основы: недотоп, напоры и расходы потребителей, перегрузка участков."""
+    try:
+        async with acquire_conn() as conn:
+            result = await compare_scenario_calculations(
+                conn, scenario_id, base_calculation_id, scenario_calculation_id, limit=limit)
+    except (ScenarioCompareError, LookupError) as e:
+        raise _error(e, "comparing scenario calculations")
     if result is None:
         raise HTTPException(status_code=404, detail=f"Сценарий {scenario_id} не найден")
     return result
