@@ -136,6 +136,9 @@ class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path in {"/api/v1/auth/login", "/auth/login"} or path.startswith("/auth/login"):
             return await call_next(request)
+        if path == "/mcp":
+            # MCP проверяет вход сам: принимает и токен ИИ-клиента (scope mcp), который здесь отвергся бы
+            return await call_next(request)
         # Закрыто всё, кроме списка выше: карточки /node и /line, /lookup, /task, /run-sety-cmd
         # и правки без /api/ тоже отдают данные сети
         auth_header = request.headers.get("authorization") or ""

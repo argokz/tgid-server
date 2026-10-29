@@ -36,6 +36,7 @@ from routers.ogc import router as ogc_router
 from routers.ogc_write import router as ogc_write_router
 from routers.trace_configs import router as trace_configs_router
 from routers.thematic import router as thematic_router
+from routers.mcp import router as mcp_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -64,6 +65,7 @@ all_routers = [
     ogc_write_router,
     trace_configs_router,
     thematic_router,
+    mcp_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,

@@ -164,8 +164,10 @@ def _round(value: Any, digits: int) -> Optional[float]:
 
 async def theme_features(conn, theme_key: str, fragment_ids: list[int], *,
                          bbox: Optional[tuple[float, float, float, float]] = None,
-                         limit: int = MAX_FEATURES) -> dict[str, Any]:
-    """Участки фрагментов со значением темы: GeoJSON (properties: id, fileid, v) и сводка."""
+                         limit: int = MAX_FEATURES, with_geometry: bool = True) -> dict[str, Any]:
+    """Участки фрагментов со значением темы: GeoJSON (properties: id, fileid, v) и сводка.
+
+    with_geometry=False — без геометрии (сводки для MCP): geometry у объектов — null."""
     theme = get_theme(theme_key)
     ids = sorted({int(f) for f in fragment_ids})
     if not ids:
@@ -207,7 +209,7 @@ async def theme_features(conn, theme_key: str, fragment_ids: list[int], *,
        LIMIT $2
     )
     SELECT l.id, l.fileid, ({theme.value_sql})::{value_type} AS v{label_sql},
-           ST_AsGeoJSON(ST_Transform(l.shape, 4326), {COORD_DIGITS}) AS geometry
+           {f"ST_AsGeoJSON(ST_Transform(l.shape, 4326), {COORD_DIGITS})" if with_geometry else "NULL"} AS geometry
       FROM pipes p
       JOIN linesobj l ON l.id = p.lid
       JOIN heatpipesections h ON h.id = p.hid
@@ -228,7 +230,8 @@ async def theme_features(conn, theme_key: str, fragment_ids: list[int], *,
                 values.append(v)
         elif v is not None:
             labels.setdefault(int(v), (r["label"] or f"код {v}").strip())
-        features.append({"type": "Feature", "id": r["id"], "geometry": json.loads(r["geometry"]),
+        geometry = json.loads(r["geometry"]) if r["geometry"] else None
+        features.append({"type": "Feature", "id": r["id"], "geometry": geometry,
                          "properties": {"id": r["id"], "fileid": r["fileid"], "v": v}})
     summary: dict[str, Any] = {"count": len(features), "with_value": len(values) if theme.kind == "number"
                                else sum(1 for f in features if f["properties"]["v"] is not None)}

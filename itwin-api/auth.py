@@ -104,6 +104,8 @@ class AuthUser:
     cities: Optional[tuple] = None
     # Отличия прав от шаблона роли (users.permissions, JSON); "" — права роли
     overrides: str = ""
+    # Назначение токена: "" — сессия веба; "mcp" — токен ИИ-клиента, только для /mcp (tgid_mcp)
+    scope: str = ""
 
     @property
     def perms(self):
@@ -151,7 +153,12 @@ def create_access_token(
     return jwt.encode(payload, jwt_secret(), algorithm=jwt_algorithm())
 
 
-def decode_access_token(token: str) -> AuthUser:
+# Токен ИИ-клиента (MCP): долгий, действует только на /mcp — остальное API его не принимает
+MCP_SCOPE = "mcp"
+
+
+def decode_access_token(token: str, *, allow_scopes: Iterable[str] = ()) -> AuthUser:
+    """Проверить подпись и срок; токен с назначением (scope) — только там, где оно разрешено."""
     if jwt is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -176,8 +183,15 @@ def decode_access_token(token: str) -> AuthUser:
         raise HTTPException(status_code=401, detail="Token missing subject")
     if role not in ROLE_ORDER:
         role = "viewer"
+    scope = str(payload.get("scope") or "")
+    if scope and scope not in set(allow_scopes):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Токен ИИ-клиента действует только для MCP (/mcp)",
+        )
     return AuthUser(
-        sub=str(payload.get("sub") or username), role=role, username=username, mv=str(payload.get("mv") or "")
+        sub=str(payload.get("sub") or username), role=role, username=username, mv=str(payload.get("mv") or ""),
+        scope=scope,
     )
 
 
@@ -313,7 +327,7 @@ async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> 
                 detail="Мастер-пароль изменён — войдите снова",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return AuthUser(sub=MASTER_SUB, role="admin", username=master_login(), mv=user.mv)
+        return AuthUser(sub=MASTER_SUB, role="admin", username=master_login(), mv=user.mv, scope=user.scope)
     if not _env_bool("AUTH_LIVE_USER_CHECK", "true"):
         return user
     if user.sub.startswith(PG_USER_PREFIX):
@@ -358,7 +372,7 @@ async def apply_live_user_status(user: AuthUser, *, check_city: bool = True) -> 
     overrides = str(status_row[4] or "") if len(status_row) > 4 else user.overrides
     if status_row[1] != user.role or caps != user.caps or cities != user.cities or overrides != user.overrides:
         return AuthUser(sub=user.sub, role=status_row[1], username=user.username, caps=caps, cities=cities,
-                        overrides=overrides)
+                        overrides=overrides, scope=user.scope)
     return user
 
 
