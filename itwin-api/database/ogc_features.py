@@ -21,9 +21,9 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 10_000
 
 # Нагрузки потребителей, Гкал/ч — те же суммы, что в анализе режима (database/regime_queries.py)
-_RC_LOAD = ("COALESCE(rc.calchldep, 0) + COALESCE(rc.calchlindep, 0) + COALESCE(rc.calchlventil, 0)"
+RC_LOAD = ("COALESCE(rc.calchldep, 0) + COALESCE(rc.calchlindep, 0) + COALESCE(rc.calchlventil, 0)"
             " + COALESCE(rc.avghlclosesys, 0) + COALESCE(rc.avghlopensysflow, 0) + COALESCE(rc.avghlopensysret, 0)")
-_GC_LOAD = ("COALESCE(gc.calchldep, 0) + COALESCE(gc.calchlindep, 0) + COALESCE(gc.calchlparall, 0)"
+GC_LOAD = ("COALESCE(gc.calchldep, 0) + COALESCE(gc.calchlindep, 0) + COALESCE(gc.calchlparall, 0)"
             " + COALESCE(gc.calchlmix, 0) + COALESCE(gc.calchlconseq, 0) + COALESCE(gc.calchlpreon, 0)"
             " + COALESCE(gc.calchlventil, 0) + COALESCE(gc.calchlclosesys, 0)"
             " + COALESCE(gc.calchlopensysflow, 0) + COALESCE(gc.calchlopensysret, 0)")
@@ -67,9 +67,9 @@ COLLECTIONS: dict[str, Collection] = {c.id: c for c in (
         "consumers", "Потребители",
         "Реальные и обобщённые потребители в точке узла присоединения; нагрузка — сумма расчётных, Гкал/ч.",
         "Point",
-        f"""(SELECT rc.id, rc.nodeid, rc.name, 'real' AS kind, ({_RC_LOAD})::float AS load FROM realconsumers rc
+        f"""(SELECT rc.id, rc.nodeid, rc.name, 'real' AS kind, ({RC_LOAD})::float AS load FROM realconsumers rc
              UNION ALL
-             SELECT gc.id, gc.nodeid, gc.name, 'generalized', ({_GC_LOAD})::float FROM generalizedconsumers gc) c
+             SELECT gc.id, gc.nodeid, gc.name, 'generalized', ({GC_LOAD})::float FROM generalizedconsumers gc) c
            JOIN nodes n ON n.id = c.nodeid
           WHERE COALESCE(n.removed, 0) = 0 AND n.shape IS NOT NULL""",
         (("name", "c.name"), ("kind", "c.kind"), ("node_id", "c.nodeid"), ("load_gcal_h", "c.load")),

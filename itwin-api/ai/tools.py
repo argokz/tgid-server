@@ -1,7 +1,8 @@
-"""Помощник ИИ: поиск фразой, объяснение качества данных, сопоставление колонок импорта (этап 6)."""
+"""Помощник ИИ: поиск фразой, вопрос → выборка, объяснение качества данных, сопоставление колонок импорта (этап 6)."""
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -9,8 +10,10 @@ from pydantic import BaseModel, Field
 from ai import client as ai_client
 from ai.prompts import load_prompt
 from database import data_quality as dq
+from database import network_select as ns
 from database.consumer_load_diagnostics import get_consumer_load_diagnostics
 from database.network_import import TARGET_FIELDS, suggest_mapping
+from database.network_select import SelectSpec
 
 # --- поиск фразой --------------------------------------------------------------------------
 
@@ -97,6 +100,63 @@ async def search(conn, *, text: str, fragment_ids: Optional[list[int]] = None, u
     if q.fragment_id is None and fragment_ids and len(fragment_ids) == 1:
         q.fragment_id = fragment_ids[0]
     return await execute_search(conn, q)
+
+
+# --- вопрос → выборка (database/network_select.py) ---------------------------------------------
+
+SELECT_TOOL = "select"
+MAX_CHOICES_IN_PROMPT = 40
+
+
+class SelectPlan(BaseModel):
+    spec: SelectSpec
+    confidence: float = Field(0.0, ge=0, le=1)
+    note: str = ""
+
+
+def build_fields_text(payload: dict[str, Any]) -> str:
+    """Справочник полей для модели: «ключ — подпись, единицы, вид; значения справочника»."""
+    lines = []
+    for target in payload["targets"]:
+        lines.append(f"{target['key']} ({target['label']}):")
+        for f in target["fields"]:
+            units = f", {f['units']}" if f["units"] else ""
+            line = f"- {f['key']} — {f['label']}{units}, {f['kind']}"
+            if f["choices"]:
+                shown = f["choices"][:MAX_CHOICES_IN_PROMPT]
+                line += "; значения: " + ", ".join(f"{c['value']}={c['label']}" for c in shown)
+            lines.append(line)
+    return "\n".join(lines)
+
+
+async def select_by_phrase(conn, *, text: str, fragment_ids: Optional[list[int]] = None,
+                           bbox: Optional[tuple[float, float, float, float]] = None,
+                           username: Optional[str] = None) -> dict[str, Any]:
+    """Вопрос пользователя → SelectSpec (модель) → выборка сервером. Модель SQL не пишет; запрос
+    проверяется тем же белым списком, что и в конструкторе, и показывается пользователю."""
+    fields_text = build_fields_text(await ns.fields_payload(conn))
+    user = f"Текущий год: {date.today().year}\nПоля:\n{fields_text}\n\nВопрос: {text.strip()}"
+    if fragment_ids:
+        user += f"\nВидимые фрагменты карты: {fragment_ids[:20]}"
+    plan = await ai_client.ask_structured(tool=SELECT_TOOL, system=load_prompt("select"), user=user,
+                                          output_format=SelectPlan, effort="low", max_tokens=1200,
+                                          username=username)
+    spec = plan.spec
+    # фрагменты не названы — те, что на карте; у «рядом с узлом» место задаёт узел (он может быть в другом)
+    if not spec.fragment_ids and fragment_ids and spec.near is None:
+        spec = spec.model_copy(update={"fragment_ids": fragment_ids})
+    if spec.in_view and not bbox:
+        spec = spec.model_copy(update={"in_view": False})
+    base = {"confidence": plan.confidence, "note": plan.note}
+    if plan.confidence == 0 and not spec.conditions and not spec.near:
+        return {**base, "spec": spec.model_dump(), "description": "", "items": [], "total": 0}
+    try:
+        result = await ns.run_select(conn, spec, bbox=bbox, user_key=username or "")
+    except ns.SelectError as exc:
+        # запрос модели не прошёл проверку — показать его, чтобы пользователь поправил в конструкторе
+        return {**base, "spec": spec.model_dump(), "description": "", "items": [], "total": 0,
+                "error": exc.message}
+    return {**base, **result}
 
 
 # --- качество данных: объяснение -----------------------------------------------------------

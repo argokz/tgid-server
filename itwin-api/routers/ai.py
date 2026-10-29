@@ -14,6 +14,7 @@ from ai.client import AiError, require_ai
 from ai.schemas import AiStatus
 from auth import AuthUser, require_permission, require_roles
 from database.connect import acquire_conn
+from routers.network_select import parse_bbox
 
 router = APIRouter(tags=["ai"])
 
@@ -125,6 +126,25 @@ async def ai_search(body: SearchRequest, user: Annotated[AuthUser, Depends(requi
     try:
         async with acquire_conn() as conn:
             return await tools.search(conn, text=body.text, fragment_ids=body.fragment_ids, username=user.username)
+    except AiError as exc:
+        raise exc.to_http() from exc
+
+
+class SelectPhraseRequest(BaseModel):
+    text: str = Field(..., min_length=2, max_length=500)
+    fragment_ids: Optional[list[int]] = Field(None, max_length=500, description="Видимые фрагменты карты")
+    bbox: Optional[str] = Field(None, max_length=200, description="Охват карты «запад,юг,восток,север» (WGS 84)")
+
+
+@router.post("/api/v1/ai/select", dependencies=[Depends(require_ai)])
+async def ai_select(body: SelectPhraseRequest, user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Вопрос → выборка: модель переводит вопрос в запрос конструктора выборки (поля из белого списка),
+    сервер проверяет и выполняет его и возвращает вместе с описанием — пользователь видит, что спросили."""
+    box = parse_bbox(body.bbox)
+    try:
+        async with acquire_conn() as conn:
+            return await tools.select_by_phrase(conn, text=body.text, fragment_ids=body.fragment_ids, bbox=box,
+                                                username=user.username)
     except AiError as exc:
         raise exc.to_http() from exc
 

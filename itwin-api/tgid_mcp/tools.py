@@ -22,6 +22,7 @@ import activity
 from app_logging import get_logger
 from auth import AuthUser
 from database.connect import acquire_conn
+from database.network_select import SelectSpec
 
 logger = get_logger(__name__)
 
@@ -180,6 +181,11 @@ class TaskParams(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=100)
 
 
+class SelectParams(SelectSpec):
+    limit: int = Field(100, ge=1, le=200, description="Сколько объектов вернуть (итог — в total)")
+    in_view: bool = Field(False, description="Не используется в MCP: охвата карты нет")
+
+
 # --------------------------------------------------------------------- инструменты
 
 
@@ -329,6 +335,27 @@ async def _task_status(p: TaskParams, user: AuthUser) -> Any:
     return res
 
 
+async def _select(p: SelectParams, user: AuthUser) -> Any:
+    from database import network_select as ns
+
+    async with acquire_conn() as conn:
+        try:
+            return await ns.run_select(conn, p, with_geometry=False, user_key=user.username or user.sub or "")
+        except ns.SelectError as exc:
+            raise ToolError(exc.message) from exc
+
+
+def _select_fields() -> str:
+    from database.network_select import CARD_TYPES, TARGETS
+
+    parts = []
+    for key, (label, fields) in TARGETS.items():
+        names = "; ".join(f"{f.key} — {f.label}{f', {f.units}' if f.units else ''} ({f.kind})" for f in fields.values())
+        parts.append(f"{key} ({label.lower()}): {names}")
+    cards = ", ".join(f"{v}={label}" for v, label in CARD_TYPES)
+    return ". ".join(parts) + f". Коды card_type: {cards}"
+
+
 def _theme_list() -> str:
     from database.thematic import THEMES
 
@@ -341,6 +368,12 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("search_network", "Поиск объектов сети",
          "Найти узлы, участки (по паре узлов), источники или потребителей по названию/номеру. Возвращает id, "
          "фрагмент и координаты WGS 84.", SearchParams, _search),
+    Tool("select_network", "Выборка объектов по условиям",
+         "Участки или узлы по условиям на поля (числа: lt, le, gt, ge, eq, ne, between, is_null, not_null; "
+         "справочники: in, not_in по кодам; текст: contains, eq), «в meters м от узла» (near), фрагменты, "
+         "порядок и предел. Возвращает описание запроса, total, суммарную длину участков и строки со значениями "
+         "полей. Поля: " + _select_fields() + ". Коды справочников (tubing_type, node_type) — в ошибке или "
+         "GET /api/v1/network-select/fields.", SelectParams, _select),
     Tool("network_trace", "Трассировка сети",
          "Трассировка по топологии от начальных узлов/участков: связанные, путь к источникам, ниже по потоку, "
          "зона; барьеры — объекты и по условию (задвижки, насосные, узлы заданного напора, источники). "

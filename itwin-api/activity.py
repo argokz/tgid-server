@@ -73,6 +73,7 @@ _READONLY_POST = re.compile(
     r"|^/api/v1/card-edit/batch/(card|preview)|^/api/v1/card-templates/\d+/preview|^/api/v1/group-setters/[^/]+/preview"
     r"|^/api/(v1/)?import/inspect|^/api/v1/calculations/protocols/locate|^/api/v1/file-jobs$"
     r"|^/api/v1/ai/"  # вызовы ИИ пишет ai/usage.py с токенами
+    r"|^/api/v1/network-select$"  # выборка по условиям — только чтение
     r"|^/mcp$|^/api/v1/mcp/token$"  # MCP пишет сам: вызовы инструментов (MCP) и выдачу токена (MCP_TOKEN)
 )
 # предпросмотр: «"dry_run": true» в теле или dry_run=true в адресе — не действие

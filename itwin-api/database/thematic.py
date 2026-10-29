@@ -131,7 +131,7 @@ def clean_bbox(bbox: Optional[str]) -> Optional[tuple[float, float, float, float
     return w, s, e, n
 
 
-async def _source_run(conn, source: str) -> tuple[Optional[int], Optional[str]]:
+async def source_run(conn, source: str) -> tuple[Optional[int], Optional[str]]:
     """Расчёт-источник темы: id и подпись (для легенды). Нет расчёта — (None, None)."""
     if source == "wear":
         if not await conn.fetchval("SELECT to_regclass('public.wear_out') IS NOT NULL"):
@@ -175,7 +175,7 @@ async def theme_features(conn, theme_key: str, fragment_ids: list[int], *,
     if len(ids) > MAX_FRAGMENTS:
         raise ThematicError(422, f"Не больше {MAX_FRAGMENTS} фрагментов за раз")
 
-    run_id, run_label = await _source_run(conn, theme.source)
+    run_id, run_label = await source_run(conn, theme.source)
     if theme.source in ("wear", "heat_losses") and run_id is None:
         what = "износа" if theme.source == "wear" else "нормативных теплопотерь"
         raise ThematicError(404, f"Расчёта {what} ещё нет — запустите его, затем постройте тему")
