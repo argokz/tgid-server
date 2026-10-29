@@ -186,3 +186,59 @@ def test_compare_endpoint_errors(monkeypatch):
     assert bad.status_code == 409 and "основе" in bad.json()["detail"]
     assert client.get(url.format(404), params={"base_calculation_id": 1, "scenario_calculation_id": 2}).status_code == 404
     assert client.get(url.format(4), params={"base_calculation_id": 1}).status_code == 422
+
+
+# --- Перенос правок сценария в основу (database/scenario_merge.py) ---
+
+import database.scenario_merge as merge  # noqa: E402
+
+
+def test_plan_merge_kinds_and_conflicts():
+    found = [
+        ("heatpipesections", {"kind": "added", "copy_id": 9}),
+        ("nodes", {"kind": "added", "copy_id": 5}),
+        ("linesobj", {"kind": "added", "copy_id": 7}),
+        ("nodes", {"kind": "changed", "copy_id": 1, "base_id": 11}),
+        ("nodes", {"kind": "conflict", "copy_id": 2, "base_id": 12}),
+        ("nodes", {"kind": "conflict", "copy_id": 3, "base_id": 13}),
+        ("linesobj", {"kind": "removed", "base_id": 21}),
+        ("nodes", {"kind": "base_changed", "copy_id": 4, "base_id": 14}),
+        ("nodes", {"kind": "base_added", "base_id": 15}),
+    ]
+    plan = merge.plan_merge(found, {"nodes:2": "scenario", "nodes:3": "base"})
+    assert [f["copy_id"] for _, f in plan["update"]] == [1, 2]         # правка + конфликт «взять сценарий»
+    assert [f["copy_id"] for _, f in plan["skipped"]] == [3]            # конфликт «оставить основу»
+    assert [t for t, _ in plan["insert"]] == ["nodes", "linesobj", "heatpipesections"]  # порядок импорта
+    assert [f["base_id"] for _, f in plan["remove"]] == [21]
+    # изменения основы не трогаем
+    assert all(f["kind"] not in ("base_changed", "base_added") for k in plan for _, f in plan[k])
+
+
+def test_plan_merge_conflicts_kept_by_default():
+    plan = merge.plan_merge([("nodes", {"kind": "conflict", "copy_id": 2, "base_id": 12})], {})
+    assert plan["update"] == [] and len(plan["skipped"]) == 1
+
+
+def test_merge_endpoint(monkeypatch):
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    monkeypatch.setenv("TOPOLOGY_MUTATIONS_ENABLED", "true")
+    calls = []
+
+    async def fake_run(dry_run, body, operation=None, actor=None):
+        calls.append((dry_run, operation))
+        return {"dry_run": dry_run, "updated": 2}
+
+    client = _client(monkeypatch, _run=fake_run)
+    r = client.post("/api/v1/scenarios/4/merge", json={"resolutions": {"nodes:12": "scenario"}})
+    assert r.status_code == 200 and r.json()["dry_run"] is True       # по умолчанию — предпросмотр
+    assert calls[-1] == (True, "SCENARIO_MERGE")
+    r = client.post("/api/v1/scenarios/4/merge", json={"dry_run": False})
+    assert r.status_code == 200 and calls[-1] == (False, "SCENARIO_MERGE")
+    assert client.post("/api/v1/scenarios/4/merge", json={"resolutions": {"nodes:12": "both"}}).status_code == 422
+    assert client.post("/api/v1/scenarios/4/merge", json={"resolutions": {"DROP TABLE": "base"}}).status_code == 422
+
+
+def test_merge_requires_topology_mutations(monkeypatch):
+    monkeypatch.setenv("TOPOLOGY_MUTATIONS_ENABLED", "false")
+    client = _client(monkeypatch)
+    assert client.post("/api/v1/scenarios/4/merge", json={}).status_code == 503

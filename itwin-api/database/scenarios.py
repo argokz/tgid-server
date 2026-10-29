@@ -251,28 +251,43 @@ async def set_scenario_status(conn, scenario_id: int, status: str) -> Optional[d
 # Сравнение с основой
 # ---------------------------------------------------------------------------
 
-async def scenario_diff(conn, scenario_id: int, limit: int = DIFF_LIMIT) -> Optional[dict[str, Any]]:
-    """Отличия сценария от основы по всем таблицам фрагмента. None — сценария нет."""
-    sc = await conn.fetchrow(
+async def scenario_row(conn, scenario_id: int):
+    return await conn.fetchrow(
         f"SELECT id, name, base_fileid, fileid FROM {SCENARIO_TABLE} WHERE id = $1", scenario_id)
-    if sc is None:
-        return None
+
+
+async def object_mapping(conn, scenario_id: int) -> tuple[dict[str, dict[int, int]], dict[tuple[str, int], Optional[str]]]:
+    """Соответствие объектов {таблица: {id копии: id основы}} и отпечатки основы {(таблица, id копии): md5}.
+
+    Строки, добавленные переносом в основу (merge_group_id), чья операция отменена, не учитываются:
+    созданные ею объекты основы удалены отменой."""
     copy_to_base: dict[str, dict[int, int]] = {}
     stored: dict[tuple[str, int], Optional[str]] = {}
     for r in await conn.fetch(
-            f"SELECT table_name, base_id, copy_id, base_hash FROM {OBJECT_TABLE} WHERE scenario_id = $1",
+            f"""SELECT o.table_name, o.base_id, o.copy_id, o.base_hash FROM {OBJECT_TABLE} o
+                 WHERE o.scenario_id = $1
+                   AND (o.merge_group_id IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM topology_undo_log u
+                         WHERE u.change_group_id = o.merge_group_id AND u.undone_at IS NOT NULL))""",
             scenario_id):
         copy_to_base.setdefault(r["table_name"], {})[r["copy_id"]] = r["base_id"]
         stored[(r["table_name"], r["copy_id"])] = r["base_hash"]
-    base_ids = {t: set(m.values()) for t, m in copy_to_base.items()}
+    return copy_to_base, stored
 
-    summary: dict[str, dict[str, int]] = {}
+
+async def collect_differences(conn, sc) -> dict[str, Any]:
+    """Все отличия сценария sc от основы: found — [(таблица, отличие)], плюс соответствие и колонки
+    таблиц (их использует перенос в основу, database/scenario_merge.py)."""
+    copy_to_base, stored = await object_mapping(conn, sc["id"])
+    base_ids = {t: set(m.values()) for t, m in copy_to_base.items()}
     found_all: list[tuple[str, dict[str, Any]]] = []
+    tables: dict[str, dict[str, Any]] = {}
     for table in IMPORT_ORDER:
         if table in _SKIP_TABLES:
             continue
         base_rows, columns, refs = await _table_rows(conn, table, sc["base_fileid"])
         copy_rows, _, _ = await _table_rows(conn, table, sc["fileid"])
+        tables[table] = {"columns": columns, "refs": refs}
         mapping = copy_to_base.get(table, {})
 
         found: list[dict[str, Any]] = []
@@ -297,18 +312,25 @@ async def scenario_diff(conn, scenario_id: int, limit: int = DIFF_LIMIT) -> Opti
         for base_id, row in base_rows.items():
             if base_id not in mapped_base:
                 found.append({"kind": "base_added", "base_id": base_id, "row": row})
-        if not found:
-            continue
-        counts: dict[str, int] = {}
-        for f in found:
-            counts[f["kind"]] = counts.get(f["kind"], 0) + 1
-        summary[table] = counts
         found_all += [(table, f) for f in found]
 
     # сначала правки сценария, потом конфликты, потом изменения основы
     order = {k: i for i, k in enumerate(CHANGE_KINDS)}
     found_all.sort(key=lambda tf: (order[tf[1]["kind"]], IMPORT_ORDER.index(tf[0]),
                                    tf[1].get("copy_id") or tf[1].get("base_id") or 0))
+    return {"found": found_all, "copy_to_base": copy_to_base, "base_ids": base_ids, "tables": tables}
+
+
+async def scenario_diff(conn, scenario_id: int, limit: int = DIFF_LIMIT) -> Optional[dict[str, Any]]:
+    """Отличия сценария от основы по всем таблицам фрагмента. None — сценария нет."""
+    sc = await scenario_row(conn, scenario_id)
+    if sc is None:
+        return None
+    found_all = (await collect_differences(conn, sc))["found"]
+    summary: dict[str, dict[str, int]] = {}
+    for table, f in found_all:
+        counts = summary.setdefault(table, {})
+        counts[f["kind"]] = counts.get(f["kind"], 0) + 1
     items = [_item(table, f) for table, f in found_all[:limit]]
     await _attach_item_coords(conn, items)
     by_kind: dict[str, int] = {}

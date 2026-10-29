@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from database.calculations import SPEC_LOSS_LIMIT_PA_M, VELOCITY_HIGH_MS
 from database.regime_queries import attach_coords
-from database.scenarios import OBJECT_TABLE, SCENARIO_TABLE
+from database.scenarios import SCENARIO_TABLE, object_mapping
 from database.ut_out_columns import (
     UT_FLOW_TH,
     UT_SIGN_SUPPLY,
@@ -172,11 +172,8 @@ async def compare_scenario_calculations(
     if base_calc["emergency"] != scen_calc["emergency"]:
         warnings.append("Разные режимы расчёта: плановый и аварийный (фактический)")
 
-    maps: dict[str, dict[int, int]] = {"nodes": {}, "linesobj": {}}
-    for r in await conn.fetch(
-            f"""SELECT table_name, base_id, copy_id FROM {OBJECT_TABLE}
-                 WHERE scenario_id = $1 AND table_name IN ('nodes', 'linesobj')""", scenario_id):
-        maps[r["table_name"]][r["copy_id"]] = r["base_id"]
+    mapping, _ = await object_mapping(conn, scenario_id)
+    maps = {"nodes": mapping.get("nodes", {}), "linesobj": mapping.get("linesobj", {})}
 
     base_cons, scen_cons = await _consumers(conn, base_calc["id"]), await _consumers(conn, scen_calc["id"])
     base_lines, scen_lines = await _lines(conn, base_calc["id"]), await _lines(conn, scen_calc["id"])

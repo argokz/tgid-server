@@ -1,18 +1,21 @@
 """Сценарии «что если» (фаза 1): копия фрагмента для варианта сети и сравнение её с основой.
 
 Создание пишет в сеть (копия фрагмента, как импорт .tgid) — те же права и флаги записи, что у
-импорта фрагмента; список и сравнение — чтение. Подробно: database/scenarios.py.
+импорта фрагмента; список и сравнение — чтение. Перенос в основу меняет чужие объекты — права как
+у применения переноса фрагментов (перемещение и удаление всех узлов и участков).
+Подробно: database/scenarios.py, scenario_compare.py, scenario_merge.py.
 """
 
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from auth import AuthUser, require_permission, require_roles
 from database.connect import acquire_conn
 from database.outage_simulation import invalidate_outage_cache
 from database.scenario_compare import ITEMS_LIMIT, ScenarioCompareError, compare_scenario_calculations
+from database.scenario_merge import ScenarioMergeError, merge_scenario
 from database.scenarios import (
     DIFF_LIMIT,
     ScenarioError,
@@ -22,7 +25,9 @@ from database.scenarios import (
     set_scenario_status,
 )
 from database.topology import _run
+from database.topology_rules import check_area
 from routers.piezometer import invalidate_topology_cache
+from routers.fragment_transfer import _require_apply_rights
 from routers.topology import _topology_http_error, require_topology_mutations_enabled
 
 router = APIRouter(tags=["scenarios"])
@@ -40,12 +45,23 @@ class ScenarioCreate(BaseModel):
     note: Optional[str] = Field(None, max_length=2000)
 
 
+# «таблица:id копии» — ключ конфликта из сравнения
+ConflictKey = Annotated[str, StringConstraints(pattern=r"^[a-z_]+:[0-9]+$", max_length=80)]
+
+
+class ScenarioMerge(BaseModel):
+    dry_run: bool = True
+    resolutions: dict[ConflictKey, Literal["scenario", "base"]] = Field(
+        default_factory=dict, max_length=5000,
+        description="Конфликты: scenario — взять значение сценария, base — оставить основу (по умолчанию)")
+
+
 class ScenarioStatus(BaseModel):
     status: Literal["active", "archived"]
 
 
 def _error(e: Exception, what: str) -> HTTPException:
-    if isinstance(e, (ScenarioError, ScenarioCompareError)):
+    if isinstance(e, (ScenarioError, ScenarioCompareError, ScenarioMergeError)):
         return HTTPException(status_code=409, detail=str(e))
     if isinstance(e, LookupError):
         return HTTPException(status_code=404, detail=str(e))
@@ -111,6 +127,34 @@ async def api_scenario_compare(
         raise _error(e, "comparing scenario calculations")
     if result is None:
         raise HTTPException(status_code=404, detail=f"Сценарий {scenario_id} не найден")
+    return result
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/merge")
+async def api_scenario_merge(
+    scenario_id: ScenarioId, body: ScenarioMerge,
+    user: Annotated[AuthUser, Depends(require_permission("import", kind="line", action="create"))],
+):
+    """Перенос правок сценария в основу. dry_run (по умолчанию) — предпросмотр с откатом: что
+    изменится, пропущенные конфликты и правила связности области; иначе — одна операция журнала
+    отмены (отменяется как любая правка сети)."""
+    _require_apply_rights(user, body.dry_run)
+
+    async def run(conn, op):
+        rep = await merge_scenario(conn, op, scenario_id, body.resolutions)
+        rep["check"] = await check_area(conn, rep["touched_nodes"], rep["touched_lines"], in_transaction=True)
+        await op.audit("UPDATE", "fragments", rep["base_fileid"],
+                       {"operation": "scenario_merge", "scenario_id": scenario_id,
+                        "updated": rep["updated"], "inserted": rep["inserted"], "removed": rep["removed"]})
+        return rep
+
+    try:
+        result = await _run(body.dry_run, run, operation="SCENARIO_MERGE", actor=user.username)
+    except Exception as e:  # noqa: BLE001
+        raise _error(e, "merging scenario")
+    if not body.dry_run:
+        invalidate_topology_cache()
+        invalidate_outage_cache()
     return result
 
 

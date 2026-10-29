@@ -139,8 +139,11 @@ async def operation_area(conn, operation_id: int) -> Optional[tuple[set[int], se
     return nodes, lines
 
 
-async def check_area(conn, node_ids: Iterable[int], line_ids: Iterable[int]) -> dict[str, Any]:
-    """Правила связности для узлов и участков правки и всего, что к ним примыкает."""
+async def check_area(conn, node_ids: Iterable[int], line_ids: Iterable[int], in_transaction: bool = False) -> dict[str, Any]:
+    """Правила связности для узлов и участков правки и всего, что к ним примыкает.
+
+    in_transaction — проверяются незавершённые данные conn: граф питания собирается заново и в кеш
+    не попадает."""
     seed_nodes = sorted(set(node_ids))
     seed_lines = sorted(set(line_ids))
     truncated = len(seed_nodes) > AREA_LIMIT or len(seed_lines) > AREA_LIMIT
@@ -267,7 +270,7 @@ async def check_area(conn, node_ids: Iterable[int], line_ids: Iterable[int]) -> 
             "description": f"Концы линии не совпадают с узлами (допуск {GEOMETRY_TOLERANCE_M:g} м)",
         })
 
-    await _no_supply(conn, area, found["no_supply"])
+    await _no_supply(conn, area, found["no_supply"], fresh=in_transaction)
 
     issues: list[dict] = []
     for t, rule in RULES.items():
@@ -323,9 +326,10 @@ async def _unsnapped_ends(conn, dead_ends: list[int], neighbours: dict[int, set[
             out.append({"object_type": "node", "object_id": nid, **hits[nid]})
 
 
-async def _no_supply(conn, area: list[int], out: list[dict]) -> None:
+async def _no_supply(conn, area: list[int], out: list[dict], fresh: bool = False) -> None:
     """Острова без питания, в которые попала область правки (одно замечание на остров)."""
-    net = await get_outage_network_graph(conn)
+    net = await (get_outage_network_graph(conn, force_refresh=True, store=False) if fresh
+                 else get_outage_network_graph(conn))
     adj, reachable = net["adj"], net["baseline_reachable"]
     seen: set[int] = set()
     for nid in area:

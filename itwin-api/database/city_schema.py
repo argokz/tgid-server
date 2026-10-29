@@ -83,6 +83,10 @@ COMMON: tuple[Item, ...] = (
     Item("таблицы сценариев tgid_scenario",
          "select to_regclass('public.tgid_scenario_object') is not null",
          (_m("20261029_scenarios.sql"),)),
+    Item("колонка tgid_scenario_object.merge_group_id",
+         "select to_regclass('public.tgid_scenario_object') is null or exists (select 1 from information_schema.columns"
+         " where table_schema = 'public' and table_name = 'tgid_scenario_object' and column_name = 'merge_group_id')",
+         (_m("20261029_scenario_merge.sql"),)),
     Item("колонка generalizedconsumers.name",
          "select to_regclass('public.generalizedconsumers') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'generalizedconsumers' and column_name = 'name')",

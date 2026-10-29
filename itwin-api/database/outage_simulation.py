@@ -48,10 +48,14 @@ def invalidate_outage_cache():
     _outage_cached_time = 0.0
 
 
-async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool = False):
+async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool = False, store: bool = True):
+    """Граф сети для изоляции и трассировок (кеш 60 с).
+
+    store=False — собрать по conn и не класть в кеш: так проверяют данные незавершённой транзакции
+    (предпросмотр переноса сценария), которые не должны увидеть другие запросы."""
     global _outage_cached_data, _outage_cached_time
     now = time.time()
-    if not force_refresh and _outage_cached_data is not None and (now - _outage_cached_time) < 60.0:
+    if store and not force_refresh and _outage_cached_data is not None and (now - _outage_cached_time) < 60.0:
         return _outage_cached_data
 
     # 1. Магистральные участки (без внутренних схем узлов) и состояние их труб
@@ -149,7 +153,7 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
     normally_closed = {lid for lid, valves in dampers_by_line.items()
                        if any(v["state_id"] == DAMPER_CLOSED for v in valves)}
 
-    _outage_cached_data = {
+    graph = {
         "sources": sources,
         "source_kinds": source_kinds,
         "normally_closed_lines": normally_closed,
@@ -159,8 +163,9 @@ async def get_outage_network_graph(conn: asyncpg.Connection, force_refresh: bool
         "dampers_by_node": dampers_by_node,
         "adj": adj,
     }
-    _outage_cached_time = now
-    return _outage_cached_data
+    if store:
+        _outage_cached_data, _outage_cached_time = graph, now
+    return graph
 
 
 def reachable_from_sources(
