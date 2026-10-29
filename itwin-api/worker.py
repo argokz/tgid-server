@@ -616,6 +616,42 @@ def build_file_job(self, kind: str, params: dict, user: str = ""):
             "elapsed_s": round(time.monotonic() - started, 2)}
 
 
+@celery_app.task(bind=True, name="bake_static_tiles", soft_time_limit=3600, time_limit=3700)
+def bake_static_tiles(self, layer: str, minzoom: int | None = None, maxzoom: int = 16, user: str = ""):
+    """Статичный слой в PMTiles (database/static_tiles.py): тайлы функции martin tgid_mvt_<слой> базы города
+    строятся на нескольких соединениях параллельно и пишутся одним архивом в STATIC_TILES_DIR."""
+    import asyncio
+
+    import asyncpg
+
+    from database.static_tiles import PARALLEL, StaticTilesError, bake
+
+    task_id = self.request.id
+
+    async def _go():
+        conns = []
+        try:
+            for _ in range(PARALLEL):
+                conns.append(await asyncpg.connect(
+                    host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT") or 5432), user=os.getenv("DB_USER"),
+                    password=os.getenv("DB_PASSWORD"), database=_city_db(), timeout=60,
+                ))
+            return await bake(conns, layer, minzoom=minzoom, maxzoom=maxzoom, user=user,
+                              progress=lambda message: self.update_state(
+                                  task_id=task_id, state="PROGRESS", meta={"message": message, "layer": layer}))
+        finally:
+            for conn in conns:
+                await conn.close()
+
+    self.update_state(state="PROGRESS", meta={"message": f"Запекание слоя {layer}", "layer": layer})
+    try:
+        summary = asyncio.run(_go())
+    except StaticTilesError as e:
+        return {"status": "error", "message": e.message, "layer": layer}
+    return {"status": "success", "message": f"Слой {layer}: {summary['tiles']} тайлов, "
+            f"{summary['size'] / 1_048_576:.1f} МБ", **summary}
+
+
 @celery_app.task(bind=True, name="run_wear_index", soft_time_limit=1800, time_limit=1900)
 def run_wear_index(self, fragment_ids: list[int] | None = None, user: str = "", name: str | None = None):
     """Индекс износа участков и приоритет ремонта (database/wear.py): шапка в calculation_iznos,

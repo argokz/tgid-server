@@ -94,6 +94,12 @@ COMMON: tuple[Item, ...] = (
     Item("таблица tgid_layer_style",
          "select to_regclass('public.tgid_layer_style') is not null",
          (_m("20261029_layer_style.sql"),)),
+    Item("пространственные индексы зданий",
+         "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
+         " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"
+         " and not exists (select 1 from pg_indexes i where i.schemaname = 'public' and i.tablename = c.table_name"
+         " and i.indexdef ilike '%using gist (shape)%'))",
+         (_m("20261029_buildings_gist.sql"),)),
     Item("колонка generalizedconsumers.name",
          "select to_regclass('public.generalizedconsumers') is null or exists (select 1 from information_schema.columns"
          " where table_schema = 'public' and table_name = 'generalizedconsumers' and column_name = 'name')",
