@@ -34,6 +34,10 @@ CONFORMANCE = [
     "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/create-replace-delete",
     "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/update",
     "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/optimistic-locking-etags",
+    # OGC API — Processes, часть 1: расчёт, трассировки, выборки (routers/ogc_processes.py)
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/ogc-process-description",
+    "http://www.opengis.net/spec/ogcapi-processes-1/1.0/conf/json",
 ]
 # Охват сети для метаданных коллекций: считается один раз на процесс
 _extent: dict[str, list[float]] = {}
@@ -100,11 +104,13 @@ async def ogc_landing(request: Request, _: Viewer):
     base = _base(request)
     return {
         "title": "ТГИД — слои инженерной сети",
-        "description": "Участки, узлы, потребители, источники и задвижки теплосети города (OGC API — Features, GeoJSON, WGS84)",
+        "description": "Участки, узлы, потребители, источники и задвижки теплосети города (OGC API — Features, GeoJSON, "
+                       "WGS84); расчёт, трассировки и выборки (OGC API — Processes)",
         "links": [
             _link(base, "self"),
             _link(f"{base}/conformance", "conformance"),
             _link(f"{base}/collections", "data"),
+            _link(f"{base}/processes", "http://www.opengis.net/def/rel/ogc/1.0/processes", title="Процессы"),
             _link(_root(request) + "/openapi.json", "service-desc", "application/vnd.oai.openapi+json;version=3.0"),
         ],
     }

@@ -62,3 +62,41 @@
 - Версия — `ETag` в ответе `GET …/items/{fid}` и записи; `If-Match` с устаревшим ETag → 412.
 - Ссылки в ответах за nginx: `API_PUBLIC_PREFIX=/tgid/{city}/map-api` (у общего API ставит
   install-multicity.ps1).
+
+## Процессы (OGC API — Processes, часть 1)
+
+С 29.10.2026 расчёт, трассировки и выборки доступны внешним системам по стандарту OGC API — Processes
+(классы Core, OGC process description, JSON; `routers/ogc_processes.py`). Процессы — те же операции, что у
+MCP-сервера (`docs/mcp.md`): одни параметры, права (расчёт — «Запуск расчётов»), лимиты частоты и ответы.
+
+| Адрес | Что |
+|---|---|
+| `GET /api/ogc/processes` | список процессов |
+| `GET /api/ogc/processes/{id}` | описание: входы (JSON Schema) и выход |
+| `POST /api/ogc/processes/{id}/execution` | запуск: `{"inputs": {...}, "response": "raw" \| "document"}` |
+| `GET /api/ogc/jobs/{jobId}` | состояние задания: accepted, running, successful, failed |
+| `GET /api/ogc/jobs/{jobId}/results` | результат задания (`{"result": ...}`) |
+
+| Процесс | Что | Запуск |
+|---|---|---|
+| `network-trace` | трассировка: связанные, к источникам, ниже по потоку, зона; барьеры | синхронно |
+| `valve-isolation` | задвижки для локализации аварии, отключаемые потребители | синхронно |
+| `network-select` | выборка участков или узлов по условиям (`database/network_select.py`) | синхронно |
+| `network-statistics` | длина, объём, диаметры, теплопотребление, закрытые потребители | синхронно |
+| `regime-analysis` | проблемы режима по расчёту фрагмента | синхронно |
+| `thematic-summary` | распределение участков по теме | синхронно |
+| `wear-priorities` | приоритет ремонта по износу | синхронно |
+| `data-quality` | нарушения правил качества данных | синхронно |
+| `heat-hydraulic` | гидравлический расчёт фрагментов (sety; `tn` пусто — расчётная для отопления) | задание: 201 и `Location` |
+
+Ошибки — JSON по RFC 7807 с типами стандарта (`no-such-process`, `invalid-parameter-value`, `no-such-job`,
+`result-not-ready`); 5xx — без подробностей (они в логе API). Запуск расчёта пишется в журнал действий
+(`CALC_RUN`), остальные процессы — только чтение. Списка заданий (класс job-list) нет: состояние — по id.
+
+Пример — выборка участков Ду ≥ 500 во фрагменте 74:
+
+```bash
+curl -X POST "$API/api/ogc/processes/network-select/execution" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs": {"target": "lines", "conditions": [{"field": "diameter", "op": "ge", "value": 500}], "fragment_ids": [74]}}'
+```

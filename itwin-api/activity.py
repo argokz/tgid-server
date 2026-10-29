@@ -61,6 +61,7 @@ _RULES: list[tuple[str, re.Pattern, str]] = [(m, re.compile(p), a) for m, p, a i
     ("*", r"^/api/(v1/)?(import|fragments/(import|merge))", "IMPORT"),
     ("DELETE", r"^/api/(v1/)?calculations/", "CALC_SAVE"),
     ("*", r"^/(api/(v1/)?)?(run-sety-cmd|calculations/run|heat-losses(/norm)?/run)", "CALC_RUN"),
+    ("POST", r"^/api/ogc/processes/heat-hydraulic/execution$", "CALC_RUN"),
     ("*", r"^/(api/)?piezometer/directions", "CALC_SAVE"),
     ("*", r"/(export|excel)(/|$)|\.xlsx$|/download$|^/reports/word/|^/api/reports/html/|^/(api/)?piezometer/excel", "EXPORT"),
     ("*", r"^/api/v1/journals/|^/api/(v1/)?(technical-conditions|pts|alseko|electrical-network)", "JOURNAL"),
@@ -74,6 +75,7 @@ _READONLY_POST = re.compile(
     r"|^/api/(v1/)?import/inspect|^/api/v1/calculations/protocols/locate|^/api/v1/file-jobs$"
     r"|^/api/v1/ai/"  # вызовы ИИ пишет ai/usage.py с токенами
     r"|^/api/v1/network-select$"  # выборка по условиям — только чтение
+    r"|^/api/ogc/processes/(?!heat-hydraulic/)[^/]+/execution$"  # процессы OGC, кроме расчёта, — только чтение
     r"|^/mcp$|^/api/v1/mcp/token$"  # MCP пишет сам: вызовы инструментов (MCP) и выдачу токена (MCP_TOKEN)
 )
 # предпросмотр: «"dry_run": true» в теле или dry_run=true в адресе — не действие

@@ -39,6 +39,7 @@ from routers.thematic import router as thematic_router
 from routers.mcp import router as mcp_router
 from routers.network_select import router as network_select_router
 from routers.static_tiles import router as static_tiles_router
+from routers.ogc_processes import router as ogc_processes_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -70,6 +71,7 @@ all_routers = [
     mcp_router,
     network_select_router,
     static_tiles_router,
+    ogc_processes_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,

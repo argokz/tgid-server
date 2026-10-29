@@ -54,6 +54,20 @@ def _compact(value: Any, depth: int = 0) -> Any:
 class ToolError(Exception):
     """Ошибка для модели: текст уходит в результат с isError."""
 
+    status = 400
+
+
+class ToolForbidden(ToolError):
+    """Нет права на инструмент."""
+
+    status = 403
+
+
+class ToolRateLimited(ToolError):
+    """Слишком частые вызовы."""
+
+    status = 429
+
 
 @dataclass(frozen=True)
 class Tool:
@@ -85,9 +99,9 @@ def _rate_ok(key: tuple[str, str], limit: tuple[int, int], now: float) -> bool:
 def _check_rate(user: AuthUser, tool: "Tool") -> None:
     now = time.monotonic()
     if not _rate_ok((user.username, "*"), RATE_LIMIT, now):
-        raise ToolError(f"Слишком часто: не больше {RATE_LIMIT[0]} вызовов в минуту — подождите")
+        raise ToolRateLimited(f"Слишком часто: не больше {RATE_LIMIT[0]} вызовов в минуту — подождите")
     if not tool.read_only and not _rate_ok((user.username, tool.name), CALC_RATE_LIMIT, now):
-        raise ToolError(f"Не больше {CALC_RATE_LIMIT[0]} запусков за {CALC_RATE_LIMIT[1] // 60} минут — дождитесь "
+        raise ToolRateLimited(f"Не больше {CALC_RATE_LIMIT[0]} запусков за {CALC_RATE_LIMIT[1] // 60} минут — дождитесь "
                         f"прежних (task_status)")
 
 
@@ -97,7 +111,7 @@ def _require(user: AuthUser, permission: Optional[str]) -> None:
     from permissions import GENERAL
 
     if not user.perms.has(permission):
-        raise ToolError(f"Нет права «{GENERAL.get(permission, permission)}»")
+        raise ToolForbidden(f"Нет права «{GENERAL.get(permission, permission)}»")
 
 
 # --------------------------------------------------------------------- параметры
@@ -173,7 +187,9 @@ class DataQualityParams(BaseModel):
 class CalcParams(BaseModel):
     fragment_ids: FragmentIds = Field(..., min_length=1, max_length=50)
     mode: Literal["plan", "emergency"] = "plan"
-    tn: float = Field(-32, ge=-60, le=50, description="Температура наружного воздуха, °C")
+    tn: Optional[float] = Field(None, ge=-60, le=50,
+                                description="Температура наружного воздуха, °C; пусто — расчётная для отопления "
+                                            "(«Система теплоснабжения» города)")
     name: Optional[str] = Field(None, max_length=200, description="Название расчёта")
 
 
@@ -318,7 +334,15 @@ async def _run_calc(p: CalcParams, user: AuthUser) -> Any:
     from routers.calc import run_sety_mode
     from sety_modes import SetyRunRequest
 
-    body = SetyRunRequest(mode=p.mode, fragment_ids=sorted(set(p.fragment_ids)), tn=p.tn, name=p.name)
+    tn = p.tn
+    if tn is None:
+        from routers.calc import _heat_system_tn_range
+
+        async with acquire_conn() as conn:
+            tn = (await _heat_system_tn_range(conn))["t_or"]
+        if tn is None:
+            raise ToolError("В «Системе теплоснабжения» города нет расчётной температуры — задайте tn")
+    body = SetyRunRequest(mode=p.mode, fragment_ids=sorted(set(p.fragment_ids)), tn=tn, name=p.name)
     res = await run_sety_mode(body, user)
     return {**res, "next": "Состояние — task_status с этим task_id (расчёт идёт от секунд до минут)"}
 
@@ -439,6 +463,17 @@ def _text_result(payload: Any, *, is_error: bool = False) -> dict[str, Any]:
     return result
 
 
+async def execute(name: str, arguments: dict[str, Any], user: AuthUser) -> Any:
+    """Вызов инструмента без обёртки MCP (OGC API — Processes): проверка параметров, права и частоты.
+
+    Ошибки — исключениями: ValidationError, ToolError (ToolForbidden, ToolRateLimited), HTTPException."""
+    tool = TOOLS[name]
+    params = tool.params.model_validate(arguments)
+    _require(user, tool.permission)
+    _check_rate(user, tool)
+    return await tool.run(params, user)
+
+
 async def call_tool(name: str, arguments: dict[str, Any], user: AuthUser,
                     client: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """client — ip и user_agent запроса (журнал действий)."""
@@ -446,16 +481,13 @@ async def call_tool(name: str, arguments: dict[str, Any], user: AuthUser,
     started = time.perf_counter()
     status = 200
     try:
-        params = tool.params.model_validate(arguments)
-        _require(user, tool.permission)
-        _check_rate(user, tool)
-        result = _text_result(await tool.run(params, user))
+        result = _text_result(await execute(name, arguments, user))
     except ValidationError as exc:
         status = 422
         result = _text_result("Неверные параметры: " + "; ".join(
             f"{'.'.join(map(str, e['loc'])) or 'arguments'} — {e['msg']}" for e in exc.errors()), is_error=True)
     except ToolError as exc:
-        status = 400
+        status = exc.status
         result = _text_result(str(exc), is_error=True)
     except HTTPException as exc:
         status = exc.status_code
