@@ -201,3 +201,101 @@ def test_endpoints_and_mutation_flag(monkeypatch):
     assert client.post("/api/v1/work-orders", json={"title": "x", "kind": "magic"}).status_code == 422
     monkeypatch.setenv("MUTATIONS_ENABLED", "false")
     assert client.post("/api/v1/work-orders", json={"title": "Проверка"}).status_code == 503
+
+
+class FieldConn(FakeConn):
+    """Плюс ключи действий с устройства (client_id) и фото."""
+
+    def __init__(self, seen=(), **kw):
+        super().__init__(**kw)
+        self.seen = set(seen)
+
+    async def fetchval(self, sql, *args):
+        if "client_id = $1" in sql:
+            return args[0] in self.seen
+        return await super().fetchval(sql, *args)
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+KEY = "6f1c1c4e-2b7a-4c55-9a51-0d3e2f8a7b10"
+
+
+def test_repeat_with_same_client_id_changes_nothing(stub_get):
+    from uuid import UUID
+
+    stub_get["order"] = _order(status="assigned", status_label="Назначен", brigade_id=5)
+    conn = FieldConn(seen={UUID(KEY)})
+    out = asyncio.run(wo.transition(conn, 11, wo.TransitionIn(to="in_progress", revision=1, client_id=KEY), "x"))
+    assert out["status"] == "assigned" and conn.executed == []  # ни 409 по старой ревизии, ни второго перехода
+    asyncio.run(wo.add_comment(conn, 11, wo.CommentIn(note="на месте", client_id=KEY), "x"))
+    asyncio.run(wo.add_photo(conn, 11, JPEG, "x", stamp=wo.FieldStamp(client_id=KEY)))
+    assert conn.executed == []
+
+
+def test_field_action_stores_key_and_coordinates(stub_get):
+    stub_get["order"] = _order(status="assigned", status_label="Назначен", brigade_id=5)
+    conn = FieldConn()
+    asyncio.run(wo.transition(conn, 11, wo.TransitionIn(to="in_progress", revision=3, client_id=KEY,
+                                                         lon=76.95, lat=43.25), "x"))
+    event = next(a for s, a in conn.executed if "tgid_work_order_event" in s)
+    assert str(event[5]) == KEY and event[6:8] == (76.95, 43.25)
+    with pytest.raises(ValueError):
+        wo.FieldStamp(lat=91)
+
+
+def test_photo_checks_type_size_and_limit(stub_get):
+    conn = FieldConn()
+    assert wo.image_type(JPEG) == "image/jpeg" and wo.image_type(b"\x89PNG\r\n\x1a\n...") == "image/png"
+    assert wo.image_type(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp" and wo.image_type(b"<svg") is None
+    for data, status in ((b"", 422), (b"<html>" * 10, 415), (JPEG + b"\x00" * wo.MAX_PHOTO_BYTES, 413)):
+        with pytest.raises(wo.WorkOrderError) as e:
+            asyncio.run(wo.add_photo(conn, 11, data, "x"))
+        assert e.value.status == status
+    stub_get["order"] = _order(photos=[{"id": i} for i in range(wo.MAX_PHOTOS)])
+    with pytest.raises(wo.WorkOrderError, match="уже"):
+        asyncio.run(wo.add_photo(conn, 11, JPEG, "x"))
+    stub_get["order"] = _order(photos=[])
+    asyncio.run(wo.add_photo(conn, 11, JPEG, "x", caption=" Шурф ", stamp=wo.FieldStamp(lon=76.9, lat=43.2)))
+    photo = next(a for s, a in conn.executed if "tgid_work_order_photo" in s)
+    assert photo[2:5] == ("Шурф", "image/jpeg", len(JPEG)) and photo[6:8] == (76.9, 43.2)
+    assert any("Фото: Шурф" in a[4] for s, a in conn.executed if "tgid_work_order_event" in s)
+
+
+def test_photo_endpoints(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from fastapi.testclient import TestClient
+
+    import main
+    from auth import invalidate_user_status
+    from routers import work_orders as router
+
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    invalidate_user_status()
+    calls = {}
+
+    @asynccontextmanager
+    async def acquire():
+        yield FakeConn()
+
+    async def fake_add(conn, order_id, data, user, *, caption, taken_at, stamp):
+        calls.update(data=data, caption=caption, stamp=stamp, taken_at=taken_at)
+        return {"id": order_id, "photos": [{"id": 1}]}
+
+    async def fake_get(conn, photo_id):
+        return "image/jpeg", JPEG
+
+    monkeypatch.setattr(router, "acquire_conn", acquire)
+    monkeypatch.setattr(wo, "add_photo", fake_add)
+    monkeypatch.setattr(wo, "get_photo", fake_get)
+    client = TestClient(main.app)
+    r = client.post("/api/v1/work-orders/11/photos", files={"file": ("a.jpg", JPEG, "image/jpeg")},
+                    data={"caption": "Шурф", "lon": "76.9", "lat": "43.2", "client_id": KEY,
+                          "taken_at": "2026-10-30T09:15:00+05:00"})
+    assert r.status_code == 200 and calls["data"] == JPEG and str(calls["stamp"].client_id) == KEY
+    assert calls["taken_at"].tzinfo is not None
+    bad = client.post("/api/v1/work-orders/11/photos", files={"file": ("a.jpg", JPEG)}, data={"lat": "95"})
+    assert bad.status_code == 422
+    r = client.get("/api/v1/work-orders/photos/1")
+    assert r.content == JPEG and r.headers["content-type"] == "image/jpeg" and "private" in r.headers["cache-control"]

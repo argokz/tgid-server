@@ -97,6 +97,11 @@ COMMON: tuple[Item, ...] = (
     Item("таблицы нарядов tgid_work_order",
          "select to_regclass('public.tgid_work_order_event') is not null",
          (_m("20261030_work_orders.sql"),)),
+    Item("фото и полевые действия нарядов",
+         "select to_regclass('public.tgid_work_order') is null or (to_regclass('public.tgid_work_order_photo') is not null"
+         " and exists (select 1 from information_schema.columns where table_schema = 'public'"
+         " and table_name = 'tgid_work_order_event' and column_name = 'client_id'))",
+         (_m("20261030_work_order_field.sql"),)),
     Item("таблицы отключений tgid_outage",
          "select to_regclass('public.tgid_outage_event') is not null",
          (_m("20261030_outages.sql"),)),

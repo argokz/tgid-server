@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +39,10 @@ OPEN = ("new", "assigned", "in_progress")
 DEFECT_STATE_REPAIR = 2      # statedefect «Ремонт»
 DEFECT_STATE_AFTER = 3       # statedefect «После ремонта»
 MAX_LIST = 1000
+# фото с места работ: уменьшаются на телефоне; в базе — до 2 МБ на фото и 30 фото на наряд
+MAX_PHOTO_BYTES = 2_000_000
+MAX_PHOTOS = 30
+_IMAGE_SIGNATURES = (("image/jpeg", b"\xff\xd8\xff"), ("image/png", b"\x89PNG\r\n\x1a\n"))
 
 Kind = Literal["repair", "inspection", "pressure_test", "excavation", "maintenance", "other"]
 Status = Literal["new", "assigned", "in_progress", "done", "closed", "cancelled"]
@@ -79,11 +84,22 @@ class WorkOrderPatch(BaseModel):
     result: Optional[str] = Field(None, max_length=5000)
 
 
-class TransitionIn(BaseModel):
+class FieldStamp(BaseModel):
+    """Действие с устройства в поле: ключ (повтор без дублей) и где был телефон."""
+    client_id: Optional[UUID] = Field(None, description="Ключ действия; повтор с тем же ключом — без изменений")
+    lon: Optional[float] = Field(None, ge=-180, le=180)
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+
+
+class TransitionIn(FieldStamp):
     to: Status
     revision: int = Field(..., ge=1)
     note: str = Field("", max_length=2000)
     result: Optional[str] = Field(None, max_length=5000, description="Что сделано — при выполнении")
+
+
+class CommentIn(FieldStamp):
+    note: str = Field(..., min_length=1, max_length=2000)
 
 
 # --- чтение ---------------------------------------------------------------------------------
@@ -179,10 +195,14 @@ async def get_order(conn, order_id: int) -> dict[str, Any]:
         raise WorkOrderError(404, f"Наряд {order_id} не найден")
     out = _row(row)
     events = await conn.fetch(
-        "SELECT at, by_user, from_status, to_status, note FROM tgid_work_order_event WHERE order_id = $1 ORDER BY at, id",
-        order_id)
+        "SELECT at, by_user, from_status, to_status, note, lon, lat FROM tgid_work_order_event WHERE order_id = $1"
+        " ORDER BY at, id", order_id)
     out["events"] = [{**{k: _iso(v) for k, v in dict(e).items()},
                       "to_label": STATUSES.get(e["to_status"]) if e["to_status"] else None} for e in events]
+    photos = await conn.fetch(
+        "SELECT id, caption, content_type, size, lon, lat, taken_at, by_user, created_at FROM tgid_work_order_photo"
+        " WHERE order_id = $1 ORDER BY created_at, id", order_id)
+    out["photos"] = [{k: _iso(v) for k, v in dict(p).items()} for p in photos]
     return out
 
 
@@ -239,10 +259,21 @@ async def _check_people(conn, brigade_id: Optional[int], responsible_id: Optiona
 
 
 async def _event(conn, order_id: int, user: str, note: str, from_status: Optional[str] = None,
-                 to_status: Optional[str] = None) -> None:
+                 to_status: Optional[str] = None, stamp: Optional[FieldStamp] = None) -> None:
     await conn.execute(
-        "INSERT INTO tgid_work_order_event (order_id, by_user, from_status, to_status, note) VALUES ($1, $2, $3, $4, $5)",
-        order_id, user, from_status, to_status, note)
+        """INSERT INTO tgid_work_order_event (order_id, by_user, from_status, to_status, note, client_id, lon, lat)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+        order_id, user, from_status, to_status, note, stamp.client_id if stamp else None,
+        stamp.lon if stamp else None, stamp.lat if stamp else None)
+
+
+async def _already_done(conn, stamp: Optional[FieldStamp]) -> bool:
+    """Действие с этим ключом уже записано (повтор отправки из очереди устройства)."""
+    if stamp is None or stamp.client_id is None:
+        return False
+    return bool(await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM tgid_work_order_event WHERE client_id = $1)"
+        " OR EXISTS (SELECT 1 FROM tgid_work_order_photo WHERE client_id = $1)", stamp.client_id))
 
 
 # --- запись ---------------------------------------------------------------------------------
@@ -340,6 +371,8 @@ async def _sync_defect(conn, defect_id: int, to: str) -> Optional[str]:
 
 async def transition(conn, order_id: int, body: TransitionIn, user: str) -> dict[str, Any]:
     current = await get_order(conn, order_id)
+    if await _already_done(conn, body):
+        return current
     allowed = TRANSITIONS.get(current["status"], ())
     if body.to not in allowed:
         names = ", ".join(STATUSES[s] for s in allowed) or "нет"
@@ -366,14 +399,60 @@ async def transition(conn, order_id: int, body: TransitionIn, user: str) -> dict
             synced = await _sync_defect(conn, current["defect_id"], body.to)
             if synced:
                 note = f"{note}; {synced}" if note else synced
-        await _event(conn, order_id, user, note, current["status"], body.to)
+        await _event(conn, order_id, user, note, current["status"], body.to, body)
     return await get_order(conn, order_id)
 
 
-async def add_comment(conn, order_id: int, note: str, user: str) -> dict[str, Any]:
-    await get_order(conn, order_id)
-    text = note.strip()
+async def add_comment(conn, order_id: int, body: CommentIn, user: str) -> dict[str, Any]:
+    current = await get_order(conn, order_id)
+    if await _already_done(conn, body):
+        return current
+    text = body.note.strip()
     if not text:
         raise WorkOrderError(422, "Пустой комментарий")
-    await _event(conn, order_id, user, text[:2000])
+    await _event(conn, order_id, user, text[:2000], stamp=body)
     return await get_order(conn, order_id)
+
+
+# --- фото с места работ ---------------------------------------------------------------------
+
+def image_type(data: bytes) -> Optional[str]:
+    """Тип изображения по первым байтам (а не по имени файла и заголовку клиента)."""
+    for content_type, signature in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return content_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+async def add_photo(conn, order_id: int, data: bytes, user: str, *, caption: str = "",
+                    taken_at: Optional[datetime] = None, stamp: Optional[FieldStamp] = None) -> dict[str, Any]:
+    current = await get_order(conn, order_id)
+    if await _already_done(conn, stamp):
+        return current
+    if not data:
+        raise WorkOrderError(422, "Пустой файл")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise WorkOrderError(413, f"Фото больше {MAX_PHOTO_BYTES // 1_000_000} МБ — уменьшите его")
+    content_type = image_type(data)
+    if content_type is None:
+        raise WorkOrderError(415, "Это не фото (JPEG, PNG или WebP)")
+    if len(current.get("photos") or []) >= MAX_PHOTOS:
+        raise WorkOrderError(422, f"У наряда уже {MAX_PHOTOS} фото")
+    async with conn.transaction():
+        await conn.execute(
+            """INSERT INTO tgid_work_order_photo (order_id, client_id, caption, content_type, size, data, lon, lat,
+                                                   taken_at, by_user)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
+            order_id, stamp.client_id if stamp else None, caption.strip()[:500], content_type, len(data), data,
+            stamp.lon if stamp else None, stamp.lat if stamp else None, _aware(taken_at), user)
+        await _event(conn, order_id, user, "Фото" + (f": {caption.strip()[:200]}" if caption.strip() else ""))
+    return await get_order(conn, order_id)
+
+
+async def get_photo(conn, photo_id: int) -> tuple[str, bytes]:
+    row = await conn.fetchrow("SELECT content_type, data FROM tgid_work_order_photo WHERE id = $1", photo_id)
+    if row is None:
+        raise WorkOrderError(404, f"Фото {photo_id} нет")
+    return row["content_type"], bytes(row["data"])

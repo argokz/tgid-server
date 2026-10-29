@@ -8,15 +8,21 @@ POST   /api/v1/work-orders                  — создать (по дефек�
 PATCH  /api/v1/work-orders/{id}             — изменить (revision; закрытые и отменённые — нет)
 POST   /api/v1/work-orders/{id}/transition  — сменить статус (дефект: «Ремонт» / «После ремонта»)
 POST   /api/v1/work-orders/{id}/comments    — комментарий в историю
+POST   /api/v1/work-orders/{id}/photos      — фото с места работ (multipart: file, caption, lon, lat, taken_at, client_id)
+GET    /api/v1/work-orders/photos/{photo_id} — само фото
 
 Чтение — вход; запись — право «Журналы» (journals), как у журналов дефектов и ремонтов.
+Переход, комментарий и фото принимают client_id — ключ действия с устройства в поле: повтор отправки из очереди
+(связь пропала после записи) не создаёт дубль.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Response, UploadFile
+from pydantic import ValidationError
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
 from database import work_orders as wo
@@ -28,10 +34,6 @@ Writer = Annotated[AuthUser, Depends(require_permission("journals"))]
 # запись — ещё и при включённых правках (MUTATIONS_ENABLED), как у журналов дефектов
 WRITE = [Depends(require_mutations_enabled)]
 OrderId = Annotated[int, Path(ge=1)]
-
-
-class CommentIn(BaseModel):
-    note: str = Field(..., min_length=1, max_length=2000)
 
 
 def _http(exc: wo.WorkOrderError) -> HTTPException:
@@ -105,9 +107,45 @@ async def work_order_transition(order_id: OrderId, body: wo.TransitionIn, user: 
 
 
 @router.post("/api/v1/work-orders/{order_id}/comments", dependencies=WRITE)
-async def work_order_comment(order_id: OrderId, body: CommentIn, user: Writer):
+async def work_order_comment(order_id: OrderId, body: wo.CommentIn, user: Writer):
     try:
         async with acquire_conn() as conn:
-            return await wo.add_comment(conn, order_id, body.note, user.username)
+            return await wo.add_comment(conn, order_id, body, user.username)
     except wo.WorkOrderError as exc:
         raise _http(exc) from exc
+
+
+@router.post("/api/v1/work-orders/{order_id}/photos", dependencies=WRITE)
+async def work_order_photo_add(
+    order_id: OrderId,
+    user: Writer,
+    file: UploadFile = File(..., description="JPEG, PNG или WebP до 2 МБ (на телефоне уменьшается заранее)"),
+    caption: str = Form("", max_length=500),
+    lon: Optional[float] = Form(None),
+    lat: Optional[float] = Form(None),
+    taken_at: Optional[datetime] = Form(None),
+    client_id: Optional[UUID] = Form(None),
+):
+    try:
+        stamp = wo.FieldStamp(client_id=client_id, lon=lon, lat=lat)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Неверные координаты") from exc
+    data = await file.read(wo.MAX_PHOTO_BYTES + 1)
+    try:
+        async with acquire_conn() as conn:
+            return await wo.add_photo(conn, order_id, data, user.username, caption=caption, taken_at=taken_at,
+                                      stamp=stamp)
+    except wo.WorkOrderError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/work-orders/photos/{photo_id}")
+async def work_order_photo_get(photo_id: Annotated[int, Path(ge=1)], _: Viewer):
+    try:
+        async with acquire_conn() as conn:
+            content_type, data = await wo.get_photo(conn, photo_id)
+    except wo.WorkOrderError as exc:
+        raise _http(exc) from exc
+    # фото не меняются — кешировать можно надолго, но только в браузере пользователя
+    return Response(content=data, media_type=content_type,
+                    headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
