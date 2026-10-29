@@ -7,8 +7,10 @@
 """
 
 from typing import Annotated, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, StringConstraints
 
 from auth import AuthUser, require_permission, require_roles
@@ -16,6 +18,8 @@ from database.connect import acquire_conn
 from database.outage_simulation import invalidate_outage_cache
 from database.scenario_compare import ITEMS_LIMIT, ScenarioCompareError, compare_scenario_calculations
 from database.scenario_merge import ScenarioMergeError, merge_scenario
+from database.scenario_report import REPORT_ITEMS_LIMIT, workbook as scenario_workbook
+from database.passport_excel import XLSX_MEDIA_TYPE, safe_filename
 from database.scenarios import (
     DIFF_LIMIT,
     ScenarioError,
@@ -128,6 +132,28 @@ async def api_scenario_compare(
     if result is None:
         raise HTTPException(status_code=404, detail=f"Сценарий {scenario_id} не найден")
     return result
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/compare.xlsx")
+async def api_scenario_compare_excel(
+    scenario_id: ScenarioId, _: Annotated[AuthUser, Depends(require_permission("export"))],
+    base_calculation_id: int = Query(..., ge=1, description="Расчёт фрагмента-основы"),
+    scenario_calculation_id: int = Query(..., ge=1, description="Расчёт фрагмента сценария"),
+):
+    """Отчёт Excel «сценарий против основы»: сводка, потребители и участки с изменением режима."""
+    try:
+        async with acquire_conn() as conn:
+            result = await compare_scenario_calculations(
+                conn, scenario_id, base_calculation_id, scenario_calculation_id, limit=REPORT_ITEMS_LIMIT)
+    except (ScenarioCompareError, LookupError) as e:
+        raise _error(e, "comparing scenario calculations")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Сценарий {scenario_id} не найден")
+    filename = safe_filename(f"Сценарий {result['name']} против основы") + ".xlsx"
+    return Response(scenario_workbook(result), media_type=XLSX_MEDIA_TYPE, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    })
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/merge")
