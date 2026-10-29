@@ -33,6 +33,7 @@ from routers.registries import router as registries_router
 from routers.reports import router as reports_router
 from routers.scenarios import router as scenarios_router
 from routers.ogc import router as ogc_router
+from routers.ogc_write import router as ogc_write_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -58,6 +59,7 @@ all_routers = [
     fragment_transfer_router,
     scenarios_router,
     ogc_router,
+    ogc_write_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,

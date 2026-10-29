@@ -2,9 +2,13 @@
 
 Подключение в QGIS: «Слой → Добавить слой → WFS / OGC API — Features», адрес <API>/api/ogc,
 аутентификация — заголовок Authorization: Bearer <токен> (роль «просмотр»). Подробно:
-database/ogc_features.py.
+database/ogc_features.py. Запись (часть 4) — routers/ogc_write.py.
+
+Ссылки в ответах строятся от адреса запроса; за nginx (/tgid/<город>/map-api/ → API) путь
+публикации задаёт API_PUBLIC_PREFIX, например «/tgid/{city}/map-api» ({city} — город запроса).
 """
 
+import os
 from typing import Annotated, Optional
 from urllib.parse import urlencode
 
@@ -12,9 +16,10 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 
 from auth import AuthUser, require_roles
-from cities import cache_key
+from cities import cache_key, current_city
 from database.connect import acquire_conn
 from database.ogc_features import COLLECTIONS, DEFAULT_LIMIT, MAX_LIMIT, get_item, get_items, parse_bbox
+from database.ogc_transactions import etag, row_versions
 
 router = APIRouter(tags=["ogc-features"])
 
@@ -25,13 +30,23 @@ CONFORMANCE = [
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson",
     "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30",
+    # часть 4: запись узлов, участков, задвижек и источников (routers/ogc_write.py), версии — ETag
+    "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/create-replace-delete",
+    "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/update",
+    "http://www.opengis.net/spec/ogcapi-features-4/1.0/conf/optimistic-locking-etags",
 ]
 # Охват сети для метаданных коллекций: считается один раз на процесс
 _extent: dict[str, list[float]] = {}
 
 
+def _root(request: Request) -> str:
+    """Адрес API для ссылок: адрес запроса + путь публикации за nginx (API_PUBLIC_PREFIX)."""
+    prefix = os.getenv("API_PUBLIC_PREFIX", "").strip().rstrip("/").replace("{city}", current_city())
+    return str(request.base_url).rstrip("/") + prefix
+
+
 def _base(request: Request) -> str:
-    return str(request.base_url).rstrip("/") + "/api/ogc"
+    return _root(request) + "/api/ogc"
 
 
 def _link(href: str, rel: str, type_: str = "application/json", title: Optional[str] = None) -> dict:
@@ -90,7 +105,7 @@ async def ogc_landing(request: Request, _: Viewer):
             _link(base, "self"),
             _link(f"{base}/conformance", "conformance"),
             _link(f"{base}/collections", "data"),
-            _link(str(request.base_url).rstrip("/") + "/openapi.json", "service-desc", "application/vnd.oai.openapi+json;version=3.0"),
+            _link(_root(request) + "/openapi.json", "service-desc", "application/vnd.oai.openapi+json;version=3.0"),
         ],
     }
 
@@ -152,8 +167,11 @@ async def ogc_item(request: Request, collection_id: str, _: Viewer, feature_id: 
     _collection_or_404(collection_id)
     async with acquire_conn() as conn:
         feature = await get_item(conn, collection_id, feature_id)
+        versions = await row_versions(conn, collection_id, feature_id) if feature is not None else None
     if feature is None:
         raise HTTPException(status_code=404, detail=f"Объекта {feature_id} в коллекции {collection_id} нет")
     url = f"{_base(request)}/collections/{collection_id}"
     feature["links"] = [_link(f"{url}/items/{feature_id}", "self", GEOJSON), _link(url, "collection")]
-    return JSONResponse(feature, media_type=GEOJSON)
+    # версия для If-Match при записи (часть 4); у потребителей записи нет — и ETag нет
+    headers = {"ETag": etag(versions)} if versions else None
+    return JSONResponse(feature, media_type=GEOJSON, headers=headers)

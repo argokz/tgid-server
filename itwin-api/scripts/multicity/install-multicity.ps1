@@ -217,7 +217,9 @@ Write-Host 'Предпроверки пройдены' -ForegroundColor Green
 Step "2. Службы $apiService (:$Port) и $($workerNames -join ', ')"
 $cityDbs = ($served | ForEach-Object { "$($_.Code)=$($_.Db)" }) -join ','
 # Остальные переменные — из $api\.env (load_dotenv не перекрывает заданные здесь)
-$envVars = @('PYTHONUNBUFFERED=1', "TGID_CITY_DBS=$cityDbs", "DB_POOL_MIN_SIZE=$poolMin", "DB_POOL_MAX_SIZE=$poolMax")
+# API_PUBLIC_PREFIX — путь публикации за nginx: ссылки OGC API ведут на /tgid/<город>/map-api/…
+$envVars = @('PYTHONUNBUFFERED=1', "TGID_CITY_DBS=$cityDbs", "DB_POOL_MIN_SIZE=$poolMin", "DB_POOL_MAX_SIZE=$poolMax",
+  'API_PUBLIC_PREFIX=/tgid/{city}/map-api')
 if (Test-Path $martinSql) { $envVars += "MARTIN_SQL_DIR=$martinSql" }
 Install-TgidService $apiService $py "-m uvicorn main:app --host 127.0.0.1 --port $Port --workers $ApiWorkers" $envVars
 $queues = ($served | ForEach-Object { "tgid.$($_.Code)" }) -join ','

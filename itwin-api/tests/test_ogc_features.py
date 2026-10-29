@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import database.ogc_features as ogc
 import main
 import routers.ogc as ogc_router
+from database.ogc_transactions import etag
 
 
 def test_parse_bbox():
@@ -50,9 +51,13 @@ def _client(monkeypatch, items=None, item=None):
     async def fake_item(conn, cid, fid):
         return item
 
+    async def fake_versions(conn, cid, fid):
+        return {f"linesobj:{fid}": "v1"}
+
     monkeypatch.setattr(ogc_router, "acquire_conn", acquire)
     monkeypatch.setattr(ogc_router, "get_items", fake_items)
     monkeypatch.setattr(ogc_router, "get_item", fake_item)
+    monkeypatch.setattr(ogc_router, "row_versions", fake_versions)
     return TestClient(main.app)
 
 
@@ -92,9 +97,19 @@ def test_single_item(monkeypatch):
     r = client.get("/api/ogc/collections/pipes/items/7")
     assert r.status_code == 200 and r.json()["id"] == 7
     assert any(link["rel"] == "collection" for link in r.json()["links"])
+    assert r.headers["etag"] == etag({"linesobj:7": "v1"})  # версия для If-Match (часть 4)
     assert _client(monkeypatch, item=None).get("/api/ogc/collections/pipes/items/7").status_code == 404
 
 
 def test_ogc_requires_auth(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     assert TestClient(main.app).get("/api/ogc/collections").status_code == 401
+
+
+def test_links_use_public_prefix(monkeypatch):
+    """За nginx (/tgid/<город>/map-api/) ссылки — с путём публикации API_PUBLIC_PREFIX."""
+    monkeypatch.setenv("API_PUBLIC_PREFIX", "/tgid/{city}/map-api")
+    monkeypatch.setenv("TGID_CITY", "astana")
+    monkeypatch.delenv("TGID_CITY_DBS", raising=False)
+    r = _client(monkeypatch, item=_feature(7)).get("/api/ogc/collections/pipes/items/7")
+    assert r.json()["links"][0]["href"] == "http://testserver/tgid/astana/map-api/api/ogc/collections/pipes/items/7"
