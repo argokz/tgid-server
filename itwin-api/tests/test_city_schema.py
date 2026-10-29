@@ -206,3 +206,19 @@ def test_after_reconversion_dependent_items_are_applied_in_order():
     assert res["status"] == "applied", res
     assert "колонка calculation_protocol.ai_summary" in res["applied"]
     assert "20261023_calculation_protocol_ai_summary.sql" in conn.applied_files
+
+
+def test_martin_functions_item_from_env(monkeypatch, tmp_path):
+    """Функции тайлов martin — пункт схемы, если службе API задан MARTIN_SQL_FILE (install-martin.ps1)."""
+    monkeypatch.delenv("MARTIN_SQL_FILE", raising=False)
+    assert "функции тайлов martin" not in [i.name for i in cs.city_items("almaty")]
+    sql = tmp_path / "almaty.sql"
+    sql.write_text("CREATE OR REPLACE FUNCTION public.tgid_mvt_uzel(z integer) ...;\n"
+                   "CREATE OR REPLACE FUNCTION public.tgid_mvt_heatpipesections(z integer) ...;\n", encoding="utf-8")
+    monkeypatch.setenv("MARTIN_SQL_FILE", str(sql))
+    item = cs.city_items("almaty")[-1]
+    assert item.name == "функции тайлов martin" and item.files == (sql,)
+    assert "public.tgid_mvt_heatpipesections(integer,integer,integer,json)" in item.check
+    assert "public.tgid_mvt_uzel(integer,integer,integer,json)" in item.check
+    monkeypatch.setenv("MARTIN_SQL_FILE", str(tmp_path / "missing.sql"))
+    assert "функции тайлов martin" not in [i.name for i in cs.city_items("almaty")]

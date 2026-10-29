@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,10 +130,28 @@ CITIES: dict[str, City] = {
 }
 
 
+def martin_item() -> Optional[Item]:
+    """Функции тайлов martin (scripts/martin): SQL сгенерирован на сервере из рабочей области GeoServer города
+    и лежит вне репозитория — путь задаёт MARTIN_SQL_FILE службы API (ставит install-martin.ps1). После
+    переконвертации базы функции возвращаются, как остальные объекты веба. В комплект конвертера десктопа
+    (scripts/export_web_schema.py, только COMMON и CITIES) не входит."""
+    path = Path(os.getenv("MARTIN_SQL_FILE", "").strip() or "-")
+    if not path.is_file():
+        return None
+    names = sorted(set(re.findall(r"FUNCTION public\.(tgid_mvt_\w+)\(", path.read_text(encoding="utf-8-sig"))))
+    if not names:
+        return None
+    sigs = ", ".join(f"'public.{n}(integer,integer,integer,json)'" for n in names)
+    return Item("функции тайлов martin",
+                f"select bool_and(to_regprocedure(f) is not null) from unnest(array[{sigs}]) f", (path,))
+
+
 def city_items(city: str) -> list[Item]:
-    """Пункты города: его особые (SRID — первым) и общие. Неизвестный город — только общие."""
+    """Пункты города: его особые (SRID — первым), общие и функции тайлов martin (если заданы).
+    Неизвестный город — только общие."""
     spec = CITIES.get(city, City(base_srid=None))
-    return [*spec.items, *COMMON]
+    local = martin_item()
+    return [*spec.items, *COMMON, *([local] if local else [])]
 
 
 def ready_sql(city: str) -> str:

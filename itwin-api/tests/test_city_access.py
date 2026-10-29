@@ -201,6 +201,10 @@ async def test_create_user_unknown_city_rejected_before_db():
     ("/geoserver/gwc/service/tms/1.0.0/Astana1%3Aheatpipesections@EPSG%3A900913@pbf/10/1/2.pbf", {"astana"}, True),
     ("/geoserver/gwc/service/wmts?REQUEST=GetCapabilities", set(), True),
     ("/geoserver/OtherProject/wms?layers=OtherProject:roads", set(), False),
+    # тайлы martin: город — по префиксу источника
+    ("/geoserver/tiles/almaty_uzel/15/23388/12007?viewparams=fragments:74;", {"almaty"}, False),
+    ("/geoserver/tiles/astana_heatpipesections/12/1/2", {"astana"}, False),
+    ("/geoserver/tiles/catalog", set(), True),
 ])
 def test_geoserver_city_detection(uri, expected, is_global):
     assert cities.geoserver_request_cities(uri) == (expected, is_global)

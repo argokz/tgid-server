@@ -122,6 +122,9 @@ GEOSERVER_GLOBAL_SEGMENTS = frozenset({
     "gwc", "wms", "wfs", "wcs", "wps", "ows", "wmts", "tms", "kml", "styles", "schemas", "i18n",
     "openlayers", "openlayers3", "pdf", "www", "web", "rest", "index.html",
 })
+# Тайлы martin опубликованы под /geoserver/tiles/ — там действует cookie сессии GeoServer (Path=/geoserver)
+MARTIN_SEGMENT = "tiles"
+MARTIN_GLOBAL_SEGMENTS = frozenset({"catalog", "health", "metrics", "_"})
 _LAYER_PARAMS = frozenset({"layer", "layers", "typename", "typenames", "query_layers", "coverageid", "identifier"})
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -144,6 +147,13 @@ def geoserver_request_cities(uri: str) -> tuple[set[str], bool]:
     if segments and segments[0].lower() == "geoserver":
         segments = segments[1:]
     found: set[str] = set()
+    if segments and segments[0].lower() == MARTIN_SEGMENT:
+        # martin (/geoserver/tiles/almaty_uzel/{z}/{x}/{y}): город — по префиксу источника, как у рабочей области;
+        # каталог источников (/geoserver/tiles/catalog) — общий
+        is_global = len(segments) < 2 or segments[1].lower() in MARTIN_GLOBAL_SEGMENTS
+        if not is_global:
+            found.add(segments[1])
+        return {c for c in (workspace_city(ws) for ws in found) if c}, is_global
     is_global = not segments or segments[0].lower() in GEOSERVER_GLOBAL_SEGMENTS
     if not is_global:
         found.add(segments[0])
