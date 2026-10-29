@@ -64,7 +64,7 @@ _RULES: list[tuple[str, re.Pattern, str]] = [(m, re.compile(p), a) for m, p, a i
     ("POST", r"^/api/ogc/processes/heat-hydraulic/execution$", "CALC_RUN"),
     ("*", r"^/(api/)?piezometer/directions", "CALC_SAVE"),
     ("*", r"/(export|excel)(/|$)|\.xlsx$|/download$|^/reports/word/|^/api/reports/html/|^/(api/)?piezometer/excel", "EXPORT"),
-    ("*", r"^/api/v1/journals/|^/api/(v1/)?(technical-conditions|pts|alseko|electrical-network|v1/work-orders)", "JOURNAL"),
+    ("*", r"^/api/v1/journals/|^/api/(v1/)?(technical-conditions|pts|alseko|electrical-network|v1/work-orders|v1/outages)", "JOURNAL"),
 )]
 # GET, которые не пишутся, хоть и похожи на выгрузку (справочники каталога отчётов)
 _SKIP_GET = re.compile(r"^/api/reports/(catalog|excel-types)$")

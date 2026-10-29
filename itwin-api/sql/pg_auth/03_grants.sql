@@ -115,7 +115,7 @@ SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY[
     'defect', 'defectdocuments', 'defectchannel', 'defectkamera', 'defectmeropr', 'defectopis', 'defecttube',
     'defectsforshurfy',
     -- наряды и заявки (database/work_orders.py, таблицы веба)
-    'tgid_work_order', 'tgid_work_order_event',
+    'tgid_work_order', 'tgid_work_order_event', 'tgid_outage', 'tgid_outage_event',
     'shurfy', 'shurfdocuments', 'vidy_elementov_for_shurfy', 'nalichie_vblizi_kommunikacij_for_shurfy',
     'osmotr', 'osmotrdeployed', 'osmotrdocuments',
     'opres', 'opresdeployed', 'opresdocuments', 'opresacts', 'opresmeropr',

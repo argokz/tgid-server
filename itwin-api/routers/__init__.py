@@ -41,6 +41,7 @@ from routers.network_select import router as network_select_router
 from routers.static_tiles import router as static_tiles_router
 from routers.ogc_processes import router as ogc_processes_router
 from routers.work_orders import router as work_orders_router
+from routers.outages import router as outages_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -74,6 +75,7 @@ all_routers = [
     static_tiles_router,
     ogc_processes_router,
     work_orders_router,
+    outages_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,

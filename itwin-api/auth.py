@@ -621,4 +621,6 @@ PUBLIC_GET_PREFIXES: tuple[str, ...] = (
     "/auth/logout",
     # метрики Prometheus: свой токен METRICS_TOKEN (observability.py)
     "/metrics",
+    # публичная карта отключений: сама закрыта, пока PUBLIC_OUTAGES_ENABLED не включён (routers/outages.py)
+    "/api/v1/public/outages",
 )
