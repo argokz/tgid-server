@@ -11,6 +11,7 @@ POST   /api/v1/telemetry/import               — файл выгрузки ОД
 GET    /api/v1/telemetry/alerts               — тревоги: расхождение, молчит, вернулся в норму (open=true — непринятые
                                                 и не закрытые возвратом в норму)
 POST   /api/v1/telemetry/alerts/{id}/ack      — «принято» (право «Журналы»)
+GET    /api/v1/telemetry/calibration          — калибровка: потери напора между соседними датчиками, факт / модель
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """
 from __future__ import annotations
@@ -21,9 +22,11 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, UploadFile
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
+from database import calibration
 from database import telemetry as tm
 from database.connect import acquire_conn
 from routers.api_v2 import api_user
+from routers.piezometer import _get_topology_graph
 
 router = APIRouter(tags=["telemetry"])
 Viewer = Annotated[AuthUser, Depends(require_roles("viewer"))]
@@ -129,6 +132,14 @@ async def telemetry_alert_ack(alert_id: Annotated[int, Path(ge=1)], user: Writer
             return await tm.acknowledge(conn, alert_id, user.username)
     except tm.TelemetryError as exc:
         raise _http(exc) from exc
+
+
+@router.get("/api/v1/telemetry/calibration")
+async def telemetry_calibration(_: Viewer) -> dict[str, Any]:
+    """Пары соседних датчиков давления: потери напора факт против модели, вывод, предлагаемая шероховатость."""
+    async with acquire_conn() as conn:
+        graph = await _get_topology_graph(conn)
+        return await calibration.segments(conn, graph)
 
 
 @router.post("/api/v2/telemetry/readings", dependencies=WRITE, tags=["api-v2"])

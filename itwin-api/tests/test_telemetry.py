@@ -177,3 +177,32 @@ def test_check_alerts_transitions(monkeypatch):
     assert ids == [1, 2, 3]
     assert [(a[0], a[1], a[2]) for a in conn.alerts] == [(1, "bad", "normal"), (2, "silent", "normal"), (3, "normal", "bad")]
     assert [u[:2] for u in conn.updates] == [(1, "bad"), (2, "silent"), (3, "normal"), (4, "bad")]
+
+
+def test_calibration_verdicts_and_roughness():
+    from database import calibration as cal
+
+    assert cal.verdict(1.05)["status"] == "ok" and cal.roughness_factor(1.05) is None
+    assert cal.verdict(1.2)["status"] == "rough" and cal.roughness_factor(1.2) == pytest.approx(2.07)
+    assert cal.verdict(0.8)["status"] == "rough" and cal.roughness_factor(0.8) == pytest.approx(0.41)
+    assert cal.verdict(2.0)["status"] == "local" and cal.roughness_factor(2.0) is None  # не шероховатость
+    assert cal.verdict(0.3)["status"] == "check"
+    # короткий участок: потери модели 3 м, погрешность пары датчиков 0,5 м × √2 → ±24 % — 1,2 ещё не повод
+    unc = cal.uncertainty(3.0, 0.5)
+    assert unc == pytest.approx(0.236, abs=1e-3)
+    assert cal.verdict(1.2, unc)["status"] == "noise" and cal.roughness_factor(1.2, unc) is None
+    assert cal.verdict(1.2, cal.uncertainty(20.0, 0.5))["status"] == "rough"
+
+
+def test_calibration_neighbor_pairs():
+    import networkx as nx
+
+    from database import calibration as cal
+
+    g = nx.Graph()
+    for u, v in [(1, 2), (2, 3), (3, 4), (2, 5)]:
+        g.add_edge(u, v, id=u * 10 + v, weight=100)
+    pts = [{"node_id": n, "pipe": "supply"} for n in (1, 3, 4, 5)] + [{"node_id": 1, "pipe": "return"}]
+    pairs = {(a["node_id"], b["node_id"]) for a, b, _ in cal.neighbor_pairs(g, pts)}
+    # 1–3, 3–4, 1–5, 3–5 соседи; 1–4 нет: путь идёт через датчик в узле 3; обратка с одним датчиком — без пар
+    assert pairs == {(1, 3), (1, 5), (3, 4), (3, 5)}
