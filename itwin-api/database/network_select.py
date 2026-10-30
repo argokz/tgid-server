@@ -18,6 +18,7 @@ from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
+from database import poi
 from database.net_srid import line_inner_sql, net_srid
 from database.ogc_features import GC_LOAD, RC_LOAD
 from database.thematic import THEMES, source_run
@@ -130,11 +131,18 @@ class Near(BaseModel):
     meters: float = Field(..., gt=0, le=MAX_NEAR_M)
 
 
+class NearPoi(BaseModel):
+    """«В N м от социальных объектов» (database/poi.py): категории (пусто — все) и расстояние."""
+    categories: list[str] = Field(default_factory=list, max_length=10)
+    meters: float = Field(..., gt=0, le=MAX_NEAR_M)
+
+
 class SelectSpec(BaseModel):
     target: Literal["lines", "nodes"] = "lines"
     conditions: list[Condition] = Field(default_factory=list, max_length=MAX_CONDITIONS)
     match: Literal["all", "any"] = "all"
     near: Optional[Near] = None
+    near_poi: Optional[NearPoi] = None
     in_view: bool = False
     fragment_ids: Optional[list[Annotated[int, Field(ge=0, le=INT32_MAX)]]] = Field(None, max_length=MAX_FRAGMENTS)
     order_by: Optional[str] = Field(None, max_length=40)
@@ -163,7 +171,12 @@ async def fields_payload(conn) -> dict[str, Any]:
             "key": f.key, "label": f.label, "kind": f.kind, "units": f.units, "source": f.source,
             "hint": f.hint, "ops": list(OPS_BY_KIND[f.kind]), "choices": await _choices(conn, f),
         } for f in fields.values()]})
-    return {"targets": targets, "op_labels": OP_LABELS, "max_limit": MAX_LIMIT, "max_near_m": MAX_NEAR_M}
+    poi_counts: dict[str, int] = {}
+    if await conn.fetchval("SELECT to_regclass('public.tgid_poi') IS NOT NULL"):
+        poi_counts = {r["category"]: r["n"] for r in await conn.fetch(
+            "SELECT category, count(*) AS n FROM tgid_poi WHERE NOT hidden GROUP BY category")}
+    return {"targets": targets, "op_labels": OP_LABELS, "max_limit": MAX_LIMIT, "max_near_m": MAX_NEAR_M,
+            "poi_categories": [{"value": k, "label": v, "count": poi_counts.get(k, 0)} for k, v in poi.CATEGORIES.items()]}
 
 
 # --- проверка и описание --------------------------------------------------------------------
@@ -238,7 +251,14 @@ def validate(spec: SelectSpec) -> SelectSpec:
     if near and near.node_id is None and not (near.node_name or "").strip() and (near.lon is None or near.lat is None):
         raise SelectError(422, "«Рядом с»: укажите узел (имя или id) или точку")
     fragments = sorted({int(f) for f in spec.fragment_ids}) if spec.fragment_ids else None
-    return spec.model_copy(update={"conditions": conditions, "order_by": order_by, "fragment_ids": fragments})
+    near_poi = spec.near_poi
+    if near_poi:
+        try:
+            near_poi = near_poi.model_copy(update={"categories": poi.check_categories(near_poi.categories)})
+        except poi.PoiError as exc:
+            raise SelectError(exc.status, exc.message) from exc
+    return spec.model_copy(update={"conditions": conditions, "order_by": order_by, "fragment_ids": fragments,
+                                   "near_poi": near_poi})
 
 
 def _fmt(v: Any) -> str:
@@ -271,6 +291,8 @@ def describe(spec: SelectSpec, choices: dict[str, dict[Any, str]], *, near_label
     extra = []
     if spec.near:
         extra.append(f"в {_fmt(spec.near.meters)} м от {near_label or 'точки'}")
+    if spec.near_poi:
+        extra.append(f"в {_fmt(spec.near_poi.meters)} м от {poi.categories_label(spec.near_poi.categories)}")
     if spec.in_view:
         extra.append("в видимой области карты")
     if spec.fragment_ids:
@@ -365,6 +387,24 @@ def _spatial_sql(geom: str, p: _Params, near_center: Optional[tuple[float, float
     return indexed, exact, distance
 
 
+def _poi_sql(spec: SelectSpec, p: _Params, table: str, id_col: str) -> list[str]:
+    """Условие «в N м от социальных объектов» (database/poi.near_poi_sql)."""
+    if not spec.near_poi:
+        return []
+    return [poi.near_poi_sql(table, id_col, p.add(spec.near_poi.categories), p.add(spec.near_poi.meters), net_srid())]
+
+
+async def _check_poi(conn, spec: SelectSpec) -> None:
+    if not spec.near_poi:
+        return
+    found = await conn.fetchval("SELECT to_regclass('public.tgid_poi') IS NOT NULL")
+    n = await conn.fetchval("SELECT count(*) FROM tgid_poi WHERE NOT hidden AND category = ANY($1::text[])",
+                            spec.near_poi.categories) if found else 0
+    if not n:
+        raise SelectError(404, f"Нет {poi.categories_label(spec.near_poi.categories)} на карте — загрузите их в окне "
+                               "«Социальные объекты»")
+
+
 def _order_sql(spec: SelectSpec, fields: dict[str, Field_], distance: str, id_col: str) -> str:
     if spec.order_by == "distance" or (spec.near and not spec.order_by):
         return f"{distance} ASC, {id_col}"
@@ -438,7 +478,7 @@ async def _lines_sql(conn, spec: SelectSpec, p: _Params, near_center, bbox, with
       SELECT DISTINCT ON (l.id) l.id AS lid, h.id AS hid
         FROM linesobj l LEFT JOIN heatpipesections h ON h.lineid = l.id
        WHERE l.removed = 0 AND l.shape IS NOT NULL AND {line_inner_sql("l")} IS NULL
-         AND ({frag}::int[] IS NULL OR l.fileid = ANY({frag}::int[])){"".join(f" AND {s}" for s in indexed)}
+         AND ({frag}::int[] IS NULL OR l.fileid = ANY({frag}::int[])){"".join(f" AND {s}" for s in indexed)}{"".join(f" AND {s}" for s in _poi_sql(spec, p, "linesobj", "l.id"))}
        ORDER BY l.id, h.pipesectlength DESC NULLS LAST, h.id DESC)""")
     values, ref_joins = _columns_sql(used)
     where = _where_sql(spec, fields, p, exact)
@@ -468,7 +508,8 @@ async def _nodes_sql(conn, spec: SelectSpec, p: _Params, near_center, bbox, with
     frag = p.add(spec.fragment_ids)
     indexed, exact, distance = _spatial_sql("n.shape", p, near_center, spec.near.meters if spec.near else 0, bbox)
     base = ["n.removed = 0", "n.internalnodeid IS NULL", "n.shape IS NOT NULL",
-            f"({frag}::int[] IS NULL OR n.fileid = ANY({frag}::int[]))", *indexed, *exact]
+            f"({frag}::int[] IS NULL OR n.fileid = ANY({frag}::int[]))", *indexed, *exact,
+            *_poi_sql(spec, p, "nodes", "n.id")]
     values, ref_joins = _columns_sql(used)
     where = _where_sql(spec, fields, p, base)
     geometry = f"ST_AsGeoJSON(ST_Transform(n.shape, 4326), {COORD_DIGITS})" if with_geometry else "NULL"
@@ -544,6 +585,7 @@ async def _run(conn, spec: SelectSpec, bbox, with_geometry: bool) -> dict[str, A
         if f.kind == "category" and f.key not in choices:
             choices[f.key] = {x["value"]: x["label"] for x in await _choices(conn, f)}
 
+    await _check_poi(conn, spec)
     p = _Params()
     build = _lines_sql if spec.target == "lines" else _nodes_sql
     sql, used = await build(conn, spec, p, near_center, bbox, with_geometry)

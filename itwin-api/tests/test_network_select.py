@@ -46,6 +46,8 @@ class _Conn:
     async def fetch(self, sql, *args):
         if sql.startswith("SELECT id, ") and "ORDER BY id" in sql:
             return self.refs
+        if "FROM tgid_poi" in sql:  # счётчики социальных объектов для справочника полей
+            return []
         self.sql.append((sql, args))
         return self.rows
 

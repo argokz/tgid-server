@@ -17,6 +17,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from database import poi
 from database.outage_simulation import simulate_outage_isolation
 
 KINDS: dict[str, str] = {"planned": "Плановое", "emergency": "Аварийное"}
@@ -213,6 +214,8 @@ async def get_outage(conn, outage_id: int) -> dict[str, Any]:
     out["events"] = [{**{k: _iso(v) for k, v in dict(e).items()},
                       "to_label": STATUSES.get(e["to_status"]) if e["to_status"] else None} for e in events]
     out["conflicts"] = await conflicts(conn, out)
+    # школы, больницы и другие социальные объекты в зоне — первыми в уведомлениях (database/poi.py)
+    out["social"] = await poi.in_area(conn, out.get("area"))
     return out
 
 

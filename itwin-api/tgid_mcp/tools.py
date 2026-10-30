@@ -394,7 +394,8 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
          "фрагмент и координаты WGS 84.", SearchParams, _search),
     Tool("select_network", "Выборка объектов по условиям",
          "Участки или узлы по условиям на поля (числа: lt, le, gt, ge, eq, ne, between, is_null, not_null; "
-         "справочники: in, not_in по кодам; текст: contains, eq), «в meters м от узла» (near), фрагменты, "
+         "справочники: in, not_in по кодам; текст: contains, eq), «в meters м от узла» (near), «в meters м от социальных объектов» (near_poi: categories из school, "
+         "kindergarten, hospital, clinic, social; пусто — все), фрагменты, "
          "порядок и предел. Возвращает описание запроса, total, суммарную длину участков и строки со значениями "
          "полей. Поля: " + _select_fields() + ". Коды справочников (tubing_type, node_type) — в ошибке или "
          "GET /api/v1/network-select/fields.", SelectParams, _select),
