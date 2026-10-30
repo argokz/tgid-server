@@ -5,6 +5,7 @@ GET    /api/v1/work-orders                  — список (status, brigade_id
 GET    /api/v1/work-orders/geojson          — открытые наряды точками для карты
 GET    /api/v1/work-orders/{id}             — наряд с историей
 POST   /api/v1/work-orders                  — создать (по дефекту — участок, точка и описание из него)
+POST   /api/v1/work-orders/field-defect     — дефект с обхода: запись в журнал дефектов и заявка по нему
 PATCH  /api/v1/work-orders/{id}             — изменить (revision; закрытые и отменённые — нет)
 POST   /api/v1/work-orders/{id}/transition  — сменить статус (дефект: «Ремонт» / «После ремонта»)
 POST   /api/v1/work-orders/{id}/comments    — комментарий в историю
@@ -21,9 +22,11 @@ from datetime import datetime
 from typing import Annotated, Optional
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Response, UploadFile
 from pydantic import ValidationError
 
+from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
 from database import work_orders as wo
 from database.connect import acquire_conn
@@ -84,6 +87,31 @@ async def work_order_create(body: wo.WorkOrderIn, user: Writer):
     try:
         async with acquire_conn() as conn:
             return await wo.create(conn, body, user.username)
+    except wo.WorkOrderError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/api/v1/work-orders/field-defect", dependencies=WRITE)
+async def work_order_field_defect(body: wo.FieldDefectIn, user: Writer):
+    """«Дефект одной кнопкой» с обхода: дефект в журнал десктопа и заявка на ремонт по нему."""
+    try:
+        async with acquire_conn() as conn:
+            try:
+                async with conn.transaction():
+                    order, created = await wo.report_defect(conn, body, user.username)
+                    if created:
+                        await write_audit_log(
+                            changed_by=user.username, operation="INSERT", table_name="defect",
+                            record_id=order["defect_id"], conn=conn,
+                            new_data={"description": body.description.strip(), "line_id": order["line_id"],
+                                      "lon": body.lon, "lat": body.lat, "work_order": order["number"],
+                                      "source": "field"})
+            except asyncpg.UniqueViolationError:
+                # та же отправка пришла дважды одновременно: вторая упёрлась в ключ первой
+                order = await wo.order_of_action(conn, body.client_id)
+                if order is None:
+                    raise
+            return order
     except wo.WorkOrderError as exc:
         raise _http(exc) from exc
 

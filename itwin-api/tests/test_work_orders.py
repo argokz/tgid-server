@@ -299,3 +299,148 @@ def test_photo_endpoints(monkeypatch):
     assert bad.status_code == 422
     r = client.get("/api/v1/work-orders/photos/1")
     assert r.content == JPEG and r.headers["content-type"] == "image/jpeg" and "private" in r.headers["cache-control"]
+
+
+# --- дефект с места -------------------------------------------------------------------------
+
+class DefectConn(FakeConn):
+    """Плюс ключ действия у события создания и выборка ближайших участков."""
+
+    def __init__(self, known_order=None, near=(), **kw):
+        super().__init__(**kw)
+        self.known_order = known_order
+        self.near = list(near)
+
+    async def fetchval(self, sql, *args):
+        if "SELECT order_id FROM tgid_work_order_event" in sql:
+            return self.known_order
+        return await super().fetchval(sql, *args)
+
+    async def fetch(self, sql, *args):
+        self.executed.append((sql, args))
+        return self.near
+
+
+def _defect(**kw):
+    base = {"lon": 76.95, "lat": 43.25, "description": "Парит из-под люка\nу дома 5", "client_id": KEY}
+    base.update(kw)
+    return wo.FieldDefectIn(**base)
+
+
+@pytest.fixture
+def defect_calls(monkeypatch, stub_get):
+    calls: dict = {}
+
+    async def fake_record(conn, spec, fields, *, longitude, latitude):
+        calls["record"] = (spec.key, fields, longitude, latitude)
+        return {"id": 4901}
+
+    async def fake_create(conn, body, user, stamp=None):
+        calls["order"] = (body, stamp)
+        return _order(defect_id=body.defect_id, line_id=body.line_id)
+
+    async def fake_nearest(conn, lon, lat, meters=wo.FIELD_DEFECT_SNAP_M):
+        calls["nearest"] = (lon, lat)
+        return 501
+
+    monkeypatch.setattr(wo, "create_record", fake_record)
+    monkeypatch.setattr(wo, "create", fake_create)
+    monkeypatch.setattr(wo, "nearest_line", fake_nearest)
+    return calls
+
+
+def test_field_defect_goes_to_journal_and_becomes_request(defect_calls):
+    order, created = asyncio.run(wo.report_defect(
+        DefectConn(), _defect(source_id=6, priority=1, found_at="2026-10-30T04:15:00Z"), "brig"))
+    key, fields, lon, lat = defect_calls["record"]
+    assert key == "defects" and (lon, lat) == (76.95, 43.25)
+    assert fields["state_id"] == wo.DEFECT_STATE_FOUND and fields["line_id"] == 501 and fields["source_id"] == 6
+    assert "category_id" not in fields and fields["description"].startswith("Парит")
+    found = datetime(2026, 10, 30, 4, 15, tzinfo=timezone.utc).astimezone()
+    assert fields["detected_time"] == found.strftime("%H:%M")  # местное время журнала десктопа
+    body, stamp = defect_calls["order"]
+    assert body.defect_id == 4901 and body.priority == 1 and body.kind == "repair" and body.line_id == 501
+    assert body.title == "Дефект: Парит из-под люка" and str(stamp.client_id) == KEY
+    assert created and order["defect_id"] == 4901
+
+
+def test_field_defect_repeat_returns_same_request(defect_calls, stub_get):
+    stub_get["order"] = _order(id=11, defect_id=4901)
+    order, created = asyncio.run(wo.report_defect(DefectConn(known_order=11), _defect(), "brig"))
+    assert not created and order["defect_id"] == 4901 and "record" not in defect_calls
+
+
+def test_field_defect_given_line_is_not_snapped_and_errors_are_readable(defect_calls, monkeypatch):
+    from database.journal_write import JournalWriteError
+
+    asyncio.run(wo.report_defect(DefectConn(), _defect(line_id=77), "brig"))
+    assert "nearest" not in defect_calls and defect_calls["record"][1]["line_id"] == 77
+    with pytest.raises(wo.WorkOrderError, match="Опишите"):
+        asyncio.run(wo.report_defect(DefectConn(), _defect(description="   "), "brig"))
+
+    async def broken(*a, **kw):
+        raise JournalWriteError(422, {"message": "Нет такого источника"})
+
+    monkeypatch.setattr(wo, "create_record", broken)
+    with pytest.raises(wo.WorkOrderError, match="Дефект не записан: Нет такого источника"):
+        asyncio.run(wo.report_defect(DefectConn(), _defect(source_id=99), "brig"))
+    with pytest.raises(ValueError):
+        wo.FieldDefectIn(description="x")  # без точки — нельзя
+
+
+def test_nearest_line_takes_closest_within_limit():
+    conn = DefectConn(near=[{"id": 1, "m": 12.0}, {"id": 2, "m": 4.5}, {"id": 3, "m": 40.0}])
+    assert asyncio.run(wo.nearest_line(conn, 76.9, 43.2)) == 2
+    sql = conn.executed[-1][0]
+    assert "tgid_scenario" in sql and "removed" in sql  # без копий-сценариев и удалённых
+    assert asyncio.run(wo.nearest_line(DefectConn(near=[{"id": 3, "m": 40.0}]), 76.9, 43.2)) is None
+    assert asyncio.run(wo.nearest_line(DefectConn(), 76.9, 43.2)) is None
+    tie = DefectConn(near=[{"id": 9, "m": 3.3982}, {"id": 4, "m": 3.3981}])  # подача и обратка на одной линии
+    assert asyncio.run(wo.nearest_line(tie, 76.9, 43.2)) == 4
+
+
+def test_field_defect_endpoint_audits_new_defect_only(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    import asyncpg
+    from fastapi.testclient import TestClient
+
+    import main
+    from auth import invalidate_user_status
+    from routers import work_orders as router
+
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setenv("MUTATIONS_ENABLED", "true")
+    invalidate_user_status()
+    audits, state = [], {"created": True, "race": False}
+
+    @asynccontextmanager
+    async def acquire():
+        yield FakeConn()
+
+    async def fake_report(conn, body, user):
+        if state["race"]:
+            raise asyncpg.UniqueViolationError("duplicate key")
+        return _order(defect_id=4901, line_id=501), state["created"]
+
+    async def fake_audit(**kw):
+        audits.append(kw)
+        return "g"
+
+    async def fake_of_action(conn, client_id):
+        return _order(defect_id=4901)
+
+    monkeypatch.setattr(router, "acquire_conn", acquire)
+    monkeypatch.setattr(router, "write_audit_log", fake_audit)
+    monkeypatch.setattr(wo, "report_defect", fake_report)
+    monkeypatch.setattr(wo, "order_of_action", fake_of_action)
+    client = TestClient(main.app)
+    body = {"lon": 76.95, "lat": 43.25, "description": "Парит", "client_id": KEY}
+    r = client.post("/api/v1/work-orders/field-defect", json=body)
+    assert r.status_code == 200 and r.json()["defect_id"] == 4901
+    assert len(audits) == 1 and audits[0]["table_name"] == "defect" and audits[0]["record_id"] == 4901
+    state["created"] = False
+    assert client.post("/api/v1/work-orders/field-defect", json=body).status_code == 200 and len(audits) == 1
+    state["race"] = True
+    assert client.post("/api/v1/work-orders/field-defect", json=body).json()["defect_id"] == 4901
+    assert client.post("/api/v1/work-orders/field-defect", json={"lon": 76.9, "description": "x"}).status_code == 422

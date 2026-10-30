@@ -16,6 +16,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from database.journal_specs import DEFECTS
+from database.journal_write import JournalWriteError, create_record
+from database.net_srid import line_inner_sql, net_srid
+
 KINDS: dict[str, str] = {
     "repair": "Ремонт", "inspection": "Осмотр", "pressure_test": "Опрессовка", "excavation": "Шурфовка",
     "maintenance": "Обслуживание", "other": "Прочее",
@@ -36,8 +40,12 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 }
 FINAL = frozenset({"closed", "cancelled"})
 OPEN = ("new", "assigned", "in_progress")
+DEFECT_STATE_FOUND = 1       # statedefect «Нарушение» — дефект только записан
 DEFECT_STATE_REPAIR = 2      # statedefect «Ремонт»
 DEFECT_STATE_AFTER = 3       # statedefect «После ремонта»
+# дефект с места: участок под ним — ближайший к точке телефона не дальше этого (GPS телефона — 5–20 м)
+FIELD_DEFECT_SNAP_M = 30.0
+_SNAP_CANDIDATES = 5
 MAX_LIST = 1000
 # фото с места работ: уменьшаются на телефоне; в базе — до 2 МБ на фото и 30 фото на наряд
 MAX_PHOTO_BYTES = 2_000_000
@@ -100,6 +108,18 @@ class TransitionIn(FieldStamp):
 
 class CommentIn(FieldStamp):
     note: str = Field(..., min_length=1, max_length=2000)
+
+
+class FieldDefectIn(FieldStamp):
+    """«Дефект одной кнопкой» с обхода: точка телефона, что увидели — запись в журнал дефектов и заявка."""
+    lon: float = Field(..., ge=-180, le=180)
+    lat: float = Field(..., ge=-90, le=90)
+    description: str = Field(..., min_length=1, max_length=2000)
+    line_id: Optional[int] = Field(None, ge=1, description="Участок; нет — ближайший к точке (до 30 м)")
+    source_id: Optional[int] = Field(None, ge=1, description="Источник (defecttypes), обычно «Осмотр»")
+    category_id: Optional[int] = Field(None, ge=1, description="Категория (remontcat)")
+    priority: int = Field(2, ge=1, le=3)
+    found_at: Optional[datetime] = Field(None, description="Когда нашли (действие могло ждать связи)")
 
 
 # --- чтение ---------------------------------------------------------------------------------
@@ -278,7 +298,7 @@ async def _already_done(conn, stamp: Optional[FieldStamp]) -> bool:
 
 # --- запись ---------------------------------------------------------------------------------
 
-async def create(conn, body: WorkOrderIn, user: str) -> dict[str, Any]:
+async def create(conn, body: WorkOrderIn, user: str, stamp: Optional[FieldStamp] = None) -> dict[str, Any]:
     if body.planned_start and body.planned_finish and _aware(body.planned_finish) < _aware(body.planned_start):
         raise WorkOrderError(422, "Плановое окончание раньше начала")
     await _check_people(conn, body.brigade_id, body.responsible_id)
@@ -314,8 +334,71 @@ async def create(conn, body: WorkOrderIn, user: str) -> dict[str, Any]:
             "UPDATE tgid_work_order SET number = 'Н-' || to_char(created_at, 'YYYY') || '-' || lpad(id::text, 5, '0') "
             "WHERE id = $1", order_id)
         await _event(conn, order_id, user, "Создан" + (f" по дефекту №{body.defect_id}" if body.defect_id else ""),
-                     None, status)
+                     None, status, stamp)
     return await get_order(conn, order_id)
+
+
+# --- дефект с места -------------------------------------------------------------------------
+
+async def nearest_line(conn, lon: float, lat: float, meters: float = FIELD_DEFECT_SNAP_M) -> Optional[int]:
+    """Участок основной сети ближе всего к точке, не дальше meters; без участков внутренних схем узлов
+    и копий-сценариев (у них та же геометрия, что у основы)."""
+    rows = await conn.fetch(
+        f"""WITH p AS (SELECT ST_SetSRID(ST_MakePoint($1, $2), 4326) AS g)
+            SELECT l.id, ST_Distance(ST_Transform(l.shape, 4326)::geography, p.g::geography) AS m
+              FROM linesobj l, p
+             WHERE COALESCE(l.removed, 0) = 0 AND l.shape IS NOT NULL AND {line_inner_sql('l')} IS NULL
+               AND NOT EXISTS (SELECT 1 FROM tgid_scenario s WHERE s.fileid = l.fileid)
+             ORDER BY l.shape <-> ST_Transform(p.g, {net_srid()})
+             LIMIT {_SNAP_CANDIDATES}""", lon, lat)
+    # пары подачи и обратки и копии лежат на одной линии — при равном расстоянии меньший номер, без случайности
+    best = min(rows, key=lambda r: (round(r["m"], 2), r["id"]), default=None)
+    return best["id"] if best is not None and best["m"] <= meters else None
+
+
+def _local(dt: Optional[datetime]) -> datetime:
+    """Время журнала дефектов десктопа — местное, без пояса."""
+    moment = _aware(dt) if dt else datetime.now(timezone.utc)
+    return moment.astimezone().replace(tzinfo=None, microsecond=0)
+
+
+async def order_of_action(conn, client_id: Optional[UUID]) -> Optional[dict[str, Any]]:
+    """Наряд, в истории которого уже есть действие с этим ключом (повтор отправки из очереди)."""
+    if client_id is None:
+        return None
+    order_id = await conn.fetchval("SELECT order_id FROM tgid_work_order_event WHERE client_id = $1", client_id)
+    return await get_order(conn, order_id) if order_id is not None else None
+
+
+async def report_defect(conn, body: FieldDefectIn, user: str) -> tuple[dict[str, Any], bool]:
+    """Дефект с обхода: строка журнала дефектов десктопа (состояние «Нарушение», точка телефона, участок
+    под ней) и заявка на ремонт по нему. Ключ действия — у события создания заявки: повтор из очереди
+    телефона возвращает ту же заявку (второе значение — False), второй дефект не пишется.
+    Вызывать в транзакции: дефект без заявки не остаётся."""
+    existing = await order_of_action(conn, body.client_id)
+    if existing is not None:
+        return existing, False
+    text = body.description.strip()
+    if not text:
+        raise WorkOrderError(422, "Опишите, что нашли")
+    line_id = body.line_id or await nearest_line(conn, body.lon, body.lat)
+    found = _local(body.found_at)
+    fields: dict[str, Any] = {
+        "detected_at": found.isoformat(), "detected_time": found.strftime("%H:%M"),
+        "description": text, "state_id": DEFECT_STATE_FOUND,
+    }
+    for key, value in (("line_id", line_id), ("source_id", body.source_id), ("category_id", body.category_id)):
+        if value is not None:
+            fields[key] = value
+    try:
+        created = await create_record(conn, DEFECTS, fields, longitude=body.lon, latitude=body.lat)
+    except JournalWriteError as exc:
+        detail = exc.detail.get("message", str(exc.detail)) if isinstance(exc.detail, dict) else str(exc.detail)
+        raise WorkOrderError(exc.status, f"Дефект не записан: {detail}") from exc
+    title = f"Дефект: {text.splitlines()[0][:120]}"
+    order = WorkOrderIn(title=title, kind="repair", priority=body.priority, defect_id=created["id"],
+                        line_id=line_id, lon=body.lon, lat=body.lat, description=text)
+    return await create(conn, order, user, body), True
 
 
 _FIELD_LABELS = {"title": "название", "kind": "вид", "priority": "срочность", "brigade_id": "бригада",
