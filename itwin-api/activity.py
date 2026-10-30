@@ -83,7 +83,8 @@ _DRY_RUN = re.compile(rb'"dry_run"\s*:\s*true')
 _DRY_RUN_QS = re.compile(r"(^|&)dry_run=(true|1)(&|$)", re.IGNORECASE)
 BODY_PEEK = 65536
 # Не писать: вход (пишется явно, с логином), проверки GeoServer и служебное
-_SKIP = re.compile(r"^/(api/v1/)?auth/(login|check|config|me)|^/health|^/docs|^/openapi")
+# и живая карта (присутствие раз в 20 с от каждой вкладки, поток событий)
+_SKIP = re.compile(r"^/(api/v1/)?auth/(login|check|config|me)|^/health|^/docs|^/openapi|^/api/v1/live/")
 _PREFIX = re.compile(r"^/tgid/[a-z0-9_-]+/map-api")
 
 

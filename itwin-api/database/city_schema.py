@@ -125,6 +125,9 @@ COMMON: tuple[Item, ...] = (
     Item("вебхуки и лента событий tgid_webhook",
          "select to_regclass('public.tgid_webhook_delivery') is not null",
          (_m("20261030_webhooks.sql"),)),
+    Item("присутствие на карте tgid_live_presence",
+         "select to_regclass('public.tgid_live_presence') is not null",
+         (_m("20261031_live_presence.sql"),)),
     Item("пространственные индексы зданий",
          "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
          " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"
