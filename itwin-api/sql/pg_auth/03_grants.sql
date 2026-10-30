@@ -108,6 +108,11 @@ BEGIN
     PERFORM pg_temp.grant_on('INSERT, UPDATE, DELETE, TRUNCATE', calc, ARRAY['tgid_calculator', 'tgid_worker']);
 END $$;
 
+-- ── Комментарии на карте (database/map_comments.py): пишет любой вошедший ─────────────────
+
+SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY['tgid_map_thread', 'tgid_map_comment', 'tgid_map_comment_seen'],
+                        ARRAY['tgid_viewer']);
+
 -- ── Журналы, ТУ, АЛСЕКО, электросеть, пьезометр, температурные графики, справочники: editor ─
 
 SELECT pg_temp.grant_on('INSERT, UPDATE, DELETE', ARRAY[

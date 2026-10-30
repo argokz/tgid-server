@@ -42,6 +42,7 @@ from routers.static_tiles import router as static_tiles_router
 from routers.ogc_processes import router as ogc_processes_router
 from routers.work_orders import router as work_orders_router
 from routers.field_track import router as field_track_router
+from routers.map_comments import router as map_comments_router
 from routers.outages import router as outages_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
@@ -77,6 +78,7 @@ all_routers = [
     ogc_processes_router,
     work_orders_router,
     field_track_router,
+    map_comments_router,
     outages_router,
     file_jobs_router,
     reports_router,
