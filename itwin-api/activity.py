@@ -205,7 +205,8 @@ def _username(scope) -> Optional[str]:
     try:
         from auth import decode_access_token
 
-        return decode_access_token(auth[7:].strip()).username
+        # ключи с назначением (API v2, MCP, ArcGIS) — тоже автор действия
+        return decode_access_token(auth[7:].strip(), allow_scopes=("api", "mcp", "arcgis")).username
     except Exception:  # noqa: BLE001 — неверный токен: запрос и так получит 401
         return None
 

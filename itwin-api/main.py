@@ -69,6 +69,24 @@ def _start_db_upkeep() -> list[asyncio.Task]:
     return tasks
 
 
+def _start_webhooks() -> list[asyncio.Task]:
+    """События для внешних систем и доставка вебхуков (database/webhooks.py) — фоновая задача на каждый город."""
+    from cities import city_databases, current_city, multi_city, use_city
+    from database.webhooks import poll_interval_s, webhook_loop
+
+    interval = poll_interval_s()
+    if not interval:
+        logger.info("События и вебхуки выключены (WEBHOOK_POLL_S=0)")
+        return []
+    if not multi_city():
+        return [asyncio.create_task(webhook_loop(current_city(), interval))]
+    tasks = []
+    for code in city_databases():
+        with use_city(code):  # задача копирует контекст при создании
+            tasks.append(asyncio.create_task(webhook_loop(code, interval)))
+    return tasks
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Старт приложения...")
@@ -92,8 +110,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Ошибка при инициализации русских названий: {str(e)}")
 
+    webhooks = _start_webhooks()
     yield
-    for task in upkeep:
+    for task in upkeep + webhooks:
         task.cancel()
     logger.info("Завершение приложения...")
     await close_users_db_pool()
@@ -136,9 +155,9 @@ class AuthRequiredGetMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if path in {"/api/v1/auth/login", "/auth/login"} or path.startswith("/auth/login"):
             return await call_next(request)
-        if path == "/mcp" or path.startswith("/api/arcgis/"):
-            # MCP и FeatureServer проверяют вход сами: принимают ключи с назначением (scope mcp / arcgis),
-            # а ArcGIS-клиенты передают ключ параметром token, а не заголовком
+        if path == "/mcp" or path.startswith("/api/arcgis/") or path == "/api/v2" or path.startswith("/api/v2/"):
+            # MCP, FeatureServer и API v2 проверяют вход сами: принимают ключи с назначением (scope mcp / arcgis /
+            # api), а ArcGIS-клиенты передают ключ параметром token, а не заголовком
             return await call_next(request)
         # Закрыто всё, кроме списка выше: карточки /node и /line, /lookup, /task, /run-sety-cmd
         # и правки без /api/ тоже отдают данные сети

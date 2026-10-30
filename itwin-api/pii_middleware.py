@@ -35,7 +35,8 @@ async def _user(scope) -> Optional[object]:
     if not token:
         return None
     try:
-        return await apply_live_user_status(decode_access_token(token))
+        # ключ API v2 (scope api) — права его пользователя; вход по нему проверяет сам маршрут /api/v2
+        return await apply_live_user_status(decode_access_token(token, allow_scopes=("api",)))
     except Exception:  # noqa: BLE001 — неверный или закрытый токен: как аноним (маскировать)
         return None
 

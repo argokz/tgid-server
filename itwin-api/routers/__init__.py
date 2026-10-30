@@ -48,6 +48,8 @@ from routers.arcgis import router as arcgis_router
 from routers.embed import router as embed_router
 from routers.poi import router as poi_router
 from routers.outages import router as outages_router
+from routers.webhooks import router as webhooks_router
+from routers.api_v2 import key_router as api_key_router, router as api_v2_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
 
@@ -88,6 +90,9 @@ all_routers = [
     embed_router,
     poi_router,
     outages_router,
+    webhooks_router,
+    api_key_router,
+    api_v2_router,
     file_jobs_router,
     reports_router,
     exports_p4_router,
