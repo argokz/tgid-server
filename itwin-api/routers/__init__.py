@@ -45,6 +45,7 @@ from routers.field_track import router as field_track_router
 from routers.map_comments import router as map_comments_router
 from routers.kpi import router as kpi_router
 from routers.arcgis import router as arcgis_router
+from routers.embed import router as embed_router
 from routers.outages import router as outages_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
@@ -83,6 +84,7 @@ all_routers = [
     map_comments_router,
     kpi_router,
     arcgis_router,
+    embed_router,
     outages_router,
     file_jobs_router,
     reports_router,

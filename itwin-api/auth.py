@@ -623,4 +623,7 @@ PUBLIC_GET_PREFIXES: tuple[str, ...] = (
     "/metrics",
     # публичная карта отключений: сама закрыта, пока PUBLIC_OUTAGES_ENABLED не включён (routers/outages.py)
     "/api/v1/public/outages",
+    # встраиваемая карта: без входа, по ключу встраивания (routers/embed.py проверяет его сам)
+    "/api/v1/embed/config",
+    "/api/v1/embed/tiles",
 )
