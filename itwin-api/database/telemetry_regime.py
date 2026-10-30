@@ -187,12 +187,30 @@ async def _tn_range(conn) -> tuple[Optional[float], Optional[float]]:
             float(row["t_vnew"]) if row["t_vnew"] is not None else None)
 
 
+async def _tn_now(conn, t_or: Optional[float], t_vnew: Optional[float]) -> Optional[float]:
+    """Температура воздуха текущего часа (database/weather.py), округлённая и зажатая в диапазон графика."""
+    from database import weather
+
+    if not await conn.fetchval("SELECT to_regclass('public.tgid_weather') IS NOT NULL"):
+        return None
+    now = weather.hour_utc(datetime.now(timezone.utc))
+    rows = await weather.hourly(conn, now, now + timedelta(hours=1))
+    if not rows:
+        return None
+    tn = float(round(rows[0]["t_air"]))
+    if t_or is not None:
+        tn = max(tn, t_or)
+    if t_vnew is not None:
+        tn = min(tn, t_vnew)
+    return tn
+
+
 async def prepare(conn, fileid: int, *, tn: Optional[float], mode: Literal["plan", "emergency"],
                   user: str) -> dict[str, Any]:
     """Строка параметров sety для расчёта фрагмента по факту; TelemetryError — нечего подавать или Tн вне графика.
 
-    Tн по умолчанию — последнего расчёта фрагмента (иначе расчётная t_or): режим источника меняется по факту,
-    а нагрузки — по той же наружной температуре, что и в расчёте, с которым идёт сравнение.
+    Tн по умолчанию — температура воздуха текущего часа (tgid_weather: факт, иначе прогноз) в пределах графика
+    [t_or; t_vnew], без погоды — Tн последнего расчёта фрагмента (иначе расчётная t_or).
     """
     from sety_modes import SetyRunRequest, args_to_params, build_sety_args, tn_range_error
     from worker import validate_sety_params
@@ -206,12 +224,16 @@ async def prepare(conn, fileid: int, *, tn: Optional[float], mode: Literal["plan
         raise TelemetryError(409, f"Нет годных показаний для расчёта — {problems}")
     t_or, t_vnew = await _tn_range(conn)
     if tn is None:
+        tn = await _tn_now(conn, t_or, t_vnew)
+    if tn is None:
         last_tn = (fragment["calculation"] or {}).get("tn")
         tn = last_tn if last_tn is not None else (t_or if t_or is not None else -25.0)
     error = tn_range_error(tn, t_or, t_vnew, leto=False)
     if error:
         raise TelemetryError(422, error)
-    req = SetyRunRequest(mode=mode, fragment_ids=[fileid], tn=tn,
+    # плановый — с расходами по температурному графику (-tg): при Tн не расчётной «по удельным» оставляет
+    # расходы расчётными и даёт неправдоподобную обратку (на стенде при +6 °C — 18 °C вместо 41 °C по графику)
+    req = SetyRunRequest(mode=mode, fragment_ids=[fileid], tn=tn, tg=mode == "plan",
                          name=f"По факту {datetime.now().astimezone():%d.%m.%Y %H:%M}")
     spec = zn_spec(fragment["nodes"])
     params = args_to_params(build_sety_args(req, user) + ["-zn_fakt", spec])
