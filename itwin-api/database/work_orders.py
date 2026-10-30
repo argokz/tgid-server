@@ -78,6 +78,7 @@ class WorkOrderIn(BaseModel):
     planned_start: Optional[datetime] = None
     planned_finish: Optional[datetime] = None
     description: str = Field("", max_length=5000)
+    form_id: Optional[int] = Field(None, ge=1, description="Форма обхода, которую заполняет бригада")
 
 
 class WorkOrderPatch(BaseModel):
@@ -91,6 +92,7 @@ class WorkOrderPatch(BaseModel):
     planned_finish: Optional[datetime] = None
     description: Optional[str] = Field(None, max_length=5000)
     result: Optional[str] = Field(None, max_length=5000)
+    form_id: Optional[int] = Field(None, ge=0, description="0 — снять форму")
 
 
 class FieldStamp(BaseModel):
@@ -135,7 +137,8 @@ class CheckIn(FieldStamp):
 # --- чтение ---------------------------------------------------------------------------------
 
 _SELECT = """
-    SELECT o.*, b.name AS brigade_name, r.fio AS responsible_name, d.name AS defect_name,
+    SELECT o.*, b.name AS brigade_name, r.fio AS responsible_name, d.name AS defect_name, fm.name AS form_name,
+           fm.current_version AS form_version, fm.scope AS form_scope,
            d.stateid AS defect_state_id,
            (o.planned_finish IS NOT NULL AND o.planned_finish < now() AND o.status IN ('new', 'assigned', 'in_progress'))
                AS overdue
@@ -143,6 +146,7 @@ _SELECT = """
       LEFT JOIN brigades b ON b.id = o.brigade_id
       LEFT JOIN nachalniki_uchastkov r ON r.id = o.responsible_id
       LEFT JOIN defect d ON d.id = o.defect_id
+      LEFT JOIN tgid_form fm ON fm.id = o.form_id
 """
 
 
@@ -305,6 +309,11 @@ async def _check_people(conn, brigade_id: Optional[int], responsible_id: Optiona
         raise WorkOrderError(422, f"Ответственного {responsible_id} нет в справочнике")
 
 
+async def _check_form(conn, form_id: Optional[int]) -> None:
+    if form_id and not await conn.fetchval("SELECT active FROM tgid_form WHERE id = $1", form_id):
+        raise WorkOrderError(422, f"Формы обхода {form_id} нет или она выключена")
+
+
 async def _event(conn, order_id: int, user: str, note: str, from_status: Optional[str] = None,
                  to_status: Optional[str] = None, stamp: Optional[FieldStamp] = None) -> None:
     await conn.execute(
@@ -330,6 +339,7 @@ async def create(conn, body: WorkOrderIn, user: str, stamp: Optional[FieldStamp]
     if body.planned_start and body.planned_finish and _aware(body.planned_finish) < _aware(body.planned_start):
         raise WorkOrderError(422, "Плановое окончание раньше начала")
     await _check_people(conn, body.brigade_id, body.responsible_id)
+    await _check_form(conn, body.form_id)
     line_id, node_id, fileid = body.line_id, body.node_id, None
     lon, lat, description = body.lon, body.lat, body.description
     created_note = f"Создан по дефекту №{body.defect_id}" if body.defect_id else "Создан"
@@ -362,11 +372,12 @@ async def create(conn, body: WorkOrderIn, user: str, stamp: Optional[FieldStamp]
         order_id = await conn.fetchval(
             """INSERT INTO tgid_work_order (title, kind, priority, status, defect_id, line_id, node_id, fileid, lon, lat,
                                             brigade_id, responsible_id, planned_start, planned_finish, description,
-                                            created_by, updated_by, inspection_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16, $17) RETURNING id""",
+                                            created_by, updated_by, inspection_id, form_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16, $17, $18)
+               RETURNING id""",
             body.title.strip(), body.kind, body.priority, status, body.defect_id, line_id, node_id, fileid, lon, lat,
             body.brigade_id, body.responsible_id, body.planned_start, body.planned_finish, description, user,
-            body.inspection_id)
+            body.inspection_id, body.form_id)
         await conn.execute(
             "UPDATE tgid_work_order SET number = 'Н-' || to_char(created_at, 'YYYY') || '-' || lpad(id::text, 5, '0') "
             "WHERE id = $1", order_id)
@@ -467,7 +478,8 @@ async def upsert_check(conn, order_id: int, node_id: int, state: str, user: str,
 
 _FIELD_LABELS = {"title": "название", "kind": "вид", "priority": "срочность", "brigade_id": "бригада",
                  "responsible_id": "ответственный", "planned_start": "плановое начало",
-                 "planned_finish": "плановое окончание", "description": "описание", "result": "результат"}
+                 "planned_finish": "плановое окончание", "description": "описание", "result": "результат",
+                 "form_id": "форма обхода"}
 
 
 async def update(conn, order_id: int, patch: WorkOrderPatch, user: str) -> dict[str, Any]:
@@ -475,10 +487,11 @@ async def update(conn, order_id: int, patch: WorkOrderPatch, user: str) -> dict[
     if current["status"] in FINAL:
         raise WorkOrderError(409, f"Наряд {current['number']} {current['status_label'].lower()} — правка закрыта")
     values = patch.model_dump(exclude_unset=True, exclude={"revision"})
-    for key in ("brigade_id", "responsible_id"):
+    for key in ("brigade_id", "responsible_id", "form_id"):
         if values.get(key) == 0:
             values[key] = None  # 0 — снять
     await _check_people(conn, values.get("brigade_id"), values.get("responsible_id"))
+    await _check_form(conn, values.get("form_id"))
     start = _aware(values.get("planned_start")) or _parse(current["planned_start"])
     finish = _aware(values.get("planned_finish")) or _parse(current["planned_finish"])
     if start and finish and finish < start:

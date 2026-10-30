@@ -75,6 +75,7 @@ _READONLY_POST = re.compile(
     r"|^/api/(v1/)?import/inspect|^/api/v1/calculations/protocols/locate|^/api/v1/file-jobs$"
     r"|^/api/v1/ai/"  # вызовы ИИ пишет ai/usage.py с токенами
     r"|^/api/v1/network-select$"  # выборка по условиям — только чтение
+    r"|^/api/v1/forms/import-xlsform$"  # разбор XLSForm — без записи
     r"|^/api/ogc/processes/(?!heat-hydraulic/)[^/]+/execution$"  # процессы OGC, кроме расчёта, — только чтение
     r"|^/mcp$|^/api/v1/mcp/token$"  # MCP пишет сам: вызовы инструментов (MCP) и выдачу токена (MCP_TOKEN)
 )

@@ -128,6 +128,11 @@ COMMON: tuple[Item, ...] = (
     Item("присутствие на карте tgid_live_presence",
          "select to_regclass('public.tgid_live_presence') is not null",
          (_m("20261031_live_presence.sql"),)),
+    Item("формы обходов tgid_form",
+         "select to_regclass('public.tgid_work_order') is null or (to_regclass('public.tgid_form_submission') is not null"
+         " and exists (select 1 from information_schema.columns where table_schema = 'public'"
+         " and table_name = 'tgid_work_order' and column_name = 'form_id'))",
+         (_m("20261031_forms.sql"),)),
     Item("пространственные индексы зданий",
          "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
          " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"
