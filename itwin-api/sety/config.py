@@ -48,6 +48,7 @@ def get_args_json(args):
         "is_dop",
         "is_fakt",
         "is_no_out",
+        "zn_fakt",  # вставлено Claude, 2026-10-30
 
 
         "Month",
@@ -151,6 +152,26 @@ FILE = 1
 
 #------------------------------------------------------
 
+# вставлено Claude, 2026-10-30: режим источника по телеметрии (расчёт по фактическому режиму).
+# "узел:напор подачи:напор обратки:температура подачи;…" - напоры над отметкой, м; пустое значение - из базы.
+def parse_zn_fakt(value):
+    out = {}
+    for item in value.split(';'):
+        if not item:
+            continue
+        parts = item.split(':')
+        if len(parts) != 4:
+            raise argparse.ArgumentTypeError(f'-zn_fakt: ожидается узел:pP:pO:t1, получено «{item}»')
+        try:
+            node = int(parts[0])
+            pP, pO, t1 = (float(v) if v else None for v in parts[1:])
+        except ValueError:
+            raise argparse.ArgumentTypeError(f'-zn_fakt: не число в «{item}»') from None
+        out[node] = (pP, pO, t1)
+    return out
+
+#------------------------------------------------------
+
 # [Claude 2026-10-18] Разбирает аргументы командной строки, сохраняет их в глобальной config.args и возвращает их.
 def init():
 
@@ -213,6 +234,9 @@ def init():
     parser.add_argument('-save_uf_new', action='store_true', default=False, dest='is_save_uf_new', help=argparse.SUPPRESS)
     parser.add_argument('-is_dop', action='store_true', default=False, dest='is_dop', help=argparse.SUPPRESS)
     parser.add_argument('-fakt', action='store_true', default=False, dest='is_fakt', help=argparse.SUPPRESS)
+    # вставлено Claude, 2026-10-30: напоры и температура узлов заданного напора по телеметрии
+    parser.add_argument('-zn_fakt', required=False, type=parse_zn_fakt, default={}, dest='zn_fakt',
+                        help='Режим по телеметрии: узел:напор подачи:напор обратки:температура подачи;…')
     parser.add_argument('-no_out', action='store_true', default=False, dest='is_no_out', help=argparse.SUPPRESS)
 
     parser.add_argument('-plan', action='store_true', default=False, dest='is_plan', help=argparse.SUPPRESS)

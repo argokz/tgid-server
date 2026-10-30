@@ -266,6 +266,15 @@ WHERE n.fileID IN ({s_fileID}) and n.removed=0'''
             if pP is None: pP = 0
             if pO is None: pO = 0
 
+            # вставлено Claude, 2026-10-30: расчёт по фактическому режиму - напоры и температура подачи
+            # узла заданного напора из телеметрии (-zn_fakt) вместо заданных в базе
+            fakt = config.args.zn_fakt.get(id) if config.args.zn_fakt else None
+            if fakt:
+                pP_f, pO_f, t1_f = fakt
+                if pP_f is not None: pP = pP_f
+                if pO_f is not None: pO = pO_f
+                if t1_f is not None: tP_m = t1_f
+
 
             '''
             #--- Это для проверки

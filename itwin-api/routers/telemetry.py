@@ -12,18 +12,24 @@ GET    /api/v1/telemetry/alerts               — тревоги: расхожд
                                                 и не закрытые возвратом в норму)
 POST   /api/v1/telemetry/alerts/{id}/ack      — «принято» (право «Журналы»)
 GET    /api/v1/telemetry/calibration          — калибровка: потери напора между соседними датчиками, факт / модель
+GET    /api/v1/telemetry/regime               — режим источников: граничные условия последнего расчёта против факта
+POST   /api/v1/telemetry/regime/run           — расчёт фрагмента по фактическому режиму (право «Расчёт»)
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, UploadFile
+from pydantic import BaseModel, Field
+
+from audit import write_audit_log
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
 from database import calibration
 from database import telemetry as tm
+from database import telemetry_regime as regime
 from database.connect import acquire_conn
 from routers.api_v2 import api_user
 from routers.piezometer import _get_topology_graph
@@ -32,6 +38,7 @@ router = APIRouter(tags=["telemetry"])
 Viewer = Annotated[AuthUser, Depends(require_roles("viewer"))]
 Refs = Annotated[AuthUser, Depends(require_permission("refs"))]
 Writer = Annotated[AuthUser, Depends(require_permission("journals"))]
+CalcRunner = Annotated[AuthUser, Depends(require_permission("calc_run"))]
 WRITE = [Depends(require_mutations_enabled)]
 SensorId = Annotated[int, Path(ge=1)]
 MAX_FILE_BYTES = 20_000_000
@@ -149,3 +156,30 @@ async def telemetry_readings(body: tm.ReadingsIn, user: Annotated[AuthUser, Depe
         raise HTTPException(status_code=403, detail="Нет права «Журналы»")
     async with acquire_conn() as conn:
         return await tm.ingest(conn, [(r.sensor, r.ts, r.value) for r in body.readings])
+
+
+@router.get("/api/v1/telemetry/regime")
+async def telemetry_regime(_: Viewer) -> dict[str, Any]:
+    """Узлы заданного напора с датчиками: напоры и температура последнего расчёта против факта, нужен ли перерасчёт."""
+    async with acquire_conn() as conn:
+        return await regime.regime(conn)
+
+
+class RegimeRunIn(BaseModel):
+    fileid: int = Field(ge=1)
+    tn: Optional[float] = Field(None, ge=-60, le=50, description="Tн; по умолчанию — последнего расчёта фрагмента")
+    mode: Literal["plan", "emergency"] = "plan"
+
+
+@router.post("/api/v1/telemetry/regime/run")
+async def telemetry_regime_run(body: RegimeRunIn, user: CalcRunner) -> dict[str, Any]:
+    """Расчёт фрагмента с напорами и температурой источника по телеметрии (sety -zn_fakt) — в очередь расчётов."""
+    async with acquire_conn() as conn:
+        try:
+            prepared = await regime.prepare(conn, body.fileid, tn=body.tn, mode=body.mode, user=user.username)
+        except tm.TelemetryError as exc:
+            raise _http(exc) from exc
+    queued = regime.dispatch(prepared)
+    await write_audit_log(changed_by=user.username, operation="RUN_SETY", table_name="calculation",
+                          new_data=regime.audit_data(prepared, queued, auto=False))
+    return {"message": "Расчёт по факту добавлен в очередь", **prepared, **queued}

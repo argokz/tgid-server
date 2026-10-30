@@ -121,7 +121,7 @@ ALLOWED_SETY_FLAGS = frozenset({
     "-no_teplovyd", "-no_teplopoter", "-uf_calc", "-save_uf_new", "-veter",
     "-save_po", "-save_po_yes", "-zulu_zn0", "-zulu_utechki", "-zulu_utechki_sm",
     "-ZULU", "-ZN0", "-leto", "-no_current", "-is_dop", "-fakt", "-no_out", "-plan",
-    "-no_kv", "-mag_fragment", "-color",
+    "-no_kv", "-mag_fragment", "-color", "-zn_fakt",
 })
 
 _NUMBER_RE = re.compile(r"^-\d+(\.\d+)?$")
@@ -134,11 +134,21 @@ SETY_NUMERIC_RANGES: dict[str, tuple[float, float, type]] = {
     "-fileID": (1, 10**9, int),
 }
 
+# Флаги со значением-строкой строгого вида: -zn_fakt "узел:pP:pO:t1;…" (database/telemetry_regime.py)
+_ZN_ITEM = r"\d{1,10}:(\d{1,4}(\.\d{1,3})?)?:(\d{1,4}(\.\d{1,3})?)?:(\d{1,3}(\.\d{1,3})?)?"
+SETY_PATTERN_FLAGS: dict[str, re.Pattern] = {
+    "-zn_fakt": re.compile(rf"^{_ZN_ITEM}(;{_ZN_ITEM}){{0,49}}$"),
+}
+
 # Таймаут одного запуска ww.py (секунды); у sety есть циклы без ограничения числа итераций.
 SETY_TIMEOUT_S = int(os.getenv("SETY_TIMEOUT_S", "3600"))
 
 
 def _check_numeric_flag(flag: str, value: str) -> None:
+    if flag in SETY_PATTERN_FLAGS:
+        if not SETY_PATTERN_FLAGS[flag].match(value):
+            raise ValueError(f"Параметр {flag}: неверное значение «{value[:80]}»")
+        return
     low, high, kind = SETY_NUMERIC_RANGES[flag]
     try:
         number = kind(value)
@@ -173,7 +183,7 @@ def validate_sety_params(params: str) -> list[str]:
             raise ValueError(f"Параметр {flag} задаётся сервером и не может быть передан в расчёт")
         if raw not in ALLOWED_SETY_FLAGS:
             raise ValueError(f"Неизвестный параметр расчёта: {raw}")
-        if raw in SETY_NUMERIC_RANGES:
+        if raw in SETY_NUMERIC_RANGES or raw in SETY_PATTERN_FLAGS:
             if inline_value:
                 _check_numeric_flag(raw, inline_value)
             else:

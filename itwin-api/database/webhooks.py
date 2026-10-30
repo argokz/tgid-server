@@ -499,15 +499,22 @@ async def run_once(conn, city: str) -> tuple[int, int]:
 
 
 async def check_sensor_alerts(conn) -> int:
-    """Тревоги телеметрии (database/telemetry.py) — под своим замком: один процесс на город."""
-    from database import telemetry
+    """Тревоги телеметрии (database/telemetry.py) и перерасчёт по факту (database/telemetry_regime.py,
+    TELEMETRY_REGIME_AUTO=1) — под своим замком: один процесс на город."""
+    from database import telemetry, telemetry_regime
 
     async with conn.transaction():
         if not await conn.fetchval("SELECT pg_try_advisory_xact_lock($1)", _ALERT_LOCK):
             return 0
         if not await conn.fetchval("SELECT to_regclass('public.tgid_sensor_alert') IS NOT NULL"):
             return 0
-        return len(await telemetry.check_alerts(conn))
+        alerts = len(await telemetry.check_alerts(conn))
+        try:
+            async with conn.transaction():  # точка сохранения: сбой очереди расчётов не откатывает тревоги
+                await telemetry_regime.auto_recalc(conn)
+        except Exception as exc:  # noqa: BLE001 — брокер Celery недоступен и т. п.: следующий проход
+            logger.warning("Перерасчёт по факту: %s", exc)
+        return alerts
 
 
 async def webhook_loop(city: str, interval_s: float) -> None:
