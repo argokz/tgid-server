@@ -26,6 +26,9 @@
 | `work_order.status_changed` | назначен, в работе, выполнен, **закрыт**, отменён, возвращён | то же и `from_status` |
 | `outage.created` | запланировано отключение | `outage_id`, `number`, `kind`, `status`, `planned_start`, `planned_end`, `consumers_count`, `load_gcal_h`, `public`, `work_order_id`, `line_id`, `node_id` |
 | `outage.status_changed` | объявлено, идёт, завершено, отменено | то же и `from_status` |
+| `sensor.deviation` | датчик телеметрии: показание расходится с моделью (`docs/telemetry.md`) | `alert_id`, `sensor_id`, `code`, `name`, `kind`, `pipe`, `node_id` / `line_id`, `status`, `prev_status`, `value`, `model`, `unit`, `diff`, `pct` |
+| `sensor.silent` | датчик молчит — нет показаний дольше 60 мин | то же |
+| `sensor.recovered` | датчик вернулся в норму | то же |
 
 Данные события — короткие и **без персональных данных**: без имён потребителей, логинов сотрудников и свободного
 текста (в название и описание наряда call-центр может вписать телефон жителя). Подробности (название, зона

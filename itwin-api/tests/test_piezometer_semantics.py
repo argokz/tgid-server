@@ -21,6 +21,7 @@ def test_heads_come_from_us_out_not_measured_pressure():
     conn = AsyncMock()
     # у узла 1 есть измеренное давление 55 м — оно не должно подменять расчётные 62.2 м
     conn.fetch.return_value = [_node(1, 799.2, 62.2, 20.1, meas_pod=55.0), _node(2, 800.0, 61.0, 21.0)]
+    conn.fetchval.return_value = False  # таблиц телеметрии нет — показания датчиков не подмешиваются
 
     path = asyncio.run(_assemble_path_data(conn, G, [1, 2], 9))
 
@@ -123,3 +124,19 @@ def test_direction_writes_need_editor_and_mutations(monkeypatch):
     assert client.delete("/piezometer/directions/1", headers=bearer("viewer")).status_code == 403
     assert client.post("/piezometer/directions", json={"name": "x", "nodes": [1]},
                        headers=bearer("editor")).status_code == 422
+
+
+def test_telemetry_facts_on_piezometer(monkeypatch):
+    from routers import piezometer
+
+    async def facts(conn, node_ids):
+        assert node_ids == [1, 2]
+        return {1: {"p_supply": 61.0, "t_supply": 118.5, "at": "2026-10-30T10:00:00+00:00", "stale": False}}
+
+    monkeypatch.setattr(piezometer.telemetry, "facts_at_nodes", facts)
+    path = [{"node_id": 1, "z": 799.2}, {"node_id": 2, "z": 800.0}]
+    asyncio.run(piezometer._attach_telemetry(None, path))
+    # напор по датчику = отметка + давление в м вод. ст.; без датчика узел не меняется
+    assert path[0]["h_pod_fact"] == pytest.approx(860.2) and path[0]["t_pod_fact"] == 118.5
+    assert "h_obr_fact" not in path[0] and path[0]["fact_stale"] is False
+    assert path[1] == {"node_id": 2, "z": 800.0}

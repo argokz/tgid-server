@@ -127,3 +127,53 @@ def test_v2_readings_requires_key_and_permission(monkeypatch):
     assert client.post("/api/v2/telemetry/readings", json=bad,
                        headers={"Authorization": f"Bearer {editor}"}).status_code == 422
     invalidate_user_status()
+
+
+def test_alert_level():
+    assert tm.alert_level({"stale": True, "deviation": {"status": "ok"}}) == "silent"
+    assert tm.alert_level({"stale": False, "deviation": {"status": "bad"}}) == "bad"
+    assert tm.alert_level({"stale": False, "deviation": {"status": "warn"}}) == "normal"
+    assert tm.alert_level({"stale": False, "deviation": None}) is None  # нет расчёта — не тревога
+
+
+class AlertConn:
+    """Датчики с прошлым состоянием: обновления и тревоги — в списки."""
+
+    def __init__(self, prev):
+        self.prev = prev
+        self.updates = []
+        self.alerts = []
+
+    async def fetch(self, sql, *args):
+        assert "alert_status" in sql
+        return [{"id": k, "alert_status": v} for k, v in self.prev.items()]
+
+    async def execute(self, sql, *args):
+        self.updates.append(args)
+
+    async def fetchval(self, sql, *args):
+        self.alerts.append(args)
+        return len(self.alerts)
+
+
+def test_check_alerts_transitions(monkeypatch):
+    sensors = [
+        {"id": 1, "stale": False, "deviation": {"status": "bad", "diff": 6.6, "pct": 12.6}, "last": {"value": 5.9},
+         "model": 5.23},
+        {"id": 2, "stale": True, "deviation": None, "last": {"value": 1.0}, "model": None},
+        {"id": 3, "stale": False, "deviation": {"status": "ok", "diff": 0.1, "pct": 1.0}, "last": {"value": 10},
+         "model": 10},
+        {"id": 4, "stale": False, "deviation": {"status": "bad", "diff": 9, "pct": 20}, "last": {"value": 1}, "model": 1},
+        {"id": 5, "stale": False, "deviation": None, "last": {"value": 1}, "model": None},
+    ]
+
+    async def overview(conn, only_active=False):
+        return sensors
+
+    monkeypatch.setattr(tm, "overview", overview)
+    # 1: норма → расхождение; 2: норма → молчит; 3: расхождение → норма; 4: первая оценка — без тревоги; 5: нет модели
+    conn = AlertConn({1: "normal", 2: "normal", 3: "bad", 4: None, 5: "normal"})
+    ids = asyncio.run(tm.check_alerts(conn))
+    assert ids == [1, 2, 3]
+    assert [(a[0], a[1], a[2]) for a in conn.alerts] == [(1, "bad", "normal"), (2, "silent", "normal"), (3, "normal", "bad")]
+    assert [u[:2] for u in conn.updates] == [(1, "bad"), (2, "silent"), (3, "normal"), (4, "bad")]

@@ -8,6 +8,8 @@ POST   /api/v1/telemetry/sensors              — добавить датчик 
 PUT    /api/v1/telemetry/sensors/{id}         — изменить
 DELETE /api/v1/telemetry/sensors/{id}         — удалить вместе с показаниями
 POST   /api/v1/telemetry/import               — файл выгрузки ОДПУ (CSV / Excel) (право «Журналы»)
+GET    /api/v1/telemetry/alerts               — тревоги: расхождение, молчит, вернулся в норму (open=true — непринятые)
+POST   /api/v1/telemetry/alerts/{id}/ack      — «принято» (право «Журналы»)
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """
 from __future__ import annotations
@@ -110,6 +112,22 @@ async def telemetry_import(_: Writer, file: UploadFile = File(...)) -> dict[str,
     except tm.TelemetryError as exc:
         raise _http(exc) from exc
     return {**out, "notes": notes}
+
+
+@router.get("/api/v1/telemetry/alerts")
+async def telemetry_alerts(_: Viewer, open: bool = False,  # noqa: A002 — имя параметра адреса
+                           limit: int = Query(100, ge=1, le=tm.MAX_ALERTS)) -> list[dict[str, Any]]:
+    async with acquire_conn() as conn:
+        return await tm.list_alerts(conn, limit=limit, open_only=open)
+
+
+@router.post("/api/v1/telemetry/alerts/{alert_id}/ack", dependencies=WRITE)
+async def telemetry_alert_ack(alert_id: Annotated[int, Path(ge=1)], user: Writer) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await tm.acknowledge(conn, alert_id, user.username)
+    except tm.TelemetryError as exc:
+        raise _http(exc) from exc
 
 
 @router.post("/api/v2/telemetry/readings", dependencies=WRITE, tags=["api-v2"])

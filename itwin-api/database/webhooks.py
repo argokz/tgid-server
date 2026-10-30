@@ -62,6 +62,8 @@ _ALWAYS_BLOCKED = (ipaddress.ip_network("100.64.0.0/10"),)
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 # ключ advisory-замка сбора событий (в своей базе города)
 _COLLECT_LOCK = 0x7467_6964_7768  # «tgidwh»
+_ALERT_LOCK = 0x7467_6964_616C  # «tgidal»
+ALERT_EVERY_S = 60
 
 
 class WebhookError(Exception):
@@ -496,14 +498,31 @@ async def run_once(conn, city: str) -> tuple[int, int]:
     return collected, sent
 
 
+async def check_sensor_alerts(conn) -> int:
+    """Тревоги телеметрии (database/telemetry.py) — под своим замком: один процесс на город."""
+    from database import telemetry
+
+    async with conn.transaction():
+        if not await conn.fetchval("SELECT pg_try_advisory_xact_lock($1)", _ALERT_LOCK):
+            return 0
+        if not await conn.fetchval("SELECT to_regclass('public.tgid_sensor_alert') IS NOT NULL"):
+            return 0
+        return len(await telemetry.check_alerts(conn))
+
+
 async def webhook_loop(city: str, interval_s: float) -> None:
-    """Фоновая задача города: события и доставки раз в interval_s; ошибки базы — в лог и дальше."""
+    """Фоновая задача города: события и доставки раз в interval_s, тревоги телеметрии — раз в ALERT_EVERY_S;
+    ошибки базы — в лог и дальше."""
     from database.connect import acquire_conn
 
     last_prune = 0.0
+    last_alerts = 0.0
     while True:
         try:
             async with acquire_conn() as conn:
+                if time.monotonic() - last_alerts >= ALERT_EVERY_S:
+                    last_alerts = time.monotonic()
+                    await check_sensor_alerts(conn)
                 await run_once(conn, city)
                 if time.monotonic() - last_prune > PRUNE_EVERY_S:
                     await api_events.prune(conn)

@@ -26,6 +26,7 @@ from app_logging import get_logger
 from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_roles, require_permission
 from cities import cache_key
+from database import telemetry
 from database.connect import get_pool
 from database.piezo_excel import generate_piezometer_excel
 from database.ut_out_columns import (
@@ -187,7 +188,26 @@ async def _assemble_path_data(conn, G: nx.Graph, path_nodes: list[int],
                          "h_pod_meas": None, "h_obr_meas": None,
                          "t_pod": None, "t_obr": None, "lng": None, "lat": None})
         path_data.append(item)
+    await _attach_telemetry(conn, path_data)
     return path_data
+
+
+async def _attach_telemetry(conn, path_data: list[dict]) -> None:
+    """Факт по датчикам телеметрии (database/telemetry.py): напор = отметка + давление датчика в м вод. ст.,
+    температура — °C; fact_at — время самого старого показания узла, fact_stale — датчик «молчит»."""
+    facts = await telemetry.facts_at_nodes(conn, [i["node_id"] for i in path_data])
+    for item in path_data:
+        f = facts.get(item["node_id"])
+        if not f:
+            continue
+        z = item.get("z") or 0.0
+        for pipe, suffix in (("supply", "pod"), ("return", "obr")):
+            if f"p_{pipe}" in f:
+                item[f"h_{suffix}_fact"] = round(z + f[f"p_{pipe}"], 2)
+            if f"t_{pipe}" in f:
+                item[f"t_{suffix}_fact"] = f[f"t_{pipe}"]
+        item["fact_at"] = f.get("at")
+        item["fact_stale"] = f.get("stale", False)
 
 
 def _has_calc(path_data: list[dict], suffix: str = "") -> bool:

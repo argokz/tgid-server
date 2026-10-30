@@ -481,3 +481,107 @@ def geojson(sensors: list[dict[str, Any]]) -> dict[str, Any]:
                            "pct": dev.get("pct"), "diff": dev.get("diff")},
         })
     return {"type": "FeatureCollection", "features": features}
+
+
+# --- тревоги -----------------------------------------------------------------------------------
+
+ALERT_LABELS = {"bad": "расхождение с моделью", "silent": "датчик молчит", "normal": "вернулся в норму"}
+MAX_ALERTS = 500
+
+
+def alert_level(sensor: dict[str, Any]) -> Optional[str]:
+    """Состояние для тревог: silent — нет свежих показаний, bad — расхождение, normal — норма или «внимание».
+
+    None — оценки нет (нет расчёта): состояние не меняется, тревоги нет.
+    """
+    if sensor.get("stale"):
+        return "silent"
+    dev = sensor.get("deviation")
+    if not dev:
+        return None
+    return "bad" if dev["status"] == "bad" else "normal"
+
+
+async def check_alerts(conn) -> list[int]:
+    """Сверить состояние действующих датчиков с прошлым и записать тревоги о переходах; вернуть id новых.
+
+    Первая оценка датчика тревоги не даёт (иначе включение тревог разослало бы всё разом) — только запоминается.
+    Вызывать под замком (database/webhooks.py): два процесса не должны записать одну тревогу дважды.
+    """
+    sensors = await overview(conn, only_active=True)
+    prev = {r["id"]: r["alert_status"] for r in await conn.fetch(
+        "SELECT id, alert_status FROM tgid_sensor WHERE active")}
+    new_ids: list[int] = []
+    for s in sensors:
+        level = alert_level(s)
+        before = prev.get(s["id"])
+        if level is None or level == before:
+            continue
+        await conn.execute("UPDATE tgid_sensor SET alert_status = $2, alert_since = now() WHERE id = $1", s["id"], level)
+        if before is None:
+            continue
+        dev = s.get("deviation") or {}
+        last = s.get("last") or {}
+        new_ids.append(await conn.fetchval(
+            """INSERT INTO tgid_sensor_alert (sensor_id, status, prev_status, value, model, diff, pct)
+               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
+            s["id"], level, before, last.get("value"), s.get("model"), dev.get("diff"), dev.get("pct")))
+    return new_ids
+
+
+async def list_alerts(conn, *, limit: int = 100, open_only: bool = False) -> list[dict[str, Any]]:
+    where = "WHERE a.acknowledged_at IS NULL AND a.status <> 'normal'" if open_only else ""
+    rows = await conn.fetch(
+        f"""SELECT a.*, s.code, s.name, s.kind, s.pipe, s.unit, s.node_id, s.line_id
+              FROM tgid_sensor_alert a JOIN tgid_sensor s ON s.id = a.sensor_id
+              {where} ORDER BY a.at DESC, a.id DESC LIMIT $1""", max(1, min(MAX_ALERTS, limit)))
+    out = []
+    for r in rows:
+        item = {k: _iso(r[k]) for k in r.keys()}
+        item["label"] = ALERT_LABELS.get(r["status"], r["status"])
+        unit = UNITS.get(r["unit"])
+        item["unit_label"] = unit.label if unit else r["unit"]
+        out.append(item)
+    return out
+
+
+async def acknowledge(conn, alert_id: int, user: str) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """UPDATE tgid_sensor_alert SET acknowledged_by = $2, acknowledged_at = now()
+            WHERE id = $1 AND acknowledged_at IS NULL RETURNING id, acknowledged_at""", alert_id, user)
+    if row is None:
+        raise TelemetryError(404, f"Тревога {alert_id} не найдена или уже принята")
+    return {"id": row["id"], "acknowledged_by": user, "acknowledged_at": _iso(row["acknowledged_at"])}
+
+
+# --- пьезометр ---------------------------------------------------------------------------------
+
+async def facts_at_nodes(conn, node_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Последние показания датчиков давления и температуры в узлах: давление — в метрах водяного столба
+    (как напор над отметкой у модели), температура — °C. Ключи: p_supply, p_return, t_supply, t_return, at, stale.
+    """
+    if not node_ids or not await conn.fetchval("SELECT to_regclass('public.tgid_sensor_reading') IS NOT NULL"):
+        return {}
+    rows = await conn.fetch(
+        """SELECT s.node_id, s.kind, s.pipe, s.unit, r.ts, r.value
+             FROM tgid_sensor s
+             JOIN LATERAL (SELECT ts, value FROM tgid_sensor_reading WHERE sensor_id = s.id
+                            ORDER BY ts DESC LIMIT 1) r ON true
+            WHERE s.active AND s.node_id = ANY($1::int[]) AND s.kind IN ('pressure', 'temperature')""", node_ids)
+    stale_before = datetime.now(timezone.utc) - timedelta(minutes=STALE_MIN)
+    out: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        item = out.setdefault(r["node_id"], {})
+        key = f"{'p' if r['kind'] == 'pressure' else 't'}_{r['pipe']}"
+        unit = UNITS.get(r["unit"])
+        if unit is None:
+            continue
+        item[key] = round(r["value"] * unit.to_base, 3)
+        # время и «молчит» — по самому старому из показаний узла
+        if "at" not in item or r["ts"] < item["_ts"]:
+            item["_ts"] = r["ts"]
+            item["at"] = _iso(r["ts"])
+            item["stale"] = r["ts"] < stale_before
+    for item in out.values():
+        item.pop("_ts", None)
+    return out

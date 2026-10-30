@@ -32,6 +32,9 @@ EVENT_TYPES: dict[str, str] = {
     "work_order.status_changed": "Статус наряда изменён (назначен, в работе, выполнен, закрыт, отменён)",
     "outage.created": "Запланировано отключение",
     "outage.status_changed": "Статус отключения изменён (объявлено, идёт, завершено, отменено)",
+    "sensor.deviation": "Датчик телеметрии: показание расходится с моделью",
+    "sensor.silent": "Датчик телеметрии молчит — нет свежих показаний",
+    "sensor.recovered": "Датчик телеметрии вернулся в норму",
 }
 PING = "ping"
 RESCAN_IDS = 200
@@ -105,10 +108,31 @@ _DEFECT_SQL = """
     RETURNING id
 """
 
+# Тревоги телеметрии (database/telemetry.py check_alerts): показание и модель — в единицах датчика
+_SENSOR_ALERT_SQL = """
+    INSERT INTO tgid_api_event (type, object_id, occurred_at, data, source, source_id)
+    SELECT CASE a.status WHEN 'bad' THEN 'sensor.deviation' WHEN 'silent' THEN 'sensor.silent'
+                ELSE 'sensor.recovered' END,
+           s.id, a.at,
+           jsonb_strip_nulls(jsonb_build_object(
+               'alert_id', a.id, 'sensor_id', s.id, 'code', s.code, 'name', s.name, 'kind', s.kind, 'pipe', s.pipe,
+               'node_id', s.node_id, 'line_id', s.line_id, 'status', a.status, 'prev_status', a.prev_status,
+               'value', a.value, 'model', a.model, 'unit', s.unit, 'diff', a.diff, 'pct', a.pct)),
+           'sensor_alert', a.id
+      FROM tgid_sensor_alert a
+      JOIN tgid_sensor s ON s.id = a.sensor_id
+     WHERE a.id > $1 AND a.id > $2
+       AND NOT EXISTS (SELECT 1 FROM tgid_api_event e WHERE e.source = 'sensor_alert' AND e.source_id = a.id)
+     ORDER BY a.id
+    ON CONFLICT (source, source_id) DO NOTHING
+    RETURNING id
+"""
+
 SOURCES: tuple[Source, ...] = (
     Source("defect", "defect", _DEFECT_SQL),
     Source("work_order", "tgid_work_order_event", _WORK_ORDER_SQL),
     Source("outage", "tgid_outage_event", _OUTAGE_SQL),
+    Source("sensor_alert", "tgid_sensor_alert", _SENSOR_ALERT_SQL),
 )
 
 
