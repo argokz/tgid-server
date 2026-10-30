@@ -187,7 +187,7 @@ def decode_access_token(token: str, *, allow_scopes: Iterable[str] = ()) -> Auth
     if scope and scope not in set(allow_scopes):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Токен ИИ-клиента действует только для MCP (/mcp)",
+            detail="Токен с ограниченным назначением (MCP, ArcGIS) действует только на своих адресах",
         )
     return AuthUser(
         sub=str(payload.get("sub") or username), role=role, username=username, mv=str(payload.get("mv") or ""),
