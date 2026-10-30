@@ -14,6 +14,8 @@ POST   /api/v1/telemetry/alerts/{id}/ack      — «принято» (право
 GET    /api/v1/telemetry/calibration          — калибровка: потери напора между соседними датчиками, факт / модель
 GET    /api/v1/telemetry/regime               — режим источников: граничные условия последнего расчёта против факта
 POST   /api/v1/telemetry/regime/run           — расчёт фрагмента по фактическому режиму (право «Расчёт»)
+GET    /api/v1/telemetry/balance              — баланс расхода по зонам между расходомерами: небаланс, ночной расход
+GET    /api/v1/telemetry/balance/zones/{key}/geometry — участки зоны для карты
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """
 from __future__ import annotations
@@ -27,10 +29,11 @@ from pydantic import BaseModel, Field
 from audit import write_audit_log
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
-from database import calibration
+from database import calibration, flow_balance
 from database import telemetry as tm
 from database import telemetry_regime as regime
 from database.connect import acquire_conn
+from database.outage_simulation import get_outage_network_graph
 from routers.api_v2 import api_user
 from routers.piezometer import _get_topology_graph
 
@@ -183,3 +186,21 @@ async def telemetry_regime_run(body: RegimeRunIn, user: CalcRunner) -> dict[str,
     await write_audit_log(changed_by=user.username, operation="RUN_SETY", table_name="calculation",
                           new_data=regime.audit_data(prepared, queued, auto=False))
     return {"message": "Расчёт по факту добавлен в очередь", **prepared, **queued}
+
+
+@router.get("/api/v1/telemetry/balance")
+async def telemetry_balance(_: Viewer) -> dict[str, Any]:
+    """Зоны между расходомерами: приток по факту и по модели, небаланс с погрешностью, ночной расход, вывод."""
+    async with acquire_conn() as conn:
+        net = await get_outage_network_graph(conn)
+        return await flow_balance.balance(conn, net)
+
+
+@router.get("/api/v1/telemetry/balance/zones/{key}/geometry")
+async def telemetry_balance_zone(key: Annotated[int, Path(ge=1)], _: Viewer) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        net = await get_outage_network_graph(conn)
+        zone = await flow_balance.zone_geometry(conn, net, key)
+    if zone is None:
+        raise HTTPException(status_code=404, detail="Зона не найдена — расходомеры или сеть изменились")
+    return zone
