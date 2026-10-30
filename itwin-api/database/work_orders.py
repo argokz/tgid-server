@@ -68,6 +68,7 @@ class WorkOrderIn(BaseModel):
     kind: Kind = "repair"
     priority: int = Field(3, ge=1, le=3)
     defect_id: Optional[int] = Field(None, ge=1)
+    inspection_id: Optional[int] = Field(None, ge=1, description="Контур осмотра (osmotr): наряд на обход его участков")
     line_id: Optional[int] = Field(None, ge=1)
     node_id: Optional[int] = Field(None, ge=1)
     lon: Optional[float] = Field(None, ge=-180, le=180)
@@ -120,6 +121,15 @@ class FieldDefectIn(FieldStamp):
     category_id: Optional[int] = Field(None, ge=1, description="Категория (remontcat)")
     priority: int = Field(2, ge=1, le=3)
     found_at: Optional[datetime] = Field(None, description="Когда нашли (действие могло ждать связи)")
+    order_id: Optional[int] = Field(None, ge=1, description="Наряд на обход, в котором нашли (дефект — в его контур осмотра)")
+    node_id: Optional[int] = Field(None, ge=1, description="Узел маршрута обхода — отметка «с дефектом»")
+
+
+class CheckIn(FieldStamp):
+    """Отметка узла маршрута обхода."""
+    node_id: int = Field(..., ge=1)
+    state: Literal["ok", "defect"]
+    note: str = Field("", max_length=500)
 
 
 # --- чтение ---------------------------------------------------------------------------------
@@ -270,6 +280,23 @@ async def _place_of_node(conn, node_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+async def _place_of_inspection(conn, inspection_id: int) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """SELECT i.id, i.name,
+                  ST_X(ST_Centroid(ST_Collect(ST_Transform(l.shape, 4326)))) AS lon,
+                  ST_Y(ST_Centroid(ST_Collect(ST_Transform(l.shape, 4326)))) AS lat
+             FROM osmotr i
+             LEFT JOIN osmotrdeployed r ON r.directionid = i.id
+             LEFT JOIN linesobj l ON l.id = r.lineid AND COALESCE(l.removed, 0) = 0
+            WHERE i.id = $1
+            GROUP BY i.id, i.name""", inspection_id)
+    if row is None:
+        raise WorkOrderError(422, f"Контура осмотра {inspection_id} нет в журнале")
+    if row["lon"] is None:
+        raise WorkOrderError(422, f"В контуре осмотра «{row['name'] or inspection_id}» нет участков")
+    return dict(row)
+
+
 async def _check_people(conn, brigade_id: Optional[int], responsible_id: Optional[int]) -> None:
     if brigade_id and not await conn.fetchval("SELECT EXISTS (SELECT 1 FROM brigades WHERE id = $1)", brigade_id):
         raise WorkOrderError(422, f"Бригады {brigade_id} нет в справочнике")
@@ -293,7 +320,8 @@ async def _already_done(conn, stamp: Optional[FieldStamp]) -> bool:
         return False
     return bool(await conn.fetchval(
         "SELECT EXISTS (SELECT 1 FROM tgid_work_order_event WHERE client_id = $1)"
-        " OR EXISTS (SELECT 1 FROM tgid_work_order_photo WHERE client_id = $1)", stamp.client_id))
+        " OR EXISTS (SELECT 1 FROM tgid_work_order_photo WHERE client_id = $1)"
+        " OR EXISTS (SELECT 1 FROM tgid_work_order_check WHERE client_id = $1)", stamp.client_id))
 
 
 # --- запись ---------------------------------------------------------------------------------
@@ -304,6 +332,14 @@ async def create(conn, body: WorkOrderIn, user: str, stamp: Optional[FieldStamp]
     await _check_people(conn, body.brigade_id, body.responsible_id)
     line_id, node_id, fileid = body.line_id, body.node_id, None
     lon, lat, description = body.lon, body.lat, body.description
+    created_note = f"Создан по дефекту №{body.defect_id}" if body.defect_id else "Создан"
+    if body.inspection_id:
+        inspection = await _place_of_inspection(conn, body.inspection_id)
+        name = (inspection["name"] or f"№{body.inspection_id}").strip()
+        if lon is None:
+            lon, lat = inspection["lon"], inspection["lat"]
+        description = description or f"Обход участков контура осмотра «{name}»"
+        created_note = f"Создан по контуру осмотра «{name}»"
     if body.defect_id:
         defect = await _place_of_defect(conn, body.defect_id)
         line_id = line_id or defect["lineid"]
@@ -326,15 +362,15 @@ async def create(conn, body: WorkOrderIn, user: str, stamp: Optional[FieldStamp]
         order_id = await conn.fetchval(
             """INSERT INTO tgid_work_order (title, kind, priority, status, defect_id, line_id, node_id, fileid, lon, lat,
                                             brigade_id, responsible_id, planned_start, planned_finish, description,
-                                            created_by, updated_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) RETURNING id""",
+                                            created_by, updated_by, inspection_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16, $17) RETURNING id""",
             body.title.strip(), body.kind, body.priority, status, body.defect_id, line_id, node_id, fileid, lon, lat,
-            body.brigade_id, body.responsible_id, body.planned_start, body.planned_finish, description, user)
+            body.brigade_id, body.responsible_id, body.planned_start, body.planned_finish, description, user,
+            body.inspection_id)
         await conn.execute(
             "UPDATE tgid_work_order SET number = 'Н-' || to_char(created_at, 'YYYY') || '-' || lpad(id::text, 5, '0') "
             "WHERE id = $1", order_id)
-        await _event(conn, order_id, user, "Создан" + (f" по дефекту №{body.defect_id}" if body.defect_id else ""),
-                     None, status, stamp)
+        await _event(conn, order_id, user, created_note, None, status, stamp)
     return await get_order(conn, order_id)
 
 
@@ -381,13 +417,23 @@ async def report_defect(conn, body: FieldDefectIn, user: str) -> tuple[dict[str,
     text = body.description.strip()
     if not text:
         raise WorkOrderError(422, "Опишите, что нашли")
-    line_id = body.line_id or await nearest_line(conn, body.lon, body.lat)
+    parent = await get_order(conn, body.order_id) if body.order_id else None
+    line_id = body.line_id
+    if not line_id and parent and parent.get("inspection_id") and body.node_id:
+        # дефект с узла обхода — участок контура у этого узла (точка телефона может быть в стороне от трубы)
+        line_id = await conn.fetchval(
+            """SELECT l.id FROM osmotrdeployed r JOIN linesobj l ON l.id = r.lineid
+                WHERE r.directionid = $1 AND $2 IN (l.nodeid1, l.nodeid2) ORDER BY r.id LIMIT 1""",
+            parent["inspection_id"], body.node_id)
+    line_id = line_id or await nearest_line(conn, body.lon, body.lat)
     found = _local(body.found_at)
     fields: dict[str, Any] = {
         "detected_at": found.isoformat(), "detected_time": found.strftime("%H:%M"),
         "description": text, "state_id": DEFECT_STATE_FOUND,
     }
-    for key, value in (("line_id", line_id), ("source_id", body.source_id), ("category_id", body.category_id)):
+    inspection_id = parent.get("inspection_id") if parent else None
+    for key, value in (("line_id", line_id), ("source_id", body.source_id), ("category_id", body.category_id),
+                       ("inspection_id", inspection_id)):
         if value is not None:
             fields[key] = value
     try:
@@ -398,7 +444,25 @@ async def report_defect(conn, body: FieldDefectIn, user: str) -> tuple[dict[str,
     title = f"Дефект: {text.splitlines()[0][:120]}"
     order = WorkOrderIn(title=title, kind="repair", priority=body.priority, defect_id=created["id"],
                         line_id=line_id, lon=body.lon, lat=body.lat, description=text)
-    return await create(conn, order, user, body), True
+    created_order = await create(conn, order, user, body)
+    if parent and inspection_id and body.node_id:
+        await upsert_check(conn, parent["id"], body.node_id, "defect", user, note=text[:500], defect_id=created["id"])
+    return created_order, True
+
+
+async def upsert_check(conn, order_id: int, node_id: int, state: str, user: str, *, note: str = "",
+                       defect_id: Optional[int] = None, stamp: Optional[FieldStamp] = None) -> None:
+    """Отметка узла маршрута обхода; повторная отметка узла заменяет прежнюю (дефект узла не теряется)."""
+    await conn.execute(
+        """INSERT INTO tgid_work_order_check (order_id, node_id, state, note, defect_id, client_id, lon, lat, by_user)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (order_id, node_id) DO UPDATE
+              SET state = EXCLUDED.state, note = EXCLUDED.note,
+                  defect_id = COALESCE(EXCLUDED.defect_id, tgid_work_order_check.defect_id),
+                  client_id = EXCLUDED.client_id, lon = EXCLUDED.lon, lat = EXCLUDED.lat,
+                  by_user = EXCLUDED.by_user, at = now()""",
+        order_id, node_id, state, note, defect_id, stamp.client_id if stamp else None,
+        stamp.lon if stamp else None, stamp.lat if stamp else None, user)
 
 
 _FIELD_LABELS = {"title": "название", "kind": "вид", "priority": "срочность", "brigade_id": "бригада",
@@ -452,6 +516,14 @@ async def _sync_defect(conn, defect_id: int, to: str) -> Optional[str]:
     return None
 
 
+async def _sync_inspection(conn, inspection_id: int, result: str) -> Optional[str]:
+    """Контур осмотра десктопа: «Результаты осмотра» — из выполненного обхода, если там ещё пусто."""
+    status = await conn.execute(
+        "UPDATE osmotr SET rezultaty_osmotra = $2 WHERE id = $1 AND COALESCE(rezultaty_osmotra, '') = ''",
+        inspection_id, result[:4000])
+    return "контур осмотра — результаты" if str(status).endswith(" 1") else None
+
+
 async def transition(conn, order_id: int, body: TransitionIn, user: str) -> dict[str, Any]:
     current = await get_order(conn, order_id)
     if await _already_done(conn, body):
@@ -480,6 +552,10 @@ async def transition(conn, order_id: int, body: TransitionIn, user: str) -> dict
         if current["defect_id"] and await conn.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM defect WHERE id = $1)", current["defect_id"]):
             synced = await _sync_defect(conn, current["defect_id"], body.to)
+            if synced:
+                note = f"{note}; {synced}" if note else synced
+        if current.get("inspection_id") and body.to == "done":
+            synced = await _sync_inspection(conn, current["inspection_id"], (body.result or current["result"]).strip())
             if synced:
                 note = f"{note}; {synced}" if note else synced
         await _event(conn, order_id, user, note, current["status"], body.to, body)

@@ -11,6 +11,8 @@ POST   /api/v1/work-orders/{id}/transition  — сменить статус (д�
 POST   /api/v1/work-orders/{id}/comments    — комментарий в историю
 POST   /api/v1/work-orders/{id}/photos      — фото с места работ (multipart: file, caption, lon, lat, taken_at, client_id)
 GET    /api/v1/work-orders/photos/{photo_id} — само фото
+GET    /api/v1/work-orders/{id}/route      — обход по контуру осмотра: участки, узлы с отметками, итог
+POST   /api/v1/work-orders/{id}/checks     — отметка узла обхода: осмотрен или с дефектом
 
 Чтение — вход; запись — право «Журналы» (journals), как у журналов дефектов и ремонтов.
 Переход, комментарий и фото принимают client_id — ключ действия с устройства в поле: повтор отправки из очереди
@@ -28,6 +30,7 @@ from pydantic import ValidationError
 
 from audit import write_audit_log
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
+from database import work_order_route as wr
 from database import work_orders as wo
 from database.connect import acquire_conn
 
@@ -163,6 +166,24 @@ async def work_order_photo_add(
         async with acquire_conn() as conn:
             return await wo.add_photo(conn, order_id, data, user.username, caption=caption, taken_at=taken_at,
                                       stamp=stamp)
+    except wo.WorkOrderError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/work-orders/{order_id}/route")
+async def work_order_route(order_id: OrderId, _: Viewer):
+    try:
+        async with acquire_conn() as conn:
+            return await wr.route(conn, order_id)
+    except wo.WorkOrderError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/api/v1/work-orders/{order_id}/checks", dependencies=WRITE)
+async def work_order_check(order_id: OrderId, body: wo.CheckIn, user: Writer):
+    try:
+        async with acquire_conn() as conn:
+            return await wr.add_check(conn, order_id, body, user.username)
     except wo.WorkOrderError as exc:
         raise _http(exc) from exc
 

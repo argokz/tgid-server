@@ -105,6 +105,11 @@ COMMON: tuple[Item, ...] = (
     Item("трек бригад tgid_field_track",
          "select to_regclass('public.tgid_field_track') is not null",
          (_m("20261030_field_track.sql"),)),
+    Item("обход маршрутом и прибытие бригады",
+         "select to_regclass('public.tgid_work_order') is null or (to_regclass('public.tgid_work_order_check') is not null"
+         " and exists (select 1 from information_schema.columns where table_schema = 'public'"
+         " and table_name = 'tgid_work_order' and column_name = 'arrived_at'))",
+         (_m("20261030_work_order_route.sql"),)),
     Item("таблицы отключений tgid_outage",
          "select to_regclass('public.tgid_outage_event') is not null",
          (_m("20261030_outages.sql"),)),

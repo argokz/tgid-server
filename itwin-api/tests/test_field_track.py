@@ -54,7 +54,7 @@ def test_batch_skips_future_and_expired_points_and_purges_old():
     body = ft.TrackIn(brigade_id=5, points=[
         _pt(5, accuracy=8), _pt(-60), _pt(60 * 24 * (ft.TRACK_KEEP_DAYS + 1)), _pt(-5)])
     out = asyncio.run(ft.add_points(conn, body, "brig", now=NOW))
-    assert out == {"accepted": 2, "skipped": 2}  # час вперёд и старше срока — нет; 5 минут вперёд — часы спешат
+    assert out == {"accepted": 2, "skipped": 2, "arrived": []}  # час вперёд и старше срока — нет; 5 минут вперёд — часы спешат
     user, brigade, times, lons, lats, acc = conn.inserted
     assert (user, brigade) == ("brig", 5) and len(times) == 2 and acc == [8, None]
     purge = conn.executed[-1]
@@ -128,7 +128,7 @@ def test_endpoints(monkeypatch):
     client = TestClient(main.app)
     t = datetime.now(timezone.utc).isoformat()
     r = client.post("/api/v1/field/track", json={"brigade_id": 5, "points": [{"t": t, "lon": 76.9, "lat": 43.2}]})
-    assert r.status_code == 200 and r.json() == {"accepted": 1, "skipped": 0}
+    assert r.status_code == 200 and r.json() == {"accepted": 1, "skipped": 0, "arrived": []}
     assert client.get("/api/v1/field/positions").json()["type"] == "FeatureCollection"
     assert client.get("/api/v1/field/track").status_code == 422
     assert client.get("/api/v1/field/track", params={"brigade_id": 5}).status_code == 200

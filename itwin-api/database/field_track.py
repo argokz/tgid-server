@@ -4,6 +4,9 @@
 или через 25 м), копит точки без связи и отправляет пачкой. Ключ точки — пользователь и время снятия: повтор
 пачки не дублирует точки. Таблица веба tgid_field_track (sql/migrations/20261030_field_track.sql), точки
 старше TRACK_KEEP_DAYS удаляются при записи новых — местоположение сотрудников дольше не нужно.
+
+Геозона «бригада на месте»: точка бригады не дальше ARRIVAL_RADIUS_M от места её открытого наряда (у обхода —
+от любого участка контура осмотра) отмечает в наряде время прибытия (arrived_at) и событие в истории — один раз.
 """
 from __future__ import annotations
 
@@ -20,6 +23,8 @@ POSITION_MAX_AGE_H = 12               # «где бригады сейчас» �
 MAX_WINDOW = timedelta(days=7)        # трек — не больше недели за запрос
 MAX_TRACK_POINTS = 20_000
 TRACK_GAP = timedelta(minutes=15)     # перерыв дольше — новый отрезок трека (не тянуть линию через город)
+ARRIVAL_RADIUS_M = 100.0              # бригада у места работ: GPS телефона в городе — 5–30 м
+_ARRIVAL_STATUSES = ["assigned", "in_progress"]
 _EARTH_R = 6_371_008.8
 
 
@@ -86,7 +91,52 @@ async def add_points(conn, body: TrackIn, user: str, now: Optional[datetime] = N
                 user, brigade_id, [_aware(p.t) for p in good], [p.lon for p in good], [p.lat for p in good],
                 [p.accuracy for p in good])
         await conn.execute("DELETE FROM tgid_field_track WHERE recorded_at < $1", keep_from)
-    return {"accepted": int(accepted or 0), "skipped": len(body.points) - len(good)}
+        arrived = await mark_arrivals(conn, brigade_id, good, user) if brigade_id and good else []
+    return {"accepted": int(accepted or 0), "skipped": len(body.points) - len(good), "arrived": arrived}
+
+
+def _place_sql(with_contour: bool) -> str:
+    """Место наряда для геозоны: участки контура осмотра (обход) или точка наряда."""
+    point = "ST_SetSRID(ST_MakePoint(o.lon, o.lat), 4326)"
+    if not with_contour:
+        return point
+    contour = (f"(SELECT ST_Collect(ST_Transform(l.shape, 4326)) FROM osmotrdeployed r JOIN linesobj l ON l.id = r.lineid"
+               f" WHERE r.directionid = o.inspection_id AND l.shape IS NOT NULL)")
+    return f"COALESCE({contour}, {point})"
+
+
+async def mark_arrivals(conn, brigade_id: int, points: list[TrackPoint], user: str) -> list[str]:
+    """Открытые наряды бригады, у места которых есть точка пачки: время прибытия и событие «Бригада на месте»."""
+    with_contour = bool(await conn.fetchval("SELECT to_regclass('public.osmotrdeployed') IS NOT NULL"))
+    good = [p for p in points if p.accuracy is None or p.accuracy <= ARRIVAL_RADIUS_M]
+    if not good:
+        return []
+    rows = await conn.fetch(
+        f'''WITH p AS (SELECT * FROM unnest($2::timestamptz[], $3::float8[], $4::float8[]) AS t(at, lon, lat)),
+                 o AS (SELECT o.id, o.number, {_place_sql(with_contour)} AS g
+                         FROM tgid_work_order o
+                        WHERE o.brigade_id = $1 AND o.status = ANY($5::text[]) AND o.arrived_at IS NULL
+                          AND (o.lon IS NOT NULL OR o.inspection_id IS NOT NULL))
+            SELECT o.id, o.number, min(p.at) AS at, (array_agg(p.lon ORDER BY p.at))[1] AS lon,
+                   (array_agg(p.lat ORDER BY p.at))[1] AS lat
+              FROM o JOIN p ON ST_DWithin(o.g::geography, ST_SetSRID(ST_MakePoint(p.lon, p.lat), 4326)::geography, $6)
+             WHERE o.g IS NOT NULL
+             GROUP BY o.id, o.number''',
+        brigade_id, [_aware(p.t) for p in good], [p.lon for p in good], [p.lat for p in good],
+        _ARRIVAL_STATUSES, ARRIVAL_RADIUS_M)
+    arrived = []
+    for r in rows:
+        status = await conn.execute(
+            "UPDATE tgid_work_order SET arrived_at = $2 WHERE id = $1 AND arrived_at IS NULL", r["id"], r["at"])
+        if not str(status).endswith(" 1"):
+            continue
+        local = r["at"].astimezone().strftime("%H:%M")
+        await conn.execute(
+            """INSERT INTO tgid_work_order_event (order_id, at, by_user, note, lon, lat)
+               VALUES ($1, $2, $3, $4, $5, $6)""",
+            r["id"], r["at"], user, f"Бригада на месте в {local} (по треку телефона)", r["lon"], r["lat"])
+        arrived.append(r["number"])
+    return arrived
 
 
 async def positions(conn, *, hours: int = POSITION_MAX_AGE_H, now: Optional[datetime] = None) -> dict[str, Any]:
