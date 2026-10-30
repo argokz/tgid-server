@@ -91,6 +91,8 @@
 не откроется. Готовый код из окна ставит `strict-origin-when-cross-origin`. Сама по себе (не в iframe) и
 внутри ТГИД страница открывается — для предпросмотра.
 
+Заголовки веба (`server/middleware/frameAncestors.ts`, с 30.10.2026): `/embed` и `/outages` — `Content-Security-Policy: frame-ancestors *` (сайты для `/embed` проверяет сама страница); все остальные страницы — `frame-ancestors 'self'` и `X-Frame-Options: SAMEORIGIN`: основное приложение на чужом сайте во фрейме не открывается (защита от подмены кликов). Путь считается от `NUXT_APP_BASE_URL`.
+
 ## JS SDK
 
 ```html
