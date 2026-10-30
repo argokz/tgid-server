@@ -1,0 +1,30 @@
+{
+  "opcua": {
+    "endpoint": "opc.tcp://127.0.0.1:4840/tgid/",
+    "_security": "Basic256Sha256,SignAndEncrypt,gateway-cert.der,gateway-key.pem — для настоящей SCADA",
+    "_username": "tgid-gateway (пароль — в переменной из password_env)"
+  },
+  "tgid": {
+    "url": "https://tgid.example.kz/tgid/almaty/map-api/api/v2/telemetry/readings",
+    "api_key_env": "TGID_API_KEY"
+  },
+  "interval_s": 60,
+  "buffer_dir": "./gateway-buffer",
+  "tags": {
+    "ns=2;s=ALM-TEC1-P1": "ALM-TEC1-P1",
+    "ns=2;s=ALM-TEC1-P2": "ALM-TEC1-P2",
+    "ns=2;s=ALM-TEC1-T1": "ALM-TEC1-T1",
+    "ns=2;s=ALM-TEC1-T2": "ALM-TEC1-T2",
+    "ns=2;s=ALM-N220-P1": "ALM-N220-P1",
+    "ns=2;s=ALM-N220-P2": "ALM-N220-P2",
+    "ns=2;s=ALM-N240A-P1": "ALM-N240A-P1",
+    "ns=2;s=ALM-N240A-P2": "ALM-N240A-P2",
+    "ns=2;s=ALM-N731-P1": "ALM-N731-P1",
+    "ns=2;s=ALM-N731-P2": "ALM-N731-P2",
+    "ns=2;s=ALM-N710-P1": "ALM-N710-P1",
+    "ns=2;s=ALM-N710-P2": "ALM-N710-P2",
+    "ns=2;s=ALM-TEC1-G1": "ALM-TEC1-G1",
+    "ns=2;s=ALM-TEC1-G2": "ALM-TEC1-G2"
+  },
+  "_comment": "Пример: коды датчиков — как в реестре ТГИД («Телеметрия: факт против модели»), узлы OPC UA — из SCADA. Ключ API — в переменной окружения TGID_API_KEY."
+}

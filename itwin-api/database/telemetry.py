@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -60,8 +61,8 @@ PIPE_LABELS = {"supply": "подача", "return": "обратка"}
 # Пороги расхождения с моделью: давление и расход — в процентах, температура — в градусах
 OK_PCT, WARN_PCT = 5.0, 10.0
 OK_DEG, WARN_DEG = 2.0, 5.0
-# Показание старше — датчик «молчит»
-STALE_MIN = 60
+# Показание старше — датчик «молчит» (TELEMETRY_STALE_MIN: на стенде с имитатором SCADA — минуты)
+STALE_MIN = max(1, int(os.getenv("TELEMETRY_STALE_MIN", "60") or 60))
 MAX_BATCH = 10_000
 MAX_FILE_ROWS = 200_000
 FUTURE_SLACK = timedelta(hours=24)
@@ -530,7 +531,10 @@ async def check_alerts(conn) -> list[int]:
 
 
 async def list_alerts(conn, *, limit: int = 100, open_only: bool = False) -> list[dict[str, Any]]:
-    where = "WHERE a.acknowledged_at IS NULL AND a.status <> 'normal'" if open_only else ""
+    # открытая — не принята, не «норма» и не перекрыта более новой тревогой датчика (вернулся в норму сам)
+    where = ("""WHERE a.acknowledged_at IS NULL AND a.status <> 'normal'
+               AND NOT EXISTS (SELECT 1 FROM tgid_sensor_alert b WHERE b.sensor_id = a.sensor_id AND b.id > a.id)"""
+             if open_only else "")
     rows = await conn.fetch(
         f"""SELECT a.*, s.code, s.name, s.kind, s.pipe, s.unit, s.node_id, s.line_id
               FROM tgid_sensor_alert a JOIN tgid_sensor s ON s.id = a.sensor_id

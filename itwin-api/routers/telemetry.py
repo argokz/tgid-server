@@ -8,7 +8,8 @@ POST   /api/v1/telemetry/sensors              — добавить датчик 
 PUT    /api/v1/telemetry/sensors/{id}         — изменить
 DELETE /api/v1/telemetry/sensors/{id}         — удалить вместе с показаниями
 POST   /api/v1/telemetry/import               — файл выгрузки ОДПУ (CSV / Excel) (право «Журналы»)
-GET    /api/v1/telemetry/alerts               — тревоги: расхождение, молчит, вернулся в норму (open=true — непринятые)
+GET    /api/v1/telemetry/alerts               — тревоги: расхождение, молчит, вернулся в норму (open=true — непринятые
+                                                и не закрытые возвратом в норму)
 POST   /api/v1/telemetry/alerts/{id}/ack      — «принято» (право «Журналы»)
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """

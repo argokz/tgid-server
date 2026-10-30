@@ -1,0 +1,155 @@
+{
+  "endpoint": "opc.tcp://127.0.0.1:4840/tgid/",
+  "namespace": "urn:tgid:scada-emulator",
+  "period_s": 5,
+  "seed": 7,
+  "tags": [
+    {
+      "id": "ALM-TEC1-P1",
+      "name": "ТЭЦ-1 давление подачи",
+      "unit": "kgf_cm2",
+      "base": 12.0,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-TEC1-P2",
+      "name": "ТЭЦ-1 давление обратки",
+      "unit": "kgf_cm2",
+      "base": 5.4,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-TEC1-T1",
+      "name": "ТЭЦ-1 температура подачи",
+      "unit": "c",
+      "base": 131.4,
+      "daily": 0.004,
+      "noise": 0.001,
+      "faults": []
+    },
+    {
+      "id": "ALM-TEC1-T2",
+      "name": "ТЭЦ-1 температура обратки",
+      "unit": "c",
+      "base": 69.2819,
+      "daily": 0.006,
+      "noise": 0.002,
+      "faults": []
+    },
+    {
+      "id": "ALM-N220-P1",
+      "name": "2-20 давление подачи",
+      "unit": "kgf_cm2",
+      "base": 12.0399,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-N220-P2",
+      "name": "2-20 давление обратки",
+      "unit": "kgf_cm2",
+      "base": 5.9624,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-N240A-P1",
+      "name": "2-40А давление подачи",
+      "unit": "kgf_cm2",
+      "base": 9.2455,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-N240A-P2",
+      "name": "2-40А давление обратки",
+      "unit": "kgf_cm2",
+      "base": 4.7606,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-N731-P1",
+      "name": "7-31 давление подачи",
+      "unit": "kgf_cm2",
+      "base": 8.0052,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": [
+        {
+          "kind": "drift",
+          "after_min": 10,
+          "factor": 0.88
+        }
+      ]
+    },
+    {
+      "id": "ALM-N731-P2",
+      "name": "7-31 давление обратки",
+      "unit": "kgf_cm2",
+      "base": 3.9361,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-N710-P1",
+      "name": "7-10 давление подачи",
+      "unit": "kgf_cm2",
+      "base": 10.0921,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": [
+        {
+          "kind": "dropout",
+          "after_min": 3,
+          "every_min": 20,
+          "for_min": 5
+        }
+      ]
+    },
+    {
+      "id": "ALM-N710-P2",
+      "name": "7-10 давление обратки",
+      "unit": "kgf_cm2",
+      "base": 3.6162,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": [
+        {
+          "kind": "dropout",
+          "after_min": 3,
+          "every_min": 20,
+          "for_min": 5
+        }
+      ]
+    },
+    {
+      "id": "ALM-TEC1-G1",
+      "name": "ТЭЦ-1 расход подачи",
+      "unit": "t_h",
+      "base": 15409.0366,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    },
+    {
+      "id": "ALM-TEC1-G2",
+      "name": "ТЭЦ-1 расход обратки",
+      "unit": "t_h",
+      "base": 14059.3431,
+      "daily": 0.015,
+      "noise": 0.004,
+      "faults": []
+    }
+  ],
+  "_comment": "Пример стенда: пилот на копии Алматы, магистраль ТЭЦ-1 → 7-10, база значений — расчёт №710. Сбои: 7-31 подача — засор −12 % через 10 мин, 7-10 — связь пропадает на 5 мин каждые 20 мин."
+}

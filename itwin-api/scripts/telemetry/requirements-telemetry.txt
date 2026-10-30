@@ -1,0 +1,4 @@
+# Шлюз OPC UA → ТГИД и имитатор SCADA (scripts/telemetry). Ставится отдельно от API, на машине шлюза:
+#   python -m venv .venv-telemetry && .venv-telemetry\Scripts\pip install -r scripts/telemetry/requirements-telemetry.txt
+# asyncua — LGPL-3.0, используется как внешняя библиотека отдельного инструмента (код API её не подключает).
+asyncua==1.1.5
