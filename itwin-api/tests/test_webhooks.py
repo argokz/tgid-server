@@ -217,7 +217,7 @@ def test_deliver_due_sends_claimed_batch(public_dns):
 
 def test_event_sources_skip_collected_and_comments():
     by_name = {s.name: s for s in api_events.SOURCES}
-    assert set(by_name) == {"defect", "work_order", "outage", "sensor_alert"}
+    assert set(by_name) == {"defect", "work_order", "outage", "sensor_alert", "balance_alert"}
     for name, src in by_name.items():
         assert f".source = '{name}'" in src.insert_sql and "ON CONFLICT (source, source_id) DO NOTHING" in src.insert_sql
     assert "e.to_status IS NOT NULL" in by_name["work_order"].insert_sql  # комментарии — не события

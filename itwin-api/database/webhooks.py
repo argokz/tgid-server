@@ -64,6 +64,9 @@ _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _COLLECT_LOCK = 0x7467_6964_7768  # «tgidwh»
 _ALERT_LOCK = 0x7467_6964_616C  # «tgidal»
 ALERT_EVERY_S = 60
+# баланс расхода: граф сети города тяжелее, а ночной расход меняется раз в сутки (на стенде — чаще)
+BALANCE_EVERY_S = max(60, int(os.getenv("TELEMETRY_BALANCE_EVERY_S", "900") or 900))
+_last_balance: dict[str, float] = {}  # город → monotonic последней проверки баланса
 
 
 class WebhookError(Exception):
@@ -514,7 +517,29 @@ async def check_sensor_alerts(conn) -> int:
                 await telemetry_regime.auto_recalc(conn)
         except Exception as exc:  # noqa: BLE001 — брокер Celery недоступен и т. п.: следующий проход
             logger.warning("Перерасчёт по факту: %s", exc)
+        try:
+            async with conn.transaction():
+                alerts += len(await check_balance_alerts(conn))
+        except Exception as exc:  # noqa: BLE001 — таблица ещё создаётся и т. п.: следующий проход
+            logger.warning("Баланс расхода: %s", exc)
         return alerts
+
+
+async def check_balance_alerts(conn) -> list[int]:
+    """Тревоги баланса расхода по зонам (database/flow_balance.py) — не чаще BALANCE_EVERY_S на город."""
+    from cities import current_city
+    from database import flow_balance
+    from database.outage_simulation import get_outage_network_graph
+
+    city = current_city() or ""
+    if time.monotonic() - _last_balance.get(city, -1e9) < BALANCE_EVERY_S:
+        return []
+    if not await conn.fetchval("SELECT to_regclass('public.tgid_balance_alert') IS NOT NULL"):
+        return []  # таблицу ещё создаёт доводка базы — проверить на следующем проходе
+    _last_balance[city] = time.monotonic()
+    if not await conn.fetchval("SELECT EXISTS (SELECT 1 FROM tgid_sensor WHERE active AND kind = 'flow')"):
+        return []
+    return await flow_balance.check_alerts(conn, await get_outage_network_graph(conn))
 
 
 async def webhook_loop(city: str, interval_s: float) -> None:
@@ -527,10 +552,12 @@ async def webhook_loop(city: str, interval_s: float) -> None:
     while True:
         try:
             async with acquire_conn() as conn:
+                # сначала сбор событий: у нового источника курсор встаёт на текущий максимум до первых тревог,
+                # иначе первая тревога после выкатки (утечка, что уже идёт) наружу бы не ушла
+                await run_once(conn, city)
                 if time.monotonic() - last_alerts >= ALERT_EVERY_S:
                     last_alerts = time.monotonic()
                     await check_sensor_alerts(conn)
-                await run_once(conn, city)
                 if time.monotonic() - last_prune > PRUNE_EVERY_S:
                     await api_events.prune(conn)
                     await conn.execute(

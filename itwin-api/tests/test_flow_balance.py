@@ -114,3 +114,49 @@ def test_balance_zone_and_source(monkeypatch):
     window[4] = (350.0 / 0.975, now - timedelta(hours=5))
     res = asyncio.run(fb.balance(None, _net(), now))
     assert {z["key"]: z["status"] for z in res["zones"]}[4] == "no_data"
+
+
+class _AlertConn:
+    """Состояние зон и тревоги в памяти (как tgid_balance_zone / tgid_balance_alert)."""
+
+    def __init__(self, prev=None):
+        self.state = dict(prev or {})
+        self.alerts = []
+
+    async def fetch(self, q, *a):
+        return [{"zone_key": k, "status": v} for k, v in self.state.items()]
+
+    async def execute(self, q, key, status, boundary):
+        self.state[key] = status
+
+    async def fetchval(self, q, *a):
+        self.alerts.append(a)
+        return len(self.alerts)
+
+
+def _zone(key, status, night=None):
+    return {"key": key, "kind": "source", "status": status, "boundary": [324808], "excess": 301.0,
+            "uncertainty": 764.0, "night": night}
+
+
+def test_check_alerts_transitions(monkeypatch):
+    night = {"night": "2026-10-30", "value": 1230.5, "baseline": 1149.7, "growth": 80.9, "threshold": 5.1,
+             "nights": 7, "grew": True}
+    zones = [_zone(1, "growth", night), _zone(2, "ok"), _zone(3, "open")]
+
+    async def balance(conn, net, now=None):
+        return {"zones": zones}
+
+    monkeypatch.setattr(fb, "balance", balance)
+    conn = _AlertConn()
+    ids = asyncio.run(fb.check_alerts(conn, {}))
+    # первая оценка: утечка — сразу тревога; норма — только запоминается; незакрытая — без состояния
+    assert ids == [1] and conn.state == {1: "growth", 2: "normal"}
+    key, kind, boundary, status, prev, night_date = conn.alerts[0][:6]
+    assert (key, status, prev, str(night_date)) == (1, "growth", None, "2026-10-30") and conn.alerts[0][8] == 80.9
+    assert asyncio.run(fb.check_alerts(conn, {})) == []  # без перехода — без тревоги
+    zones[0] = _zone(1, "ok")
+    zones[1] = _zone(2, "leak")
+    ids = asyncio.run(fb.check_alerts(conn, {}))
+    assert len(ids) == 2 and conn.state == {1: "normal", 2: "leak"}
+    assert [a[3:5] for a in conn.alerts[1:]] == [("normal", "growth"), ("leak", "normal")]

@@ -35,6 +35,9 @@ EVENT_TYPES: dict[str, str] = {
     "sensor.deviation": "Датчик телеметрии: показание расходится с моделью",
     "sensor.silent": "Датчик телеметрии молчит — нет свежих показаний",
     "sensor.recovered": "Датчик телеметрии вернулся в норму",
+    "balance.night_growth": "Баланс расхода: ночной расход зоны вырос — признак новой утечки",
+    "balance.imbalance": "Баланс расхода: приток в зону больше модели сверх погрешности расходомеров",
+    "balance.recovered": "Баланс расхода зоны вернулся в норму",
 }
 PING = "ping"
 RESCAN_IDS = 200
@@ -128,11 +131,32 @@ _SENSOR_ALERT_SQL = """
     RETURNING id
 """
 
+# Тревоги баланса расхода по зонам (database/flow_balance.py check_alerts): т/ч
+_BALANCE_ALERT_SQL = """
+    INSERT INTO tgid_api_event (type, object_id, occurred_at, data, source, source_id)
+    SELECT CASE a.status WHEN 'growth' THEN 'balance.night_growth' WHEN 'leak' THEN 'balance.imbalance'
+                ELSE 'balance.recovered' END,
+           a.zone_key, a.at,
+           jsonb_strip_nulls(jsonb_build_object(
+               'alert_id', a.id, 'zone_key', a.zone_key, 'zone_kind', a.zone_kind, 'boundary_lines', a.boundary,
+               'status', a.status, 'prev_status', a.prev_status, 'night', a.night, 'night_value', a.night_value,
+               'night_baseline', a.night_baseline, 'night_growth', a.night_growth, 'excess', a.excess,
+               'uncertainty', a.uncertainty, 'unit', 't_h')),
+           'balance_alert', a.id
+      FROM tgid_balance_alert a
+     WHERE a.id > $1 AND a.id > $2
+       AND NOT EXISTS (SELECT 1 FROM tgid_api_event e WHERE e.source = 'balance_alert' AND e.source_id = a.id)
+     ORDER BY a.id
+    ON CONFLICT (source, source_id) DO NOTHING
+    RETURNING id
+"""
+
 SOURCES: tuple[Source, ...] = (
     Source("defect", "defect", _DEFECT_SQL),
     Source("work_order", "tgid_work_order_event", _WORK_ORDER_SQL),
     Source("outage", "tgid_outage_event", _OUTAGE_SQL),
     Source("sensor_alert", "tgid_sensor_alert", _SENSOR_ALERT_SQL),
+    Source("balance_alert", "tgid_balance_alert", _BALANCE_ALERT_SQL),
 )
 
 

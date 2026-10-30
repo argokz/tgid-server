@@ -16,6 +16,8 @@ GET    /api/v1/telemetry/regime               — режим источнико�
 POST   /api/v1/telemetry/regime/run           — расчёт фрагмента по фактическому режиму (право «Расчёт»)
 GET    /api/v1/telemetry/balance              — баланс расхода по зонам между расходомерами: небаланс, ночной расход
 GET    /api/v1/telemetry/balance/zones/{key}/geometry — участки зоны для карты
+GET    /api/v1/telemetry/balance/alerts        — тревоги зон: ночной рост, небаланс, возврат (open=true — открытые)
+POST   /api/v1/telemetry/balance/alerts/{id}/ack — «принято» (право «Журналы»)
 POST   /api/v2/telemetry/readings             — показания от шлюза SCADA пачкой (ключ API, право «Журналы»)
 """
 from __future__ import annotations
@@ -204,3 +206,21 @@ async def telemetry_balance_zone(key: Annotated[int, Path(ge=1)], _: Viewer) -> 
     if zone is None:
         raise HTTPException(status_code=404, detail="Зона не найдена — расходомеры или сеть изменились")
     return zone
+
+
+@router.get("/api/v1/telemetry/balance/alerts")
+async def telemetry_balance_alerts(_: Viewer, open: bool = False,  # noqa: A002 — имя параметра адреса
+                                   limit: int = Query(100, ge=1, le=tm.MAX_ALERTS)) -> list[dict[str, Any]]:
+    async with acquire_conn() as conn:
+        if not await conn.fetchval("SELECT to_regclass('public.tgid_balance_alert') IS NOT NULL"):
+            return []
+        return await flow_balance.list_alerts(conn, limit=limit, open_only=open)
+
+
+@router.post("/api/v1/telemetry/balance/alerts/{alert_id}/ack", dependencies=WRITE)
+async def telemetry_balance_alert_ack(alert_id: Annotated[int, Path(ge=1)], user: Writer) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        result = await flow_balance.acknowledge(conn, alert_id, user.username)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Тревога не найдена")
+    return result

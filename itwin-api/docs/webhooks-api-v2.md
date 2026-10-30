@@ -29,6 +29,9 @@
 | `sensor.deviation` | датчик телеметрии: показание расходится с моделью (`docs/telemetry.md`) | `alert_id`, `sensor_id`, `code`, `name`, `kind`, `pipe`, `node_id` / `line_id`, `status`, `prev_status`, `value`, `model`, `unit`, `diff`, `pct` |
 | `sensor.silent` | датчик молчит — нет показаний дольше 60 мин | то же |
 | `sensor.recovered` | датчик вернулся в норму | то же |
+| `balance.night_growth` | баланс расхода зоны: ночной расход вырос — признак новой утечки (`docs/telemetry.md`) | `alert_id`, `zone_key`, `zone_kind`, `boundary_lines`, `status`, `prev_status`, `night`, `night_value`, `night_baseline`, `night_growth`, `excess`, `uncertainty`, `unit` (т/ч) |
+| `balance.imbalance` | приток в зону больше модели сверх погрешности расходомеров | то же |
+| `balance.recovered` | баланс зоны вернулся в норму | то же |
 
 Данные события — короткие и **без персональных данных**: без имён потребителей, логинов сотрудников и свободного
 текста (в название и описание наряда call-центр может вписать телефон жителя). Подробности (название, зона

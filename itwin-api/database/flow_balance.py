@@ -304,3 +304,68 @@ async def zone_geometry(conn, net: dict[str, Any], key: int) -> Optional[dict[st
                                              'ST_Simplify(ST_Collect(shape), 2)'}, 4326), 6)
               FROM linesobj WHERE id = ANY($1::int[]) AND shape IS NOT NULL""", lines)
     return {"key": key, "lines": len(lines), "hull": hull, "geometry": json.loads(geom) if geom else None}
+
+
+# --- тревоги -----------------------------------------------------------------------------------
+
+ALERT_LEVELS = {"growth": "growth", "leak": "leak", "ok": "normal", "check": "normal"}  # open / no_data — без перехода
+
+
+async def check_alerts(conn, net: dict[str, Any], now: Optional[datetime] = None) -> list[int]:
+    """Сверить вывод по зонам с прошлым состоянием и записать тревоги о переходах; вернуть id новых.
+
+    В отличие от датчиков, первая оценка зоны с утечкой тревогу даёт: зон мало, а утечка — повод действовать.
+    Вызывать под замком (database/webhooks.py): два процесса не должны записать одну тревогу дважды.
+    """
+    state = await balance(conn, net, now)
+    prev = {r["zone_key"]: r["status"] for r in await conn.fetch("SELECT zone_key, status FROM tgid_balance_zone")}
+    new_ids: list[int] = []
+    for z in state["zones"]:
+        level = ALERT_LEVELS.get(z["status"])
+        before = prev.get(z["key"])
+        if level is None or level == before:
+            continue
+        await conn.execute(
+            """INSERT INTO tgid_balance_zone (zone_key, status, since, boundary) VALUES ($1, $2, now(), $3)
+               ON CONFLICT (zone_key) DO UPDATE SET status = excluded.status, since = now(),
+                                                    boundary = excluded.boundary""",
+            z["key"], level, z["boundary"])
+        if before is None and level == "normal":
+            continue
+        night = z["night"] or {}
+        new_ids.append(await conn.fetchval(
+            """INSERT INTO tgid_balance_alert (zone_key, zone_kind, boundary, status, prev_status, night, night_value,
+                                               night_baseline, night_growth, excess, uncertainty)
+               VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11) RETURNING id""",
+            z["key"], z["kind"], z["boundary"], level, before,
+            datetime.fromisoformat(night["night"]).date() if night.get("night") else None,
+            night.get("value"), night.get("baseline"), night.get("growth"), z["excess"], z["uncertainty"]))
+    return new_ids
+
+
+async def list_alerts(conn, *, limit: int = 100, open_only: bool = False) -> list[dict[str, Any]]:
+    """Тревоги зон; открытая — не принята, не «норма» и не перекрыта более новой тревогой той же зоны."""
+    where = ("""WHERE a.acknowledged_at IS NULL AND a.status <> 'normal'
+                  AND NOT EXISTS (SELECT 1 FROM tgid_balance_alert b WHERE b.zone_key = a.zone_key AND b.id > a.id)"""
+             if open_only else "")
+    rows = await conn.fetch(f"SELECT a.* FROM tgid_balance_alert a {where} ORDER BY a.id DESC LIMIT $1", limit)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["at"] = d["at"].isoformat()
+        d["night"] = d["night"].isoformat() if d["night"] else None
+        d["acknowledged_at"] = d["acknowledged_at"].isoformat() if d["acknowledged_at"] else None
+        out.append(d)
+    return out
+
+
+async def acknowledge(conn, alert_id: int, user: str) -> Optional[dict[str, Any]]:
+    row = await conn.fetchrow(
+        """UPDATE tgid_balance_alert SET acknowledged_by = $2, acknowledged_at = now()
+            WHERE id = $1 AND acknowledged_at IS NULL RETURNING id, acknowledged_by, acknowledged_at""",
+        alert_id, user)
+    if row is None:
+        exists = await conn.fetchval("SELECT 1 FROM tgid_balance_alert WHERE id = $1", alert_id)
+        return {"id": alert_id, "already": True} if exists else None
+    return {"id": row["id"], "acknowledged_by": row["acknowledged_by"],
+            "acknowledged_at": row["acknowledged_at"].isoformat()}
