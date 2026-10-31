@@ -1,6 +1,6 @@
 """Общая карта коммуникаций (фаза 4, шаг 5): сближения и пересечения сетей разных видов, проверка раскопок.
 
-Сети: теплосеть (linesobj + паспорт heatpipesections: наружный диаметр, глубина заложения; SRID сети города) и
+Сети: теплосеть (linesobj + паспорт heatpipesections: наружный диаметр; глубина — tgid_heat_depth; SRID сети) и
 водопровод (модель tgid_water_link, 4326). Пары подачи и обратки теплосети лежат на одной геометрии — считаются
 одним коридором (DISTINCT ON по геометрии).
 
@@ -8,8 +8,9 @@
   нормы по горизонтали (tgid_utility_norm): длина сближения и ближайшая точка. Норма теплосети в СНиП — от наружной
   стенки канала; ширины канала в паспорте нет, считается от наружной стенки трубы — в канальной прокладке
   расстояние в свету фактически меньше.
-- **Пересечение** — трассы пересекаются в плане: точка пересечения и глубина теплосети по паспорту (если поле
-  заполнено — см. depth_note); глубин водопровода в модели нет — расстояние по вертикали проверяет инженер.
+- **Пересечение** — трассы пересекаются в плане: точка пересечения, глубина верха и низа трубы теплосети в ней
+  (database/heat_depth.py — из отметок узлов, поле паспорта не заполнено); глубин водопровода в модели нет —
+  расстояние по вертикали проверяет инженер.
 - **Раскопки** — сети в зоне работ (точка, линия или контур + отступ): участки, владельцы, фрагменты, расстояние.
 
 Поиск — по пространственному индексу сети города (bbox в её SRID с запасом), расстояния — по geography (метры
@@ -21,6 +22,7 @@ import json
 import math
 from typing import Any, Optional
 
+from database import heat_depth
 from database.net_srid import net_srid
 
 KINDS = ("heat", "water")
@@ -29,7 +31,6 @@ MAX_DIG_FEATURES = 500
 MAX_DIG_EXTENT_M = 5000.0
 MAX_DIG_BUFFER_M = 200.0
 MIN_DIG_BUFFER_M = 0.5
-DEPTH_DEFAULT_SHARE = 0.95            # одно значение глубины у 95 % паспортов — поле не заполнено (значение по умолчанию)
 PAD_FACTOR = 2.5                      # запас bbox в SRID сети: 3857 растягивает метры в 1/cos(широты), до 60° — в 2
 
 
@@ -90,30 +91,6 @@ def dig_geometry(geojson: dict[str, Any]) -> dict[str, Any]:
     return {"type": geojson["type"], "coordinates": coords}
 
 
-# --- глубина теплосети: заполнена ли ------------------------------------------------------------
-
-_depth_cache: dict[str, Optional[str]] = {}
-
-
-async def depth_note(conn) -> Optional[str]:
-    """None — глубины в паспортах похожи на настоящие; иначе — пояснение, почему их не показывать (одно значение у
-    почти всех паспортов — значение по умолчанию, у Алматы 1,0 м у 99,9 %). Раз на базу за процесс."""
-    db = await conn.fetchval("SELECT current_database()")
-    if db in _depth_cache:
-        return _depth_cache[db]
-    row = await conn.fetchrow(
-        """SELECT pipelinelayingdepth AS d, count(*) AS n, sum(count(*)) OVER () AS total
-             FROM heatpipesections WHERE pipelinelayingdepth > 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 1""")
-    note = None
-    if row is None:
-        note = "Глубина заложения в паспортах теплосети не заполнена"
-    elif row["n"] >= DEPTH_DEFAULT_SHARE * float(row["total"]):
-        note = (f"Глубина заложения в паспортах теплосети не заполнена: у {row['n'] / float(row['total']):.1%} "
-                f"участков одно значение {row['d']:g} м — значение по умолчанию, не показывается")
-    _depth_cache[db] = note
-    return note
-
-
 # --- нормы ---------------------------------------------------------------------------------------
 
 def _pair(a: str, b: str) -> tuple[str, str]:
@@ -146,18 +123,34 @@ async def _norm(conn, a: str, b: str) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
+# --- глубина теплосети в точке (database/heat_depth.py) ----------------------------------------------
+
+# глубина верха трубы в точке участка: между концами пропорционально положению точки; известен один конец — он
+_DEPTH_AT = ("coalesce(depth_start + (depth_end - depth_start) * ST_LineLocatePoint({line}, {pt}), "
+             "depth_start, depth_end)")
+
+
+def _depth_fields(top_m: Optional[float], d_mm: Optional[float], source: Optional[str]) -> dict[str, Any]:
+    """Глубина теплосети в пересечении: верх и низ трубы (верх + наружный диаметр), источник."""
+    if top_m is None:
+        return {"heat_depth_top_m": None, "heat_depth_bottom_m": None, "heat_depth_source": None}
+    return {"heat_depth_top_m": round(top_m, 2),
+            "heat_depth_bottom_m": round(top_m + (d_mm or 0) / 1000, 2), "heat_depth_source": source}
+
+
 # --- сближения и пересечения ---------------------------------------------------------------------
 
 _HEAT_PASSPORT = """LEFT JOIN LATERAL (
-        SELECT NULLIF(diameterexternal, 0) AS dext, NULLIF(diametercondit, 0) AS dn,
-               NULLIF(pipelinelayingdepth, 0) AS depth
-          FROM heatpipesections WHERE lineid = l.id ORDER BY id LIMIT 1) h ON true"""
+        SELECT NULLIF(diameterexternal, 0) AS dext, NULLIF(diametercondit, 0) AS dn
+          FROM heatpipesections WHERE lineid = l.id ORDER BY id LIMIT 1) h ON true
+      LEFT JOIN tgid_heat_depth hd ON hd.lineid = l.id"""
 
 
 async def water_heat_conflicts(conn, model_id: int) -> dict[str, Any]:
     """Сближения и пересечения труб модели водопровода с теплосетью города по норме heat — water."""
     if await conn.fetchval("SELECT 1 FROM tgid_water_model WHERE id = $1", model_id) is None:
         raise UtilityError(404, "Модель водопровода не найдена")
+    await heat_depth.ensure(conn)
     norm = await _norm(conn, "heat", "water")
     norm_m = norm["horizontal_m"] if norm else None
     reach = (norm_m or 0) + 2.0                     # + наружные диаметры: до 2 м на двоих с запасом
@@ -169,7 +162,8 @@ async def water_heat_conflicts(conn, model_id: int) -> dict[str, Any]:
             c AS (
                 SELECT DISTINCT ON (w.link_id, md5(ST_AsBinary(l.shape)))
                        w.link_id, w.dw, w.geom AS wg, l.id AS line_id, l.fileid,
-                       ST_Transform(l.shape, 4326) AS hg, coalesce(h.dext, h.dn) AS dh, h.depth,
+                       ST_Transform(l.shape, 4326) AS hg, coalesce(h.dext, h.dn) AS dh,
+                       hd.depth_start, hd.depth_end, hd.source AS depth_source,
                        count(*) OVER (PARTITION BY w.link_id, md5(ST_AsBinary(l.shape))) AS pipes
                   FROM w JOIN linesobj l ON l.shape && ST_Expand(w.gn, $2) AND l.shape IS NOT NULL
                   {_HEAT_PASSPORT}
@@ -177,7 +171,9 @@ async def water_heat_conflicts(conn, model_id: int) -> dict[str, Any]:
             d AS (
                 SELECT c.*, ST_Distance(wg::geography, hg::geography) AS axis_m, ST_Intersects(wg, hg) AS crosses
                   FROM c)
-            SELECT link_id, dw, line_id, fileid, dh, depth, pipes, axis_m, crosses,
+            SELECT link_id, dw, line_id, fileid, dh, pipes, axis_m, crosses, depth_source,
+                   CASE WHEN crosses THEN {_DEPTH_AT.format(line="hg", pt="ST_PointOnSurface(ST_Intersection(wg, hg))")}
+                   END AS depth,
                    ST_AsGeoJSON(CASE WHEN crosses THEN ST_PointOnSurface(ST_Intersection(wg, hg))
                                      ELSE ST_ClosestPoint(wg, hg) END, 7) AS pt,
                    CASE WHEN crosses THEN NULL
@@ -188,7 +184,6 @@ async def water_heat_conflicts(conn, model_id: int) -> dict[str, Any]:
              ORDER BY crosses DESC, axis_m
              LIMIT {MAX_CONFLICTS + 1}""",
         model_id, pad_units(reach, srid), reach)
-    note = await depth_note(conn)
     crossings, close = [], []
     for r in rows[:MAX_CONFLICTS]:
         kind = verdict(r["crosses"], r["axis_m"], r["dw"], r["dh"], norm_m)
@@ -198,12 +193,12 @@ async def water_heat_conflicts(conn, model_id: int) -> dict[str, Any]:
                 "water_d_mm": r["dw"], "heat_d_mm": r["dh"], "heat_pipes": r["pipes"],
                 "point": json.loads(r["pt"]) if r["pt"] else None}
         if kind == "crossing":
-            crossings.append({**item, "heat_depth_m": None if note else r["depth"]})
+            crossings.append({**item, **_depth_fields(r["depth"], r["dh"], r["depth_source"])})
         else:
             close.append({**item, "axis_m": round(r["axis_m"], 2),
                           "clearance_m": round(clearance_m(r["axis_m"], r["dw"], r["dh"]), 2),
                           "near_length_m": round(r["near_m"] or 0, 1)})
-    return {"model_id": model_id, "norm": norm, "crossings": crossings, "close": close, "depth_note": note,
+    return {"model_id": model_id, "norm": norm, "crossings": crossings, "close": close,
             "truncated": len(rows) > MAX_CONFLICTS,
             "summary": {"crossings": len(crossings), "close": len(close),
                         "close_length_m": round(sum(c["near_length_m"] for c in close), 1)}}
@@ -219,13 +214,16 @@ async def excavation(conn, geometry: dict[str, Any], buffer_m: float,
         raise UtilityError(422, f"Отступ — от 0 до {MAX_DIG_BUFFER_M:g} м")
     g = json.dumps(dig_geometry(geometry))
     reach = max(buffer_m, MIN_DIG_BUFFER_M)     # точка без отступа — ничего не задевает
+    await heat_depth.ensure(conn)
     srid = net_srid()
     heat = await conn.fetch(
         f"""WITH a AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) AS g),
                  z AS (SELECT g, ST_Buffer(g::geography, $2)::geometry AS zone FROM a),
                  zn AS (SELECT z.*, ST_Transform(zone, {srid}) AS zn FROM z)
             SELECT DISTINCT ON (md5(ST_AsBinary(l.shape)))
-                   l.id, l.fileid, f.name AS fragment, o.name AS owner, coalesce(h.dext, h.dn) AS d_mm, h.depth,
+                   l.id, l.fileid, f.name AS fragment, o.name AS owner, coalesce(h.dext, h.dn) AS d_mm,
+                   least(hd.depth_start, hd.depth_end) AS depth_min,
+                   greatest(hd.depth_start, hd.depth_end) AS depth_max, hd.source AS depth_source,
                    count(*) OVER (PARTITION BY md5(ST_AsBinary(l.shape))) AS pipes,
                    ST_Distance(zn.g::geography, ST_Transform(l.shape, 4326)::geography) AS dist_m,
                    ST_AsGeoJSON(ST_Transform(l.shape, 4326), 7) AS geom
@@ -247,9 +245,9 @@ async def excavation(conn, geometry: dict[str, Any], buffer_m: float,
     zone = await conn.fetchval(
         "SELECT ST_AsGeoJSON(ST_Buffer(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, $2)::geometry, 7)",
         g, reach)
-    note = await depth_note(conn)
     heat_items = sorted(({"id": r["id"], "fileid": r["fileid"], "fragment": r["fragment"], "owner": r["owner"],
-                          "d_mm": r["d_mm"], "depth_m": None if note else r["depth"], "pipes": r["pipes"],
+                          "d_mm": r["d_mm"], "depth_min_m": r["depth_min"], "depth_max_m": r["depth_max"],
+                          "depth_source": r["depth_source"], "pipes": r["pipes"],
                           "distance_m": round(r["dist_m"], 1)} for r in heat), key=lambda x: x["distance_m"])
     water_items = [{"model_id": r["model_id"], "model": r["model"], "link": r["link_id"], "type": r["type"],
                     "d_mm": r["d_mm"], "distance_m": round(r["dist_m"], 1)} for r in water]
@@ -262,7 +260,7 @@ async def excavation(conn, geometry: dict[str, Any], buffer_m: float,
     features += [{"type": "Feature", "geometry": json.loads(r["geom"]),
                   "properties": {"kind": "water", "id": r["link_id"], "distance_m": round(r["dist_m"], 1)}}
                  for r in water]
-    return {"buffer_m": buffer_m, "heat": heat_items, "water": water_items, "depth_note": note,
+    return {"buffer_m": buffer_m, "heat": heat_items, "water": water_items,
             "owners": dict(sorted(owners.items(), key=lambda kv: -kv[1])),
             "truncated": len(heat) >= MAX_DIG_FEATURES or len(water) >= MAX_DIG_FEATURES,
             "geojson": {"type": "FeatureCollection", "features": features}}

@@ -5,6 +5,8 @@ GET  /api/v1/utilities/norms                 — нормативные расс
 PUT  /api/v1/utilities/norms                 — изменить норму (право «Справочники»)
 GET  /api/v1/utilities/conflicts             — сближения и пересечения: модель водопровода × теплосеть
 POST /api/v1/utilities/excavation            — сети в зоне работ: участки, владельцы, расстояние
+GET  /api/v1/utilities/depths                — глубина теплосети из отметок узлов: сколько участков и откуда
+POST /api/v1/utilities/depths/refresh        — пересчитать глубины (право «Справочники»)
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
+from database import heat_depth
 from database import utility_conflicts as uc
 from database.connect import acquire_conn
 
@@ -73,3 +76,18 @@ async def utilities_excavation(body: ExcavationIn, _: Viewer) -> dict[str, Any]:
             return await uc.excavation(conn, body.geometry, body.buffer_m, body.water_model)
     except uc.UtilityError as exc:
         raise _http(exc) from exc
+
+
+@router.get("/api/v1/utilities/depths")
+async def utilities_depths(_: Viewer) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        return await heat_depth.status(conn)
+
+
+@router.post("/api/v1/utilities/depths/refresh", dependencies=[Depends(require_mutations_enabled)])
+async def utilities_depths_refresh(user: Refs) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        result = await heat_depth.refresh(conn, user.username)
+    if result.get("busy"):
+        raise HTTPException(status_code=409, detail="Глубины уже пересчитываются")
+    return result
