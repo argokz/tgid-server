@@ -78,7 +78,7 @@ async def poi_geojson(_: Viewer, category: Optional[str] = Query(None, max_lengt
 async def poi_refresh_consumers(request: Request, user: Admin) -> dict[str, Any]:
     async with acquire_conn() as conn:
         out = await poi.refresh_from_consumers(conn, user.username)
-    await _audit(request, user, "POI_REFRESH_CONSUMERS", {"saved": out["saved"], "removed": out["removed"]})
+    await _audit(request, user, "POI_REFRESH", {"saved": out["saved"], "removed": out["removed"]})
     return out
 
 
