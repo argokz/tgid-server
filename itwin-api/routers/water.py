@@ -13,6 +13,10 @@ GET    /api/v1/water/models/{id}/runs/{run}/step — значения шага �
 GET    /api/v1/water/models/{id}/zones          — зоны водоучёта (DMA) между границами и расходомерами
 PUT    /api/v1/water/models/{id}/meters         — расходомеры модели (трубы-вводы зон, право «Справочники»)
 GET    /api/v1/water/models/{id}/runs/{run}/balance — баланс по зонам; сценарий утечки — против базового расчёта
+GET    /api/v1/water/models/{id}/valves         — задвижки модели точками
+POST   /api/v1/water/models/{id}/valves/generate — расставить задвижки «N−1» (право «Справочники»)
+POST   /api/v1/water/models/{id}/isolation      — отключение трубы: задвижки, узлы без воды
+POST   /api/v1/water/models/{id}/isolation/run  — то же с расчётом EPANET (отбор по давлению, право «Расчёт»)
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, 
 from pydantic import BaseModel, Field
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
-from database import water, water_zones
+from database import water, water_isolation, water_zones
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["water"])
@@ -52,6 +56,10 @@ class RunIn(BaseModel):
     duration_h: Optional[float] = Field(None, ge=0, le=168)
     report_step_h: Optional[float] = Field(None, gt=0, le=24)
     leaks: list[LeakIn] = Field(default_factory=list, max_length=20, description="Сценарий утечек")
+
+
+class IsolationIn(BaseModel):
+    link_id: str = Field(min_length=1, max_length=64, description="Труба, которую отключают")
 
 
 class MetersIn(BaseModel):
@@ -176,5 +184,38 @@ async def water_balance(model_id: ModelId, run_id: Annotated[int, Path(ge=1)], _
     try:
         async with acquire_conn() as conn:
             return await water_zones.balance(conn, model_id, run_id, baseline)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/water/models/{model_id}/valves")
+async def water_valves(model_id: ModelId, _: Viewer) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        return await water_isolation.list_valves(conn, model_id)
+
+
+@router.post("/api/v1/water/models/{model_id}/valves/generate", dependencies=WRITE)
+async def water_valves_generate(model_id: ModelId, user: Refs) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_isolation.generate_valves(conn, model_id, user.username)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/api/v1/water/models/{model_id}/isolation")
+async def water_isolation_check(model_id: ModelId, body: IsolationIn, _: Viewer) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_isolation.isolation(conn, model_id, body.link_id)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/api/v1/water/models/{model_id}/isolation/run")
+async def water_isolation_run(model_id: ModelId, body: IsolationIn, user: Calc) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_isolation.isolation_run(conn, model_id, body.link_id, user=user.username)
     except water.WaterError as exc:
         raise _http(exc) from exc

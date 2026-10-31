@@ -8,11 +8,11 @@ from database import water_zones as wz
 # труба X (A–D) закрыта — D отдельно.
 NODES = [
     {"id": "R", "type": "Reservoir"},
-    {"id": "S", "type": "Junction", "base_demand_ls": 0},
-    {"id": "A", "type": "Junction", "base_demand_ls": 2},
-    {"id": "B", "type": "Junction", "base_demand_ls": 3},
-    {"id": "C", "type": "Junction", "base_demand_ls": 1},
-    {"id": "D", "type": "Junction", "base_demand_ls": 0},
+    {"id": "S", "type": "Junction", "demand_ls": 0},
+    {"id": "A", "type": "Junction", "demand_ls": 2},
+    {"id": "B", "type": "Junction", "demand_ls": 3},
+    {"id": "C", "type": "Junction", "demand_ls": 1},
+    {"id": "D", "type": "Junction", "demand_ls": 0},
 ]
 LINKS = [
     {"id": "1", "type": "Pipe", "start": "R", "end": "S", "status": "Open"},
@@ -37,11 +37,11 @@ def test_split_zones_by_pump_closed_pipe_and_meter():
     split = wz.split_zones(NODES, LINKS, {"M"})
     z = {zz["name"]: zz for zz in split["zones"]}
     assert split["node_zone"]["A"] == split["node_zone"]["B"] == 1 and split["node_zone"]["C"] != 1
-    assert z["Зона 1"]["kind"] == "dma" and z["Зона 1"]["base_demand_ls"] == 5
+    assert z["Зона 1"]["kind"] == "dma" and z["Зона 1"]["demand_ls"] == 5
     source = next(zz for zz in split["zones"] if zz["sources"] == ["R"])
     assert source["kind"] == "source" and source["inlets"] == ["P"]
     assert next(zz for zz in split["zones"] if zz["nodes"] == 1 and not zz["sources"] and zz["junctions"] == 1
-                and zz["base_demand_ls"] == 0)["kind"] == "transit"
+                and zz["demand_ls"] == 0)["kind"] == "transit"
     assert "M" not in split["link_zone"] and split["link_zone"]["2"] == 1
     assert sorted(z["Зона 1"]["inlets"]) == ["M", "P", "X"]
 
@@ -101,3 +101,13 @@ def test_small_leak_below_threshold_not_detected():
     scen = [{"index": 1, "kind": "dma", "mnf_ls": 41.0, "supply_avg_ls": 61.0}]
     d = wz.detect(base, scen)[0]
     assert d["threshold_ls"] == 2.0 and not d["detected"]  # +1 л/с при пороге 5 % от 40
+
+
+def test_mnf_share_only_for_dma():
+    split = wz.split_zones(NODES, LINKS, {"M"})
+    types = {n["id"]: n["type"] for n in NODES}
+    times, demand, flow = _results()
+    flow["P"] = [v - 0.001 for v in flow["P"]]  # источник: подача около нуля, знак скачет
+    zones = {z["index"]: z for z in wz.zone_balance(split, types, times, demand, flow)}
+    assert zones[split["node_zone"]["R"]]["mnf_share"] is None
+    assert zones[1]["mnf_share"] is not None

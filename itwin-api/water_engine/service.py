@@ -10,13 +10,14 @@
 GET  /health     — версия WNTR
 GET  /library    — учебные сети EPANET, идущие с WNTR
 POST /parse      — сеть модели {inp | library} (+ inp — текст модели, если пришло имя учебной сети)
-POST /simulate   — гидравлический расчёт {inp | library, duration_h?, report_step_h?, leaks?: [{node, area_cm2}]}
+POST /simulate   — гидравлический расчёт {inp | library, duration_h?, report_step_h?, leaks?: [{node, area_cm2}],
+                   closed_links?: [участок], demand_model?: DDA | PDD}
 """
 from __future__ import annotations
 
 import hmac
 import os
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -51,6 +52,9 @@ class SimulateIn(ModelIn):
     report_step_h: Optional[float] = Field(None, gt=0, le=24)
     leaks: list[LeakIn] = Field(default_factory=list, max_length=engine.MAX_LEAKS,
                                 description="Сценарий утечек: истечение из отверстия в узле")
+    closed_links: list[str] = Field(default_factory=list, max_length=engine.MAX_CLOSED_LINKS,
+                                    description="Закрытые участки (отключение)")
+    demand_model: Literal["DDA", "PDD"] = Field("DDA", description="PDD — отбор зависит от давления")
 
 
 def _http(exc: engine.EngineError) -> HTTPException:
@@ -89,7 +93,8 @@ async def simulate(body: SimulateIn) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         wn = engine.load(body.inp, body.library)
         return engine.simulate(wn, duration_h=body.duration_h, report_step_h=body.report_step_h,
-                               leaks=[leak.model_dump() for leak in body.leaks])
+                               leaks=[leak.model_dump() for leak in body.leaks], closed_links=body.closed_links,
+                               demand_model=body.demand_model)
 
     try:
         return await run_in_threadpool(run)

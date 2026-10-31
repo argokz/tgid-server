@@ -64,3 +64,40 @@ def test_leak_errors():
         with pytest.raises(engine.EngineError) as e:
             engine.simulate(engine.load(library_name="Net3"), duration_h=1, leaks=[bad])
         assert e.value.status == 422
+
+
+def test_closed_links_with_pdd_cut_off_node_gets_nothing():
+    wn = engine.load(library_name="Net3")
+    links = wn.get_links_for_node("121")
+    res = engine.simulate(wn, duration_h=24, report_step_h=1, closed_links=links, demand_model="PDD")
+    supply = res["summary"]["supply"]
+    short = {s["node"]: s for s in supply["short"]}
+    assert short["121"]["delivered_ls"] == pytest.approx(0, abs=1e-3) and short["121"]["expected_ls"] > 2.5
+    assert supply["delivered_ls"] < supply["expected_ls"]
+    assert all(v == pytest.approx(0, abs=1e-3) for v in res["link"]["flow_ls"][links[0]])
+    assert max(res["node"]["pressure_m"]["121"]) < 1  # не −947 000 м, как в DDA
+
+
+def test_closing_pump_removes_its_controls():
+    res = engine.simulate(engine.load(library_name="Net3"), duration_h=24, closed_links=["10"], demand_model="PDD")
+    assert "control 1" in res["summary"]["removed_controls"]
+    assert all(v == pytest.approx(0, abs=1e-3) for v in res["link"]["flow_ls"]["10"])
+    with pytest.raises(engine.EngineError):
+        engine.simulate(engine.load(library_name="Net3"), duration_h=1, closed_links=["нет-такого"])
+
+
+def test_halt_reason_from_epanet_report(tmp_path):
+    rpt = tmp_path / "run.rpt"
+    rpt.write_text("  WARNING: Pump P closed\n  WARNING: System unbalanced at 17:00:00 hrs. EXECUTION HALTED.\n")
+    assert "17:00:00" in engine.halt_reason(rpt)
+    rpt.write_text("  Error 110: cannot solve network hydraulic equations.\n")
+    assert engine.halt_reason(rpt) == "ошибка EPANET 110: cannot solve network hydraulic equations."
+    assert engine.halt_reason(tmp_path / "нет.rpt") is None
+
+
+def test_shutting_main_pump_station_reports_halt():
+    pumps = ["PUMP-3830", "PUMP-3831", "PUMP-3832", "PUMP-3833", "PUMP-3834"]
+    with pytest.raises(engine.EngineError) as e:
+        engine.simulate(engine.load(library_name="Net6"), duration_h=24, closed_links=["LINK-0", "LINK-1", "LINK-2", *pumps],
+                        demand_model="PDD")
+    assert "не сбалансирована" in e.value.message

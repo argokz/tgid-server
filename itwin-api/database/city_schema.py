@@ -152,6 +152,9 @@ COMMON: tuple[Item, ...] = (
          "select exists (select 1 from information_schema.columns where table_schema = 'public'"
          " and table_name = 'tgid_water_model' and column_name = 'meters')",
          (_m("20261101_water_zones.sql"),)),
+    Item("задвижки водопровода tgid_water_valve",
+         "select to_regclass('public.tgid_water_valve') is not null",
+         (_m("20261101_water_valves.sql"),)),
     Item("пространственные индексы зданий",
          "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
          " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"

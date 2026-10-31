@@ -160,8 +160,8 @@ async def list_models(conn) -> list[dict[str, Any]]:
         """SELECT m.id, m.name, m.source, m.units_in_file, m.placement, m.summary, m.created_by, m.created_at,
                   (SELECT count(*) FROM tgid_water_run r WHERE r.model_id = m.id) AS runs
              FROM tgid_water_model m ORDER BY m.id DESC""")
-    return [{**dict(r), "placement": json.loads(r["placement"]), "summary": json.loads(r["summary"]),
-             "created_at": r["created_at"].isoformat()} for r in rows]
+    return [{**dict(r), "placement": json.loads(r["placement"]), "created_at": r["created_at"].isoformat(),
+             "summary": {k: v for k, v in json.loads(r["summary"]).items() if k != "pdd_baseline"}} for r in rows]
 
 
 async def delete_model(conn, model_id: int) -> bool:

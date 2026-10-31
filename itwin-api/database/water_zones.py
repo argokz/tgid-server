@@ -22,6 +22,8 @@ DETECT_SHARE = 0.05        # рост МНР больше 5 % — заметен
 DETECT_MIN_LS = 0.1
 MAX_METERS = 500
 BOUNDARY_TYPES = {"Pump": "pump", "Valve": "valve"}
+# отбор узла: средний за сутки по графикам (движок с шага 3), у моделей, загруженных раньше, — базовый
+DEMAND_SQL = "coalesce((attrs->>'avg_demand_ls')::float, (attrs->>'base_demand_ls')::float)"
 
 
 # --- зоны ----------------------------------------------------------------------------------------
@@ -40,7 +42,7 @@ def boundary_reason(link: dict[str, Any], meters: set[str]) -> Optional[str]:
 def split_zones(nodes: list[dict[str, Any]], links: list[dict[str, Any]], meters: set[str]) -> dict[str, Any]:
     """Зоны — связные части сети без граничных участков. Номер зоны — по числу узлов-потребителей (1 — крупнейшая).
 
-    nodes: [{id, type, base_demand_ls}], links: [{id, type, start, end, status}]."""
+    nodes: [{id, type, demand_ls}], links: [{id, type, start, end, status}]."""
     parent = {n["id"]: n["id"] for n in nodes}
 
     def find(x: str) -> str:
@@ -73,11 +75,11 @@ def split_zones(nodes: list[dict[str, Any]], links: list[dict[str, Any]], meters
     node_zone: dict[str, int] = {}
     zones = []
     for index, members in enumerate(ordered, start=1):
-        demand = sum(n.get("base_demand_ls") or 0 for n in members if n["type"] == "Junction")
+        demand = sum(n.get("demand_ls") or 0 for n in members if n["type"] == "Junction")
         sources = sorted(n["id"] for n in members if n["type"] in ("Reservoir", "Tank"))
         kind = "dma" if demand > 0 else ("source" if sources else "transit")
         zones.append({"index": index, "name": f"Зона {index}", "kind": kind, "nodes": len(members),
-                      "junctions": junctions(members), "sources": sources, "base_demand_ls": round(demand, 3)})
+                      "junctions": junctions(members), "sources": sources, "demand_ls": round(demand, 3)})
         for n in members:
             node_zone[n["id"]] = index
     for b in boundary:
@@ -140,7 +142,8 @@ def zone_balance(split: dict[str, Any], node_types: dict[str, str], times: list[
             "supply_avg_ls": round(avg, 3), "use_avg_ls": round(sum(use) / steps, 3) if steps else None,
             "mnf_ls": round(mnf, 3) if mnf is not None else None,
             "mnf_time_s": times[mnf_i] if mnf_i is not None else None,
-            "mnf_share": round(mnf / avg, 3) if mnf is not None and avg > 0 else None,
+            # доля МНР — только у районов водоучёта: у источника подача около нуля, доля теряет смысл
+            "mnf_share": round(mnf / avg, 3) if z["kind"] == "dma" and mnf is not None and avg > 0 else None,
             "imbalance_ls": round(max((abs(a - b) for a, b in zip(supply, use)), default=0.0), 3),
             "leak_avg_ls": round(sum(s["leak"]) / steps, 3) if steps and any(s["leak"]) else None,
             "supply_ls": [round(v, 3) for v in supply],
@@ -188,9 +191,8 @@ async def _graph(conn, model_id: int) -> tuple[list[dict[str, Any]], list[dict[s
     meters = await conn.fetchval("SELECT meters FROM tgid_water_model WHERE id = $1", model_id)
     if meters is None:
         raise WaterError(404, "Модель водопровода не найдена")
-    nodes = [{"id": r["node_id"], "type": r["type"], "base_demand_ls": r["demand"]} for r in await conn.fetch(
-        """SELECT node_id, type, (attrs->>'base_demand_ls')::float AS demand
-             FROM tgid_water_node WHERE model_id = $1""", model_id)]
+    nodes = [{"id": r["node_id"], "type": r["type"], "demand_ls": r["demand"]} for r in await conn.fetch(
+        f"""SELECT node_id, type, {DEMAND_SQL} AS demand FROM tgid_water_node WHERE model_id = $1""", model_id)]
     links = [{"id": r["link_id"], "type": r["type"], "start": r["start_node"], "end": r["end_node"],
               "status": r["status"]} for r in await conn.fetch(
         """SELECT link_id, type, start_node, end_node, attrs->>'status' AS status
@@ -234,10 +236,11 @@ async def _run(conn, model_id: int, run_id: int) -> Optional[dict[str, Any]]:
 
 
 async def _baseline_id(conn, model_id: int, run_id: int, steps: int) -> Optional[int]:
-    """Базовый расчёт для сценария утечки: последний расчёт той же модели без утечек с тем же числом шагов."""
+    """Базовый расчёт для сценария утечки: последний расчёт той же модели без утечек и отключений с тем же числом
+    шагов."""
     return await conn.fetchval(
         """SELECT id FROM tgid_water_run
-            WHERE model_id = $1 AND id <> $2 AND NOT (summary ? 'leaks')
+            WHERE model_id = $1 AND id <> $2 AND NOT (summary ?| array['leaks', 'isolation'])
               AND jsonb_array_length(results->'times_s') = $3
             ORDER BY id DESC LIMIT 1""", model_id, run_id, steps)
 
