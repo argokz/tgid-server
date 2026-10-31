@@ -342,7 +342,8 @@ def _pick_layer(path: str, wanted: Optional[str]) -> tuple[str, list[dict]]:
     return (with_features or layers)[0]["name"], layers
 
 
-def _parse_vector(files: list[tuple[str, bytes]], encoding: Optional[str], layer: Optional[str]) -> ParsedSource:
+def _parse_vector(files: list[tuple[str, bytes]], encoding: Optional[str], layer: Optional[str],
+                  max_rows: int = MAX_ROWS) -> ParsedSource:
     """Векторный слой любого формата GDAL: Shapefile, GeoPackage, GeoJSON и ESRI JSON (выгрузка слоя
     ArcGIS), FlatGeobuf, SXF+RSC («Панорама»), GML, KML, MapInfo, база ArcGIS *.gdb (в zip)."""
     import geopandas as gpd
@@ -383,8 +384,8 @@ def _parse_vector(files: list[tuple[str, bytes]], encoding: Optional[str], layer
             gdf = gpd.read_file(path, **kwargs)
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Не удалось прочитать {label}: {e}") from e
-    if len(gdf) > MAX_ROWS:
-        raise ValueError(f"В слое больше {MAX_ROWS} объектов — разбейте импорт на части")
+    if len(gdf) > max_rows:
+        raise ValueError(f"В слое больше {max_rows} объектов — разбейте импорт на части")
     crs_text = None
     srid = None
     if gdf.crs is not None:
@@ -407,9 +408,10 @@ def _parse_vector(files: list[tuple[str, bytes]], encoding: Optional[str], layer
 
 def parse_upload(
     files: list[tuple[str, bytes]], *, encoding: Optional[str] = None, sheet: Optional[str] = None,
-    layer: Optional[str] = None,
+    layer: Optional[str] = None, max_rows: int = MAX_ROWS,
 ) -> ParsedSource:
-    """Файлы загрузки → таблица атрибутов (+ геометрия у форматов ГИС; layer — слой многослойного файла)."""
+    """Файлы загрузки → таблица атрибутов (+ геометрия у форматов ГИС; layer — слой многослойного файла;
+    max_rows — предел объектов слоя ГИС: у сети водопровода он больше, чем у правки топологии)."""
     if not files:
         raise ValueError("Файл не передан")
     total = sum(len(c) for _, c in files)
@@ -418,7 +420,7 @@ def parse_upload(
     exts = {os.path.splitext(n.lower())[1] for n, _ in files}
     # .json — GeoJSON или ESRI JSON (выгрузка слоя ArcGIS); формат определит GDAL
     if exts & ({".zip"} | set(VECTOR_EXTS)):
-        return _parse_vector(files, encoding, layer)
+        return _parse_vector(files, encoding, layer, max_rows)
     if len(files) != 1:
         raise ValueError("Excel/CSV, GPX и DXF загружаются одним файлом")
     name, content = files[0]

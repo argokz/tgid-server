@@ -186,16 +186,21 @@ async def generate_valves(conn, model_id: int, user: str) -> dict[str, Any]:
     pairs = strategic_valves(nodes, links)
     async with conn.transaction():
         await conn.execute("DELETE FROM tgid_water_valve WHERE model_id = $1 AND source = 'strategic'", model_id)
-        await conn.executemany(
-            """INSERT INTO tgid_water_valve (model_id, link_id, node_id, source, created_by, geom)
-               SELECT $1::int, l.link_id, $3::varchar, 'strategic', $4::varchar,
-                      ST_LineInterpolatePoint(l.geom, CASE WHEN l.start_node = $3::varchar THEN f ELSE 1 - f END)
-                 FROM tgid_water_link l,
-                      LATERAL (SELECT least(0.5, $5::float / greatest(ST_Length(l.geom::geography), 0.01)) AS f) x
-                WHERE l.model_id = $1::int AND l.link_id = $2::varchar AND l.geom IS NOT NULL
-               ON CONFLICT (model_id, link_id, node_id) DO NOTHING""",
-            [(model_id, link, node, user, VALVE_OFFSET_M) for link, node in pairs])
+        await insert_valves(conn, model_id, pairs, "strategic", user)
     return await list_valves(conn, model_id)
+
+
+async def insert_valves(conn, model_id: int, pairs: list[tuple[str, str]], source: str, user: str) -> None:
+    """Задвижки (труба, узел) — точкой на трубе в VALVE_OFFSET_M от узла; уже стоящие не дублируются."""
+    await conn.executemany(
+        """INSERT INTO tgid_water_valve (model_id, link_id, node_id, source, created_by, geom)
+           SELECT $1::int, l.link_id, $3::varchar, $6::varchar, $4::varchar,
+                  ST_LineInterpolatePoint(l.geom, CASE WHEN l.start_node = $3::varchar THEN f ELSE 1 - f END)
+             FROM tgid_water_link l,
+                  LATERAL (SELECT least(0.5, $5::float / greatest(ST_Length(l.geom::geography), 0.01)) AS f) x
+            WHERE l.model_id = $1::int AND l.link_id = $2::varchar AND l.geom IS NOT NULL
+           ON CONFLICT (model_id, link_id, node_id) DO NOTHING""",
+        [(model_id, link, node, user, VALVE_OFFSET_M, source) for link, node in pairs])
 
 
 async def isolation(conn, model_id: int, link_id: str) -> dict[str, Any]:

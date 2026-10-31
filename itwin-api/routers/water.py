@@ -17,16 +17,21 @@ GET    /api/v1/water/models/{id}/valves         — задвижки модел�
 POST   /api/v1/water/models/{id}/valves/generate — расставить задвижки «N−1» (право «Справочники»)
 POST   /api/v1/water/models/{id}/isolation      — отключение трубы: задвижки, узлы без воды
 POST   /api/v1/water/models/{id}/isolation/run  — то же с расчётом EPANET (отбор по давлению, право «Расчёт»)
+POST   /api/v1/water/models/gis/inspect         — разбор файла ГИС: слои, поля, подсказки
+POST   /api/v1/water/models/gis                 — сеть водоканала из ГИС (слой труб + задвижки) → модель EPANET
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
-from database import water, water_isolation, water_zones
+from database import water, water_gis, water_isolation, water_zones
+from database.network_import import parse_upload
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["water"])
@@ -217,5 +222,70 @@ async def water_isolation_run(model_id: ModelId, body: IsolationIn, user: Calc) 
     try:
         async with acquire_conn() as conn:
             return await water_isolation.isolation_run(conn, model_id, body.link_id, user=user.username)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+async def _files(files: list[UploadFile]) -> list[tuple[str, bytes]]:
+    out, total = [], 0
+    for f in files:
+        content = await f.read(MAX_INP_BYTES + 1)
+        total += len(content)
+        if total > MAX_INP_BYTES:
+            raise HTTPException(status_code=413, detail="Загрузка больше 20 МБ")
+        out.append((f.filename or "upload", content))
+    return out
+
+
+@router.post("/api/v1/water/models/gis/inspect")
+async def water_gis_inspect(_: Refs, files: list[UploadFile] = File(...),
+                            layer: Optional[str] = Form(None, max_length=200),
+                            encoding: Optional[str] = Form(None, max_length=40)) -> dict[str, Any]:
+    """Разбор файла ГИС для загрузки водопровода: слои, поля слоя труб, подсказки сопоставления."""
+    try:
+        src = await asyncio.to_thread(parse_upload, await _files(files), encoding=encoding or None,
+                                      layer=layer or None, max_rows=water_gis.MAX_PIPES)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return water_gis.describe(src)
+
+
+@router.post("/api/v1/water/models/gis", dependencies=WRITE)
+async def water_import_gis(
+    user: Refs,
+    files: list[UploadFile] = File(..., description="слой труб: zip с shapefile, .gpkg, .geojson, .fgb, *.gdb в zip…"),
+    valve_files: Optional[list[UploadFile]] = File(None, description="слой задвижек (точки), если отдельным файлом"),
+    params: str = Form("{}", description="JSON: layer, valves_layer, diameter_field, material_field, id_field, "
+                                         "status_field, default_diameter_mm, snap_m, total_demand_ls, elevation_m, "
+                                         "source_head_m, source_lon, source_lat, valve_snap_m, encoding"),
+    name: Optional[str] = Form(None, max_length=200),
+    dry_run: bool = Form(True),
+) -> dict[str, Any]:
+    """Превью (dry_run: отчёт сборки, проверка движком) или загрузка сети водоканала из ГИС моделью EPANET."""
+    try:
+        raw = json.loads(params)
+        if not isinstance(raw, dict):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(status_code=400, detail="params — JSON-объект")
+    encoding = str(raw.get("encoding") or "")[:40] or None
+    pipe_files = await _files(files)
+    try:
+        pipes = await asyncio.to_thread(parse_upload, pipe_files, encoding=encoding,
+                                        layer=str(raw.get("layer") or "")[:200] or None, max_rows=water_gis.MAX_PIPES)
+        valves = None
+        if valve_files:
+            valves = await asyncio.to_thread(parse_upload, await _files(valve_files), encoding=encoding,
+                                             max_rows=water_gis.MAX_PIPES)
+        elif raw.get("valves_layer"):
+            valves = await asyncio.to_thread(parse_upload, pipe_files, encoding=encoding,
+                                             layer=str(raw["valves_layer"])[:200], max_rows=water_gis.MAX_PIPES)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        async with acquire_conn() as conn:
+            return await water_gis.import_gis(conn, pipes_src=pipes, valves_src=valves, params=raw,
+                                              name=name or (files[0].filename or None), user=user.username,
+                                              dry_run=dry_run)
     except water.WaterError as exc:
         raise _http(exc) from exc
