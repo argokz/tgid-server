@@ -57,6 +57,7 @@ from routers.defect_similarity import router as defect_similarity_router
 from routers.water import router as water_router
 from routers.utilities import router as utilities_router
 from routers.failure_forecast import router as failure_forecast_router
+from routers.relay_plan import router as relay_plan_router
 from routers.api_v2 import key_router as api_key_router, router as api_v2_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
@@ -107,6 +108,7 @@ all_routers = [
     water_router,
     utilities_router,
     failure_forecast_router,
+    relay_plan_router,
     api_key_router,
     api_v2_router,
     file_jobs_router,

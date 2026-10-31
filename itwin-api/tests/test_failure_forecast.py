@@ -56,3 +56,15 @@ def test_passport_threshold_keeps_most_damaged_lines():
     assert ff.passport_threshold(lines, DEFECTS, T("2019-01-01")) == 0   # 10-й процентиль из (5, 5, 5, 0)
     assert ff.passport_threshold(lines, DEFECTS, T("2017-07-01")) == 5   # до среза повреждены только 1 и 2
     assert ff.passport_threshold(lines, DEFECTS, T("2000-01-01")) == 0
+
+
+def test_capture_by_length_budget_in_km():
+    import numpy as np
+
+    y = np.array([1, 0, 1, 0, 1])
+    score = np.array([0.9, 0.8, np.nan, 0.1, 0.5])
+    length = np.array([500.0, 600.0, 100.0, 2000.0, 400.0])
+    c = ff.capture_by_length(y, score, length, (0.4, 1, 1.5, 4))
+    # очередь: 0 (0,5 км), 1 (1,1), 4 (1,5), 3 (3,5), 2 (пропуск, 3,6)
+    assert c == {"0.4": 0.0, "1": 0.333, "1.5": 0.667, "4": 1.0}
+    assert ff.capture_by_length(np.zeros(3), np.ones(3), np.ones(3) * 1000, (1,)) == {"1": None}

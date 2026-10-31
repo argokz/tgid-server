@@ -115,11 +115,15 @@ def consequence(breakconsumvol: Optional[int], populdamage: Optional[int], infra
     return round(1 + 0.6 * bcv + 0.4 * pop + 0.4 * inf, 3)
 
 
+def flow_factor(flow_t_h: Optional[float]) -> float:
+    """Множитель последствий по расходу через участок 1..1,5: больше расход — больше потребителей за ним."""
+    return 1 + 0.5 * min(abs(flow_t_h or 0.0) / 1000.0, 1.0)
+
+
 def priority(wear_known: Optional[float], cons: float, flow_t_h: Optional[float]) -> Optional[float]:
     if wear_known is None:
         return None
-    flow_factor = 1 + 0.5 * min(abs(flow_t_h or 0.0) / 1000.0, 1.0)
-    return round(wear_known / 100.0 * cons * flow_factor, 4)
+    return round(wear_known / 100.0 * cons * flow_factor(flow_t_h), 4)
 
 
 # --- выборка исходных данных участков ---

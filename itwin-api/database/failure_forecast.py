@@ -40,6 +40,7 @@ HORIZON_YEARS = 2
 MIN_EVENTS = 100
 NEAR_RADII_M = (50, 200)
 TOP_SHARE = 0.10
+BUDGETS_KM = (1, 2, 5, 10, 20)     # ретроспектива плана: сколько километров переложить
 GBM_PARAMS = {"rounds": 150, "depth": 3, "lr": 0.05, "subsample_neg": 20000, "min_leaf_hessian": 2.0}
 FEATURES: list[tuple[str, str]] = [
     ("len_m", "длина, м"),
@@ -181,13 +182,37 @@ def evaluate(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, Any]:
                           test[HISTORY_COLS].to_numpy(float))
     top = np.argsort(-p)[: max(1, int(len(p) * TOP_SHARE))]
     baselines = {c: _round(fm.auc(y_test, test[c].fillna(-1).to_numpy())) for c in ("near200", "hist_all", "len_m")}
+    length = test.len_m.to_numpy(dtype=float)
+    per_m = p / np.maximum(length, 1.0)               # км бюджета — по вероятности на метр
+    capture = {"model": capture_by_length(y_test, per_m, length),
+               "oldest_first": capture_by_length(y_test, test.age.to_numpy(dtype=float), length),
+               "near_defects": capture_by_length(y_test, test.near200.to_numpy(dtype=float) / np.maximum(length, 1.0),
+                                                 length)}
     return {
+        "capture_by_km": capture, "length_km": round(float(length.sum() / 1000), 1),
         "auc": _round(fm.auc(y_test, p)), "auc_logit": _round(fm.auc(y_test, logit)),
         "auc_history_only": _round(fm.auc(y_test, hist)), "baselines_auc": baselines,
         "top_share": TOP_SHARE, "top_capture": _round(float(y_test[top].sum() / max(y_test.sum(), 1))),
         "train": {"lines": len(train), "events": int(train.y.sum())},
         "test": {"lines": len(test), "events": int(y_test.sum())},
     }
+
+
+def capture_by_length(y: np.ndarray, score: np.ndarray, length_m: np.ndarray,
+                      budgets_km: tuple[float, ...] = BUDGETS_KM) -> dict[str, Optional[float]]:
+    """Доля повреждений, пришедшихся на участки, которые переложили бы первыми (по убыванию score) в пределах
+    бюджета в км — ретроспектива плана перекладок. Пропуск score — в конце очереди."""
+    y = np.asarray(y)
+    total = y.sum()
+    s = np.where(np.isnan(score), -np.inf, score)
+    order = np.argsort(-s, kind="mergesort")
+    cum_km = np.cumsum(np.asarray(length_m, dtype=float)[order]) / 1000
+    hit = np.cumsum(y[order])
+    out: dict[str, Optional[float]] = {}
+    for b in budgets_km:
+        k = int(np.searchsorted(cum_km, b, side="right"))
+        out[str(b)] = None if total == 0 else round(float(hit[k - 1] / total) if k else 0.0, 3)
+    return out
 
 
 def _round(v: Optional[float], digits: int = 3) -> Optional[float]:
