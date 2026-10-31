@@ -75,6 +75,18 @@ class ForecastError(Exception):
 
 # --- данные --------------------------------------------------------------------------------------
 
+# Ключ копии участка: концы (без порядка) на сетке 1 м и длина. Только у участков сети: внутренние схемы узлов в
+# условных координатах одинаковы у многих камер.
+ENDS_SQL = """CASE WHEN l.internalnodeid IS NULL THEN concat_ws(' ',
+                  round(least(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
+                              ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
+                  round(greatest(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
+                                 ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
+                  round(ST_Y(ST_StartPoint(ST_GeometryN(l.shape, 1)))
+                        + ST_Y(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape))))),
+                  round(ST_Length(l.shape))) END"""
+
+
 def canonical_lines(lines: pd.DataFrame) -> dict[int, int]:
     """Копии одной трубы в разных фрагментах (сеть по сезонам друг на друге: концы на сетке 1 м и длина совпадают) →
     участок самого нового фрагмента (наибольший id). Журнал вешает повреждение на копию, текущую в тот сезон, — без
@@ -91,16 +103,9 @@ def canonical_lines(lines: pd.DataFrame) -> dict[int, int]:
 async def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, dict[int, pd.DataFrame]]:
     """Участки с паспортом и глубиной, повреждения с участком и датой, повреждения рядом с участками. Копии одной
     трубы склеены (canonical_lines): остаётся участок нового фрагмента, повреждения копий — на нём."""
-    lines = pd.DataFrame([dict(r) for r in await conn.fetch("""
+    lines = pd.DataFrame([dict(r) for r in await conn.fetch(f"""
         SELECT l.id, l.fileid, ST_Length(ST_Transform(l.shape, 4326)::geography) AS len_m,
-               -- ключ копий — только у участков сети: внутренние схемы узлов в условных координатах одинаковы
-               CASE WHEN l.internalnodeid IS NULL THEN concat_ws(' ', round(least(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
-                                          ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
-                              round(greatest(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
-                                             ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
-                              round(ST_Y(ST_StartPoint(ST_GeometryN(l.shape, 1)))
-                                    + ST_Y(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape))))),
-                              round(ST_Length(l.shape))) END AS ends,
+               {ENDS_SQL} AS ends,
                h.diametercondit AS dn, h.firstpicdatehp AS d0, h.lasttransdate AS dt, h.tubingtypeid AS tt,
                h.isolmaterialid AS im, h.isolationtypeid AS it, h.nettype AS nt, h.repairdatecapital AS rc,
                coalesce((hd.depth_start + hd.depth_end) / 2, hd.depth_start, hd.depth_end) AS depth
