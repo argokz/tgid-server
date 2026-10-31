@@ -206,3 +206,35 @@ def test_calibration_neighbor_pairs():
     pairs = {(a["node_id"], b["node_id"]) for a, b, _ in cal.neighbor_pairs(g, pts)}
     # 1–3, 3–4, 1–5, 3–5 соседи; 1–4 нет: путь идёт через датчик в узле 3; обратка с одним датчиком — без пар
     assert pairs == {(1, 3), (1, 5), (3, 4), (3, 5)}
+
+
+def test_timeline_buckets_and_status(monkeypatch):
+    start = datetime(2026, 10, 30, 10, 7, tzinfo=timezone.utc)
+    end = start + timedelta(hours=24)
+    b = tm.bucket_starts(start, end, 15)
+    assert b[0] == datetime(2026, 10, 30, 10, 0, tzinfo=timezone.utc) and len(b) == 97 and b[-1] < end
+
+    async def overview(conn, only_active=False):
+        return [{"id": 1, "name": "P", "kind": "pressure", "pipe": "supply", "unit": "kgf_cm2", "unit_label": "кгс/см²",
+                 "lon": 76.9, "lat": 43.2, "model": 10.0},
+                {"id": 2, "name": "T", "kind": "temperature", "pipe": "supply", "unit": "c", "unit_label": "°C",
+                 "lon": 76.9, "lat": 43.2, "model": None},
+                {"id": 3, "name": "без места", "kind": "flow", "pipe": "supply", "unit": "t_h", "unit_label": "т/ч",
+                 "lon": None, "lat": None, "model": 100.0}]
+
+    class Conn:
+        async def fetch(self, sql, ids, *a):
+            assert ids == [1, 2]
+            return [{"sensor_id": 1, "t": b[0], "v": 10.2}, {"sensor_id": 1, "t": b[1], "v": 8.5},
+                    {"sensor_id": 2, "t": b[1], "v": 120.0}]
+
+    monkeypatch.setattr(tm, "overview", overview)
+    res = asyncio.run(tm.timeline(Conn(), start, end))
+    assert res["step_min"] == 15 and len(res["buckets"]) == 97 and [s["id"] for s in res["sensors"]] == [1, 2]
+    p, t = res["sensors"]
+    assert p["values"][:3] == [10.2, 8.5, None] and p["status"][:3] == ["ok", "bad", "no_data"]
+    assert p["dev"][:2] == [2.0, -15.0] and t["status"][:2] == ["no_data", "no_model"]
+    with pytest.raises(tm.TelemetryError):
+        asyncio.run(tm.timeline(Conn(), end, start))
+    with pytest.raises(tm.TelemetryError):
+        asyncio.run(tm.timeline(Conn(), start - timedelta(days=40), end))

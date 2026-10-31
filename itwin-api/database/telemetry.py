@@ -387,6 +387,68 @@ async def series(conn, sensor_id: int, start: datetime, end: datetime) -> dict[s
                        for r in rows]}
 
 
+TIMELINE_POINTS = 144          # не больше кадров шкалы: сутки — по 15 мин (97), неделя — по 3 ч (57)
+TIMELINE_MAX_DAYS = 31
+_ORIGIN = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+def bucket_starts(start: datetime, end: datetime, step_min: int) -> list[datetime]:
+    """Начала интервалов шкалы, выровненные как date_bin(step, ts, 2000-01-01)."""
+    step = timedelta(minutes=step_min)
+    first = _ORIGIN + ((start - _ORIGIN) // step) * step
+    out, t = [], first
+    while t < end:
+        out.append(t)
+        t += step
+    return out
+
+
+async def timeline(conn, start: datetime, end: datetime) -> dict[str, Any]:
+    """Шкала времени для карты: средние показания действующих датчиков (с местом) по интервалам периода
+    и оценка относительно модели — последнего расчёта фрагмента (за прошлые интервалы модель та же)."""
+    start, end = _aware(start), _aware(end)
+    if end <= start:
+        raise TelemetryError(422, "Конец периода раньше начала")
+    if end - start > timedelta(days=TIMELINE_MAX_DAYS):
+        raise TelemetryError(422, f"Период шкалы — не больше {TIMELINE_MAX_DAYS} суток")
+    sensors = [s for s in await overview(conn, only_active=True) if s.get("lon") is not None]
+    step = bucket_minutes(start, end, TIMELINE_POINTS)
+    buckets = bucket_starts(start, end, step)
+    index = {b: i for i, b in enumerate(buckets)}
+    values: dict[int, list[Optional[float]]] = {s["id"]: [None] * len(buckets) for s in sensors}
+    if sensors:
+        rows = await conn.fetch(
+            f"""SELECT sensor_id, date_bin(interval '{step} minutes', ts, timestamptz '2000-01-01') AS t,
+                       avg(value)::float AS v
+                  FROM tgid_sensor_reading
+                 WHERE sensor_id = ANY($1::int[]) AND ts >= $2 AND ts < $3
+                 GROUP BY 1, 2""", [s["id"] for s in sensors], buckets[0] if buckets else start, end)
+        for r in rows:
+            i = index.get(r["t"])
+            if i is not None:
+                values[r["sensor_id"]][i] = round(r["v"], 4)
+    out = []
+    for s in sensors:
+        unit = UNITS[s["unit"]]
+        model_base = s["model"] * unit.to_base if s.get("model") is not None else None
+        status, pct = [], []
+        for v in values[s["id"]]:
+            if v is None:
+                status.append("no_data")
+                pct.append(None)
+            elif model_base is None:
+                status.append("no_model")
+                pct.append(None)
+            else:
+                d = deviation(s["kind"], v * unit.to_base, model_base)
+                status.append(d["status"])
+                pct.append(d["pct"] if s["kind"] != "temperature" else d["diff"])
+        out.append({"id": s["id"], "name": s["name"], "kind": s["kind"], "pipe": s["pipe"], "unit": s["unit_label"],
+                    "lon": s["lon"], "lat": s["lat"], "model": s.get("model"), "values": values[s["id"]],
+                    "status": status, "dev": pct})
+    return {"step_min": step, "buckets": [b.isoformat() for b in buckets], "sensors": out}
+
+
 def deviation(kind: str, fact: float, model: float) -> dict[str, Any]:
     """Расхождение «факт − модель» и оценка: ok, warn, bad (давление и расход — в %, температура — в градусах)."""
     diff = fact - model

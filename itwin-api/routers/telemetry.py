@@ -4,6 +4,7 @@ GET    /api/v1/telemetry/units                — единицы и виды д�
 GET    /api/v1/telemetry/sensors              — датчики с последним показанием, моделью и расхождением
 GET    /api/v1/telemetry/sensors.geojson      — то же точками для карты
 GET    /api/v1/telemetry/sensors/{id}/series  — показания за период (from, to) по интервалам
+GET    /api/v1/telemetry/timeline             — шкала времени для карты: все датчики по интервалам периода
 POST   /api/v1/telemetry/sensors              — добавить датчик (право «Справочники»)
 PUT    /api/v1/telemetry/sensors/{id}         — изменить
 DELETE /api/v1/telemetry/sensors/{id}         — удалить вместе с показаниями
@@ -85,6 +86,19 @@ async def telemetry_series(sensor_id: SensorId, _: Viewer, start: Optional[datet
     try:
         async with acquire_conn() as conn:
             return await tm.series(conn, sensor_id, start, end)
+    except tm.TelemetryError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/telemetry/timeline")
+async def telemetry_timeline(_: Viewer, start: Optional[datetime] = Query(None, alias="from"),
+                             end: Optional[datetime] = Query(None, alias="to")) -> dict[str, Any]:
+    """Шкала времени для карты: показания и оценка датчиков по интервалам периода (по умолчанию — сутки)."""
+    end = end or datetime.now(timezone.utc)
+    start = start or end - timedelta(hours=DEFAULT_SERIES_HOURS)
+    try:
+        async with acquire_conn() as conn:
+            return await tm.timeline(conn, start, end)
     except tm.TelemetryError as exc:
         raise _http(exc) from exc
 
