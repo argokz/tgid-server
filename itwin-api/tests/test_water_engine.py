@@ -42,3 +42,25 @@ def test_errors():
     assert e.value.status == 422
     with pytest.raises(engine.EngineError):
         engine.simulate(engine.load(library_name="Net1"), duration_h=1000)
+
+
+def test_leak_scenario_is_pressure_dependent_emitter():
+    base = engine.simulate(engine.load(library_name="Net3"), duration_h=24, report_step_h=1)
+    res = engine.simulate(engine.load(library_name="Net3"), duration_h=24, report_step_h=1,
+                          leaks=[{"node": "123", "area_cm2": 10}])
+    leak = res["summary"]["leaks"][0]
+    assert leak["node"] == "123" and len(leak["flow_ls"]) == 25
+    # Q = Cd·A·√(2g·P): при ~47 м и 10 см² — около 22–23 л/с
+    p0 = res["node"]["pressure_m"]["123"][0]
+    assert leak["flow_ls"][0] == pytest.approx(0.75 * 10e-4 * (2 * 9.81 * p0) ** 0.5 * 1000, rel=0.01)
+    # отбор узла EPANET = потребление + утечка
+    d_base, d_leak = base["node"]["demand_ls"]["123"][0], res["node"]["demand_ls"]["123"][0]
+    assert d_leak - d_base == pytest.approx(leak["flow_ls"][0], rel=0.02)
+    assert leak["avg_ls"] > 15 and leak["volume_m3"] > 1000
+
+
+def test_leak_errors():
+    for bad in ({"node": "River", "area_cm2": 5}, {"node": "123", "area_cm2": 0}, {"node": "123", "area_cm2": 900}):
+        with pytest.raises(engine.EngineError) as e:
+            engine.simulate(engine.load(library_name="Net3"), duration_h=1, leaks=[bad])
+        assert e.value.status == 422

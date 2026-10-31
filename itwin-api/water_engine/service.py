@@ -10,7 +10,7 @@
 GET  /health     — версия WNTR
 GET  /library    — учебные сети EPANET, идущие с WNTR
 POST /parse      — сеть модели {inp | library} (+ inp — текст модели, если пришло имя учебной сети)
-POST /simulate   — гидравлический расчёт {inp | library, duration_h?, report_step_h?}
+POST /simulate   — гидравлический расчёт {inp | library, duration_h?, report_step_h?, leaks?: [{node, area_cm2}]}
 """
 from __future__ import annotations
 
@@ -41,9 +41,16 @@ class ModelIn(BaseModel):
     library: Optional[str] = Field(None, max_length=40, description="Учебная сеть WNTR: Net1, Net3, Net6, ky4…")
 
 
+class LeakIn(BaseModel):
+    node: str = Field(min_length=1, max_length=64)
+    area_cm2: float = Field(gt=0, le=engine.MAX_LEAK_AREA_CM2)
+
+
 class SimulateIn(ModelIn):
     duration_h: Optional[float] = Field(None, ge=0, le=engine.MAX_DURATION_H)
     report_step_h: Optional[float] = Field(None, gt=0, le=24)
+    leaks: list[LeakIn] = Field(default_factory=list, max_length=engine.MAX_LEAKS,
+                                description="Сценарий утечек: истечение из отверстия в узле")
 
 
 def _http(exc: engine.EngineError) -> HTTPException:
@@ -81,7 +88,8 @@ async def parse(body: ModelIn) -> dict[str, Any]:
 async def simulate(body: SimulateIn) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         wn = engine.load(body.inp, body.library)
-        return engine.simulate(wn, duration_h=body.duration_h, report_step_h=body.report_step_h)
+        return engine.simulate(wn, duration_h=body.duration_h, report_step_h=body.report_step_h,
+                               leaks=[leak.model_dump() for leak in body.leaks])
 
     try:
         return await run_in_threadpool(run)

@@ -10,6 +10,9 @@ POST   /api/v1/water/models/{id}/runs           — гидравлический
 GET    /api/v1/water/models/{id}/runs           — расчёты модели
 GET    /api/v1/water/models/{id}/geojson        — сеть для карты; run_id и step — значения на шаге расчёта
 GET    /api/v1/water/models/{id}/runs/{run}/step — значения шага без геометрии (перемотка по времени)
+GET    /api/v1/water/models/{id}/zones          — зоны водоучёта (DMA) между границами и расходомерами
+PUT    /api/v1/water/models/{id}/meters         — расходомеры модели (трубы-вводы зон, право «Справочники»)
+GET    /api/v1/water/models/{id}/runs/{run}/balance — баланс по зонам; сценарий утечки — против базового расчёта
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, 
 from pydantic import BaseModel, Field
 
 from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
-from database import water
+from database import water, water_zones
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["water"])
@@ -40,9 +43,19 @@ class LibraryIn(BaseModel):
     name: Optional[str] = Field(None, max_length=200)
 
 
+class LeakIn(BaseModel):
+    node: str = Field(min_length=1, max_length=64)
+    area_cm2: float = Field(gt=0, le=500, description="Площадь отверстия, см²")
+
+
 class RunIn(BaseModel):
     duration_h: Optional[float] = Field(None, ge=0, le=168)
     report_step_h: Optional[float] = Field(None, gt=0, le=24)
+    leaks: list[LeakIn] = Field(default_factory=list, max_length=20, description="Сценарий утечек")
+
+
+class MetersIn(BaseModel):
+    links: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(max_length=water_zones.MAX_METERS)
 
 
 @router.get("/api/v1/water/status")
@@ -107,7 +120,8 @@ async def water_run(model_id: ModelId, body: RunIn, user: Calc) -> dict[str, Any
     try:
         async with acquire_conn() as conn:
             return await water.run(conn, model_id, user=user.username, duration_h=body.duration_h,
-                                    report_step_h=body.report_step_h)
+                                    report_step_h=body.report_step_h,
+                                    leaks=[leak.model_dump() for leak in body.leaks])
     except water.WaterError as exc:
         raise _http(exc) from exc
 
@@ -134,5 +148,33 @@ async def water_step(model_id: ModelId, run_id: Annotated[int, Path(ge=1)], _: V
     try:
         async with acquire_conn() as conn:
             return await water.step_values(conn, model_id, run_id, step)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/water/models/{model_id}/zones")
+async def water_zones_get(model_id: ModelId, _: Viewer) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_zones.zones(conn, model_id)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/api/v1/water/models/{model_id}/meters", dependencies=WRITE)
+async def water_meters_put(model_id: ModelId, body: MetersIn, _: Refs) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_zones.set_meters(conn, model_id, body.links)
+    except water.WaterError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/api/v1/water/models/{model_id}/runs/{run_id}/balance")
+async def water_balance(model_id: ModelId, run_id: Annotated[int, Path(ge=1)], _: Viewer,
+                        baseline: Optional[int] = Query(None, ge=1)) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await water_zones.balance(conn, model_id, run_id, baseline)
     except water.WaterError as exc:
         raise _http(exc) from exc

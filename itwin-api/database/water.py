@@ -171,8 +171,10 @@ async def delete_model(conn, model_id: int) -> bool:
 # --- расчёты -------------------------------------------------------------------------------------
 
 async def run(conn, model_id: int, *, user: str, duration_h: Optional[float] = None,
-              report_step_h: Optional[float] = None) -> dict[str, Any]:
-    """Расчёт модели движком; результаты по шагам — в tgid_water_run."""
+              report_step_h: Optional[float] = None,
+              leaks: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+    """Расчёт модели движком; результаты по шагам — в tgid_water_run. leaks — сценарий утечек [{node, area_cm2}]:
+    расход утечек по шагам — в summary.leaks (баланс по зонам сравнивает его с базовым расчётом)."""
     inp = await conn.fetchval("SELECT inp FROM tgid_water_model WHERE id = $1", model_id)
     if inp is None:
         raise WaterError(404, "Модель водопровода не найдена")
@@ -181,6 +183,8 @@ async def run(conn, model_id: int, *, user: str, duration_h: Optional[float] = N
         body["duration_h"] = duration_h
     if report_step_h is not None:
         body["report_step_h"] = report_step_h
+    if leaks:
+        body["leaks"] = leaks
     res = await engine_call("POST", "/simulate", body)
     summary = res["summary"]
     run_id = await conn.fetchval(

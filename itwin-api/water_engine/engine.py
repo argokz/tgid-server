@@ -23,6 +23,10 @@ MAX_DURATION_H = 24 * 7
 MAX_NODES = 50_000
 LOW_PRESSURE_M = 10.0        # ниже — недостаточный напор у потребителя (СП 31.13330: не меньше 10 м на 1 этаж)
 HIGH_VELOCITY_MS = 2.0
+LEAK_CD = 0.75               # коэффициент расхода отверстия (свищ, раскрытие стыка)
+MAX_LEAKS = 20
+MAX_LEAK_AREA_CM2 = 500.0
+G = 9.81
 
 
 class EngineError(Exception):
@@ -120,10 +124,32 @@ def describe(wn: wntr.network.WaterNetworkModel) -> dict[str, Any]:
     }
 
 
+def add_leaks(wn: wntr.network.WaterNetworkModel, leaks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Утечки как истечение из отверстия в узле: Q = Cd·A·√(2g)·P^0,5 — излучатель (emitter) EPANET, расход зависит
+    от давления. Излучатель узла, если был, сохраняется: коэффициент утечки прибавляется к нему."""
+    if len(leaks) > MAX_LEAKS:
+        raise EngineError(422, f"Утечек в сценарии — не больше {MAX_LEAKS}")
+    junctions = set(wn.junction_name_list)
+    out = []
+    for leak in leaks:
+        node, area = str(leak.get("node") or ""), float(leak.get("area_cm2") or 0)
+        if node not in junctions:
+            raise EngineError(422, f"Утечка — только в узле сети (Junction), «{node}» не узел")
+        if not 0 < area <= MAX_LEAK_AREA_CM2:
+            raise EngineError(422, f"Площадь отверстия — больше 0 и до {MAX_LEAK_AREA_CM2:g} см²")
+        coef = LEAK_CD * area * 1e-4 * math.sqrt(2 * G)
+        j = wn.get_node(node)
+        j.emitter_coefficient = (j.emitter_coefficient or 0) + coef
+        out.append({"node": node, "area_cm2": area, "coef": coef})
+    return out
+
+
 def simulate(wn: wntr.network.WaterNetworkModel, *, duration_h: Optional[float] = None,
-             report_step_h: Optional[float] = None) -> dict[str, Any]:
+             report_step_h: Optional[float] = None, leaks: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
     """Гидравлический расчёт EPANET 2.2 по периоду модели (или заданному): значения по узлам и участкам на каждый
-    шаг отчёта и сводка — давление ниже LOW_PRESSURE_M, скорость выше HIGH_VELOCITY_MS, отрицательное давление."""
+    шаг отчёта и сводка — давление ниже LOW_PRESSURE_M, скорость выше HIGH_VELOCITY_MS, отрицательное давление.
+    leaks — сценарий утечек [{node, area_cm2}]: расход утечки по шагам — в summary.leaks."""
+    leak_items = add_leaks(wn, leaks or [])
     if duration_h is not None:
         if not 0 <= duration_h <= MAX_DURATION_H:
             raise EngineError(422, f"Период расчёта — от 0 до {MAX_DURATION_H} ч")
@@ -163,6 +189,17 @@ def simulate(wn: wntr.network.WaterNetworkModel, *, duration_h: Optional[float] 
         "high_velocity_pipes": sorted(str(c) for c in fast.columns[fast.any()]),
         "thresholds": {"low_pressure_m": LOW_PRESSURE_M, "high_velocity_ms": HIGH_VELOCITY_MS},
     }
+    if leak_items:
+        exponent = wn.options.hydraulic.emitter_exponent or 0.5
+        step_s = wn.options.time.report_timestep
+        summary["leaks"] = []
+        for item in leak_items:
+            flow = [item["coef"] * max(float(p), 0.0) ** exponent * 1000 for p in pressure[item["node"]].tolist()]
+            summary["leaks"].append({
+                "node": item["node"], "area_cm2": item["area_cm2"], "flow_ls": [_r(q, 3) for q in flow],
+                "avg_ls": _r(sum(flow) / len(flow), 3) if flow else None,
+                "volume_m3": _r(sum(flow[:-1]) * step_s / 1000, 1) if len(flow) > 1 else 0.0,
+            })
     return {
         "times_s": times,
         "node": {"pressure_m": table(pressure, 1, 2), "head_m": table(res.node["head"], 1, 2),
