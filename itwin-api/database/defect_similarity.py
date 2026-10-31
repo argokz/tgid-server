@@ -152,11 +152,16 @@ async def _query_for(conn, text: str) -> Optional[str]:
 
 async def reference(conn, defect_id: int) -> Optional[dict[str, Any]]:
     row = await conn.fetchrow(
-        f"""SELECT d.id, {_TEXT} AS text, d.data_osmotra AS detected_at, d.lineid,
+        f"""SELECT d.id, {_TEXT} AS text, {_PARTS} AS parts, d.data_osmotra AS detected_at, d.lineid,
                    CASE WHEN d.shape IS NULL THEN NULL ELSE ST_X(ST_Transform(d.shape, 4326)) END AS lon,
                    CASE WHEN d.shape IS NULL THEN NULL ELSE ST_Y(ST_Transform(d.shape, 4326)) END AS lat
               FROM defect d WHERE d.id = $1""", defect_id)
-    return dict(row) if row else None
+    if not row:
+        return None
+    ref = dict(row)
+    ref["parts"] = list(ref["parts"] or [])
+    ref["detected_at"] = ref["detected_at"].isoformat() if ref["detected_at"] else None
+    return ref
 
 
 async def similar(conn, text: str, *, lon: Optional[float] = None, lat: Optional[float] = None,

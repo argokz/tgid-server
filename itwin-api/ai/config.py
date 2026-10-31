@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 
 DEFAULT_MODEL = "claude-opus-5-5"
+# Пересортировка похожих аварий: короткие тексты, ответ за секунды на каждое «Найти» — Sonnet (выбор пользователя)
+DEFAULT_RERANK_MODEL = "claude-sonnet-5-5"
 # Эффорт по умолчанию: разбор и классификация — medium, объяснения протокола — high (задаёт вызов)
 DEFAULT_EFFORT = "medium"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -45,6 +47,10 @@ def disabled_reason() -> str | None:
 
 def model() -> str:
     return (os.getenv("AI_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+
+def rerank_model() -> str:
+    return (os.getenv("AI_RERANK_MODEL") or DEFAULT_RERANK_MODEL).strip() or DEFAULT_RERANK_MODEL
 
 
 def timeout_s() -> float:

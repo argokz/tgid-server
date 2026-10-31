@@ -6,7 +6,7 @@ from typing import Annotated, Any, Optional
 
 from database.tu_connection import DEFAULT_RADIUS_M, MAX_RADIUS_M
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field, model_validator
 
 from ai import calc_protocol, config, tools, tu_recommend, wear_plan
@@ -19,7 +19,8 @@ from routers.network_select import parse_bbox
 router = APIRouter(tags=["ai"])
 
 # Инструменты, которые уже есть в этом API (пополняются этапами 3–6 плана)
-AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan", "search", "data_quality", "import_mapping"]
+AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan", "search", "data_quality", "import_mapping",
+                       "defect_rerank"]
 
 
 @router.get("/api/v1/ai/status", response_model=AiStatus)
@@ -180,3 +181,30 @@ async def ai_import_suggest_mapping(body: ImportMappingRequest,
                                                   has_geometry=body.has_geometry, username=user.username)
     except AiError as exc:
         raise exc.to_http() from exc
+
+
+class SimilarDefectsAiRequest(BaseModel):
+    radius_m: float = Field(1000, ge=10, le=20000)
+    limit: int = Field(10, ge=1, le=15)
+
+
+@router.post("/api/v1/ai/defects/{defect_id}/similar", dependencies=[Depends(require_ai)])
+async def ai_similar_defects(defect_id: Annotated[int, Path(ge=1)], body: SimilarDefectsAiRequest,
+                             user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Похожие аварии: кандидаты ищет код, Claude пересортировывает и объясняет; без ИИ — порядок кода."""
+    from ai import defect_rerank
+    from database import defect_similarity as ds
+    from routers.defect_similarity import masked
+
+    async with acquire_conn() as conn:
+        ref = await ds.reference(conn, defect_id)
+        if ref is None:
+            raise HTTPException(status_code=404, detail="Дефект не найден")
+        found = await ds.similar(conn, ref["text"] or "", lon=ref["lon"], lat=ref["lat"], radius_m=body.radius_m,
+                                 exclude_id=defect_id, limit=defect_rerank.MAX_CANDIDATES)
+    try:
+        result = await defect_rerank.rerank(ref, found, username=user.username, defect_id=defect_id)
+    except AiError as exc:  # ИИ недоступен, отказ, лимит — остаётся порядок по признакам
+        result = {**found, "ranking": "features", "ai_error": exc.message}
+    result["items"] = result["items"][:body.limit]
+    return masked({"defect_id": defect_id, **result}, user)

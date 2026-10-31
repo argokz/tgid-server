@@ -74,6 +74,7 @@ async def ask_structured(
     max_tokens: Optional[int] = None,
     username: Optional[str] = None,
     details: Optional[dict[str, Any]] = None,
+    model: Optional[str] = None,
 ) -> T:
     """Запрос к модели с ответом по pydantic-схеме; usage пишется в журнал действий.
 
@@ -95,11 +96,12 @@ async def ask_structured(
 
     import anthropic
 
+    model = model or config.model()
     client = get_client()
     started = time.monotonic()
     try:
         response = await client.messages.parse(
-            model=config.model(),
+            model=model,
             max_tokens=max_tokens or config.max_output_tokens(),
             system=_system_blocks(system),
             messages=[{"role": "user", "content": user}],
@@ -120,7 +122,7 @@ async def ask_structured(
         raise AiError("connection", "Нет связи с Claude API", 503) from exc
 
     duration_ms = int((time.monotonic() - started) * 1000)
-    await usage.record(tool=tool, username=username, model=config.model(), response=response,
+    await usage.record(tool=tool, username=username, model=model, response=response,
                        duration_ms=duration_ms, details=details)
 
     if response.stop_reason == "refusal":
