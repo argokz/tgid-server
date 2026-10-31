@@ -1,29 +1,45 @@
 """План перекладок теплосети (фаза 5, шаг 2): что переложить в пределах бюджета, чтобы снять больше риска.
 
 Польза перекладки участка = вероятность его повреждения за горизонт (прогноз аварийности, tgid_failure_risk) ×
-последствия: множитель оценки износа (wear_out.consequence — отключаемые потребители, ущерб людям и инфраструктуре,
-1…2,4) × множитель расхода через участок (wear.flow_factor, 1…1,5). Новая труба за горизонт прогноза считается
-неповреждаемой — польза равна снятому ожидаемому ущербу.
+последствия повреждения — по выбранному критерию (OBJECTIVES):
+- consumers — сколько потребителей отключит авария на участке (зона задвижек + ниже по сети без обходного питания,
+  database/outage_consequence.py, шаг 3); load — их нагрузка, Гкал/ч;
+- wear — множитель оценки износа (wear_out.consequence из паспорта, 1…2,4) × множитель расхода (wear.flow_factor);
+- failures — без последствий: просто ожидаемое число повреждений.
+Новая труба за горизонт прогноза считается неповреждаемой — польза равна снятому ожидаемому ущербу.
 
 Стоимость — длина × расценка за метр по классу диаметра (tgid_relay_price, заполняет пользователь); расценок нет —
 бюджет в километрах. Единица перекладки — трасса (build_runs): участки одного фрагмента между развилками, подача и
 обратка — один коридор; выбор по отдельным участкам давал тысячи обрезков по 2 м. Отбор — жадный по пользе на
 единицу стоимости до исчерпания бюджета.
 
+Копии сети друг на друге (в Астане — магистрали по отопительным сезонам, 11 фрагментов) — одна физическая труба:
+участки разных фрагментов с совпадающими концами (сетка 1 м) и длиной склеиваются (merge_copies), иначе план
+перекладывает одну трубу дважды.
+
 Для сравнения — план того же бюджета «самые старые первыми»: сколько ожидаемых повреждений снял бы он. Ретроспектива
 на реальных повреждениях — в проверке прогноза (metrics.capture_by_km).
 """
 from __future__ import annotations
 
+import io
 import json
 from collections import defaultdict
 from typing import Any, Optional
 
+from database import outage_consequence
 from database.wear import flow_factor
 
 MAX_SELECTED = 5000
 JOB_OVERHEAD_M = 25.0      # постоянные затраты объекта (вскрытие, отключение, благоустройство) — как 25 м трубы
 DEFAULT_CONSEQUENCE = 1.0
+OBJECTIVES = {
+    "consumers": "отключаемые потребители",
+    "load": "отключаемая нагрузка",
+    "wear": "последствия из оценки износа",
+    "failures": "число повреждений",
+}
+OUTAGE_OBJECTIVES = ("consumers", "load")
 
 
 class PlanError(Exception):
@@ -138,11 +154,69 @@ async def set_prices(conn, rows: list[dict[str, Any]], user: str) -> list[dict[s
 
 # --- план ----------------------------------------------------------------------------------------
 
+def severity(objective: str, x: dict[str, Any]) -> float:
+    """Последствия одного повреждения участка по критерию плана. Последствия отключения неизвестны (участок вне
+    расчётной схемы) — 0: такой участок по этим критериям не выбирается."""
+    if objective == "consumers":
+        return float(x["consumers"] or 0)
+    if objective == "load":
+        return float(x["load"] or 0.0)
+    if objective == "wear":
+        return (x["consequence"] or DEFAULT_CONSEQUENCE) * flow_factor(x["flow_t_h"])
+    return 1.0
+
+
+def merge_copies(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Склеить копии одной трубы из разных фрагментов (ключ ends — концы и длина). Остаются участки фрагмента с
+    наибольшим суммарным риском (трассы не рвутся между копиями); вероятность — наибольшая по копиям (попарно по
+    убыванию: подача и обратка фрагмента — две трубы), последствия — наибольшие. Возвращает участки и число
+    отброшенных копий."""
+    weight: dict[Any, float] = defaultdict(float)
+    for x in items:
+        weight[x["fileid"]] += x["prob"]
+    groups: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    out = []
+    for x in items:
+        if x.get("ends") is None:
+            out.append(x)
+        else:
+            groups[x["ends"]].append(x)
+    dropped = 0
+    for lines in groups.values():
+        by_file: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+        for x in lines:
+            by_file[x["fileid"]].append(x)
+        if len(by_file) == 1:
+            out.extend(lines)
+            continue
+        main = min(by_file, key=lambda f: (-weight[f], f if f is not None else 0))
+        kept = sorted((dict(x) for x in by_file[main]), key=lambda x: -x["prob"])
+        for f, others in by_file.items():
+            if f == main:
+                continue
+            dropped += len(others)
+            for k, o in zip(kept, sorted(others, key=lambda x: -x["prob"])):
+                k["prob"] = max(k["prob"], o["prob"])
+        for key in ("consumers", "load", "social"):
+            values = [x[key] for x in lines if x[key] is not None]
+            for k in kept:
+                k[key] = max(values) if values else None
+        out.extend(kept)
+    return out, dropped
+
+
 async def _items(conn, run_id: int, fileid: Optional[int]) -> list[dict[str, Any]]:
     rows = await conn.fetch(
         """SELECT r.lineid, r.prob, r.age, r.len_m, l.fileid, f.name AS fragment, l.nodeid1, l.nodeid2,
-                  h.diametercondit AS dn, w.consequence, w.flow_t_h, w.category
+                  h.diametercondit AS dn, w.consequence, w.flow_t_h, w.category,
+                  round(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1)))) AS sx,
+                  round(ST_Y(ST_StartPoint(ST_GeometryN(l.shape, 1)))) AS sy,
+                  round(ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape))))) AS ex,
+                  round(ST_Y(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape))))) AS ey,
+                  c.zone_consumers + c.down_consumers AS consumers, c.zone_load + c.down_load AS load,
+                  c.zone_social + c.down_social AS social
              FROM tgid_failure_risk r JOIN linesobj l ON l.id = r.lineid
+             LEFT JOIN tgid_line_consequence c ON c.lineid = r.lineid
              LEFT JOIN fragments f ON f.id = l.fileid
              LEFT JOIN LATERAL (SELECT diametercondit FROM heatpipesections WHERE lineid = l.id ORDER BY id LIMIT 1) h
                     ON true
@@ -151,20 +225,36 @@ async def _items(conn, run_id: int, fileid: Optional[int]) -> list[dict[str, Any
             WHERE r.run_id = $1 AND ($2::int IS NULL OR l.fileid = $2)""", run_id, fileid)
     out = []
     for r in rows:
-        severity = (r["consequence"] or DEFAULT_CONSEQUENCE) * flow_factor(r["flow_t_h"])
+        ends = None
+        if None not in (r["sx"], r["sy"], r["ex"], r["ey"]):
+            ends = (*sorted([(r["sx"], r["sy"]), (r["ex"], r["ey"])]), round(r["len_m"] or 0))
         out.append({"lineid": r["lineid"], "prob": r["prob"], "age": r["age"], "len_m": r["len_m"] or 0.0,
                     "fileid": r["fileid"], "fragment": r["fragment"], "node1": r["nodeid1"], "node2": r["nodeid2"],
-                    "dn": r["dn"], "wear_category": r["category"], "severity": round(severity, 3),
-                    "consequence": r["consequence"], "flow_t_h": r["flow_t_h"],
-                    "benefit": r["prob"] * severity})
+                    "dn": r["dn"], "wear_category": r["category"], "consequence": r["consequence"],
+                    "flow_t_h": r["flow_t_h"], "consumers": r["consumers"], "load": r["load"], "social": r["social"],
+                    "ends": ends})
+    return out
+
+
+def expected(lines: list[dict[str, Any]], totals: dict[str, float]) -> dict[str, Any]:
+    """Снятый ожидаемый ущерб: повреждения, отключения потребителей, нагрузки, социальных объектов — и доли."""
+    out: dict[str, Any] = {"lines": len(lines)}
+    for key, field in (("failures", None), ("consumers", "consumers"), ("load", "load"), ("social", "social")):
+        v = sum(x["prob"] * (1 if field is None else (x[field] or 0)) for x in lines)
+        out[f"expected_{key}"] = round(v, 2)
+        out[f"expected_{key}_share"] = round(v / totals[key], 3) if totals[key] else None
     return out
 
 
 async def plan(conn, *, budget: float, unit: str = "km", run_id: Optional[int] = None,
-               fileid: Optional[int] = None, job_overhead_m: float = JOB_OVERHEAD_M) -> dict[str, Any]:
-    """План перекладок в пределах бюджета: объекты, участки, снятый ожидаемый ущерб и сравнение со «старыми»."""
+               fileid: Optional[int] = None, job_overhead_m: float = JOB_OVERHEAD_M,
+               objective: str = "consumers", with_lines: bool = False) -> dict[str, Any]:
+    """План перекладок в пределах бюджета: объекты, участки, снятый ожидаемый ущерб и сравнение со «старыми».
+    with_lines — ещё и все выбранные участки (выгрузка в Excel)."""
     if unit not in ("km", "money"):
         raise PlanError(422, "Единица бюджета — km или money")
+    if objective not in OBJECTIVES:
+        raise PlanError(422, f"Критерий плана — один из: {', '.join(OBJECTIVES)}")
     if budget <= 0:
         raise PlanError(422, "Бюджет — больше нуля")
     if run_id is None:
@@ -177,8 +267,12 @@ async def plan(conn, *, budget: float, unit: str = "km", run_id: Optional[int] =
     prices = await list_prices(conn)
     if unit == "money" and not prices:
         raise PlanError(422, "Расценки перекладки не заполнены — план в деньгах не составить, задайте бюджет в км")
-    items = await _items(conn, run_id, fileid)
+    if objective in OUTAGE_OBJECTIVES:
+        await outage_consequence.ensure(conn)
+    items, copies = merge_copies(await _items(conn, run_id, fileid))
     for x in items:
+        x["severity"] = severity(objective, x)
+        x["benefit"] = x["prob"] * x["severity"]
         if unit == "km":
             x["cost"] = x["len_m"] / 1000
         else:
@@ -192,7 +286,10 @@ async def plan(conn, *, budget: float, unit: str = "km", run_id: Optional[int] =
     objects = sorted((r["lines"] for r in select(runs, budget, overhead)), key=lambda g: -sum(x["benefit"] for x in g))
     chosen = [x for g in objects for x in g]
     total_benefit = sum(x["benefit"] for x in items) or 1.0
-    total_events = sum(x["prob"] for x in items) or 1.0
+    totals = {"failures": sum(x["prob"] for x in items),
+              "consumers": sum(x["prob"] * (x["consumers"] or 0) for x in items),
+              "load": sum(x["prob"] * (x["load"] or 0) for x in items),
+              "social": sum(x["prob"] * (x["social"] or 0) for x in items)}
     old = oldest_first(items, budget)
     geo = await conn.fetch(
         "SELECT id, ST_AsGeoJSON(ST_Transform(shape, 4326), 7) AS g FROM linesobj WHERE id = ANY($1::int[])",
@@ -209,24 +306,102 @@ async def plan(conn, *, budget: float, unit: str = "km", run_id: Optional[int] =
                 "lineids": [x["lineid"] for x in g][:50], "length_m": round(sum(x["len_m"] for x in g), 1),
                 "cost": round(sum(x["cost"] for x in g), 3), "expected_failures": round(sum(x["prob"] for x in g), 3),
                 "benefit": round(sum(x["benefit"] for x in g), 3), "max_prob": round(max(x["prob"] for x in g), 4),
-                "dn_min": min(dns) if dns else None, "dn_max": max(dns) if dns else None}
+                "dn_min": min(dns) if dns else None, "dn_max": max(dns) if dns else None,
+                # худшее отключение при повреждении одного участка трассы
+                "consumers_max": max((x["consumers"] or 0) for x in g),
+                "load_max": round(max((x["load"] or 0) for x in g), 3),
+                "social_max": max((x["social"] or 0) for x in g)}
 
     metrics = json.loads(run["metrics"])
-    return {
+    out = {
         "run_id": run_id, "horizon_years": run["horizon_years"], "unit": unit, "budget": budget,
+        "objective": objective, "objective_label": OBJECTIVES[objective],
         "job_overhead_m": job_overhead_m,
         "currency": prices[0]["currency"] if unit == "money" and prices else None,
         "spent": round(sum(x["cost"] for x in chosen), 3),
-        "lines": len(chosen), "length_km": round(sum(x["len_m"] for x in chosen) / 1000, 3),
-        "expected_failures": round(sum(x["prob"] for x in chosen), 2),
-        "expected_failures_share": round(sum(x["prob"] for x in chosen) / total_events, 3),
+        "length_km": round(sum(x["len_m"] for x in chosen) / 1000, 3),
+        **expected(chosen, totals),
         "benefit_share": round(sum(x["benefit"] for x in chosen) / total_benefit, 3),
-        "oldest_first": {"lines": len(old), "expected_failures": round(sum(x["prob"] for x in old), 2),
-                         "expected_failures_share": round(sum(x["prob"] for x in old) / total_events, 3)},
+        "oldest_first": expected(old, totals),
         "consequence_values": len({x["consequence"] for x in items if x["consequence"] is not None}),
-        "flow_known": sum(1 for x in items if x["flow_t_h"] is not None), "runs": len(runs),
-        "population": len(items), "backtest_capture_by_km": metrics.get("capture_by_km"),
+        "flow_known": sum(1 for x in items if x["flow_t_h"] is not None),
+        "outage_known": sum(1 for x in items if x["consumers"] is not None),
+        "outage": await outage_consequence.status(conn),
+        "runs": len(runs), "population": len(items), "copies_merged": copies, "backtest_capture_by_km": metrics.get("capture_by_km"),
         "objects": [obj(i, g) for i, g in enumerate(objects)],
         "geojson": {"type": "FeatureCollection", "features": features},
     }
+    if with_lines:
+        out["chosen_lines"] = [{**{k: x[k] for k in ("lineid", "fragment", "len_m", "dn", "prob", "age", "consumers",
+                                                     "load", "social", "cost")},
+                                "object": rank[x["lineid"]] + 1} for x in chosen]
+    return out
 
+
+
+# --- выгрузка ------------------------------------------------------------------------------------
+
+def _pct(v: Optional[float]) -> str:
+    return "—" if v is None else f"{v * 100:.1f} %".replace(".", ",")
+
+
+def plan_workbook(p: dict[str, Any]) -> bytes:
+    """Excel для инвестпрограммы: итоги и параметры, объекты перекладки, участки объектов."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    bold = Font(bold=True)
+    money = p["unit"] == "money"
+    cost_label = f"Стоимость, {p['currency']}" if money else "Длина в бюджете, км"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Итоги"
+    ws.append([f"План перекладок: бюджет {p['budget']} {p['currency'] if money else 'км'}"])
+    ws["A1"].font = Font(bold=True, size=13)
+    ws.append(["Критерий отбора", p["objective_label"]])
+    ws.append(["Горизонт прогноза, лет", p["horizon_years"]])
+    ws.append(["Постоянные затраты объекта, м трубы", p["job_overhead_m"]])
+    ws.append(["Расчёт прогноза", p["run_id"]])
+    ws.append([])
+    ws.append(["", "По плану", "«Самые старые первыми»"])
+    for cell in ws[ws.max_row]:
+        cell.font = bold
+    old = p["oldest_first"]
+    ws.append(["Участков", p["lines"], old["lines"]])
+    for key, label in (("failures", "Ожидаемых повреждений снято"),
+                       ("consumers", "Ожидаемых отключений потребителей снято"),
+                       ("load", "Ожидаемой отключаемой нагрузки снято, Гкал/ч"),
+                       ("social", "Ожидаемых отключений социальных объектов снято")):
+        ws.append([label, p[f"expected_{key}"], old[f"expected_{key}"]])
+        ws.append(["  доля от всей сети в расчёте", _pct(p[f"expected_{key}_share"]),
+                   _pct(old[f"expected_{key}_share"])])
+    ws.append([])
+    ws.append(["Оценка по топологии: отключение — зона задвижек и потребители ниже по сети без обходного питания; "
+               "вероятность — прогноз аварийности за горизонт."])
+    ws.column_dimensions["A"].width = 52
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 24
+
+    objs = wb.create_sheet("Объекты")
+    objs.append(["№", "Фрагмент", "Участков", "Длина, м", "Ø от, мм", "Ø до, мм", "Ожид. повреждений",
+                "Отключит потребителей (худший участок)", "Нагрузка, Гкал/ч", "Соцобъектов", cost_label])
+    for cell in objs[1]:
+        cell.font = bold
+    for o in p["objects"]:
+        objs.append([o["n"], o["fragment"], o["lines"], o["length_m"], o["dn_min"], o["dn_max"], o["expected_failures"],
+                    o["consumers_max"], o["load_max"], o["social_max"], o["cost"]])
+    objs.column_dimensions["B"].width = 36
+
+    ls = wb.create_sheet("Участки")
+    ls.append(["Объект", "Участок (id)", "Фрагмент", "Длина, м", "Ø, мм", "Возраст, лет", "Вероятность повреждения",
+               "Отключит потребителей", "Нагрузка, Гкал/ч", "Соцобъектов", cost_label])
+    for cell in ls[1]:
+        cell.font = bold
+    for x in p.get("chosen_lines") or []:
+        ls.append([x["object"], x["lineid"], x["fragment"], round(x["len_m"], 1), x["dn"],
+                   None if x["age"] is None else round(x["age"], 1), round(x["prob"], 4), x["consumers"],
+                   None if x["load"] is None else round(x["load"], 3), x["social"], round(x["cost"], 3)])
+    ls.column_dimensions["C"].width = 36
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

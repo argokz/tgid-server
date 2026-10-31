@@ -55,3 +55,63 @@ def test_oldest_first_comparison():
 def test_flow_factor_shared_with_wear():
     assert flow_factor(None) == 1 and flow_factor(500) == 1.25 and flow_factor(-3000) == 1.5
     assert priority(50.0, 1.4, 500) == round(0.5 * 1.4 * 1.25, 4)
+
+
+def test_severity_by_objective():
+    x = {"consumers": 12, "load": 0.8, "consequence": 2.0, "flow_t_h": 1000}
+    assert rp.severity("consumers", x) == 12 and rp.severity("load", x) == 0.8
+    assert rp.severity("wear", x) == pytest.approx(2.0 * 1.5) and rp.severity("failures", x) == 1
+    # последствия отключения неизвестны — участок по ним не выбирается
+    assert rp.severity("consumers", {**x, "consumers": None}) == 0
+
+
+def test_expected_shares():
+    lines = [{"prob": 0.5, "consumers": 10, "load": 1.0, "social": 1}, {"prob": 0.1, "consumers": None,
+                                                                         "load": None, "social": None}]
+    totals = {"failures": 2.0, "consumers": 20.0, "load": 0.0, "social": 1.0}
+    e = rp.expected(lines, totals)
+    assert e["lines"] == 2 and e["expected_failures"] == 0.6 and e["expected_failures_share"] == 0.3
+    assert e["expected_consumers"] == 5 and e["expected_consumers_share"] == 0.25
+    assert e["expected_load_share"] is None and e["expected_social_share"] == 0.5
+
+
+def test_plan_workbook_sheets():
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    old = {"lines": 1, **{f"expected_{k}": 0.1 for k in ("failures", "consumers", "load", "social")},
+           **{f"expected_{k}_share": 0.01 for k in ("failures", "consumers", "load", "social")}}
+    p = {"unit": "km", "currency": None, "budget": 5, "objective_label": "отключаемые потребители",
+         "horizon_years": 2, "job_overhead_m": 25, "run_id": 1, "oldest_first": old, **old, "lines": 2,
+         "objects": [{"n": 1, "fragment": "тм-1", "lines": 2, "length_m": 40.0, "dn_min": 100, "dn_max": 150,
+                      "expected_failures": 0.3, "consumers_max": 12, "load_max": 0.5, "social_max": 1, "cost": 0.04}],
+         "chosen_lines": [{"object": 1, "lineid": 7, "fragment": "тм-1", "len_m": 20.0, "dn": 100, "age": 31.0,
+                           "prob": 0.2, "consumers": 12, "load": 0.5, "social": 1, "cost": 0.02},
+                          {"object": 1, "lineid": 8, "fragment": "тм-1", "len_m": 20.0, "dn": 150, "age": None,
+                           "prob": 0.1, "consumers": None, "load": None, "social": None, "cost": 0.02}]}
+    wb = load_workbook(BytesIO(rp.plan_workbook(p)))
+    assert wb.sheetnames == ["Итоги", "Объекты", "Участки"]
+    assert wb["Объекты"].max_row == 2 and wb["Участки"].max_row == 3
+    assert wb["Участки"]["B2"].value == 7 and wb["Итоги"]["B2"].value == "отключаемые потребители"
+
+
+def test_merge_copies_keeps_one_pipe_per_place():
+    def x(lid, fileid, prob, ends, consumers=None):
+        return {"lineid": lid, "fileid": fileid, "prob": prob, "ends": ends, "consumers": consumers, "load": None,
+                "social": None}
+
+    e1, e2 = ((0, 0), (10, 0), 10), ((10, 0), (20, 0), 10)
+    items = [
+        x(1, 1, 0.30, e1), x(2, 1, 0.05, e1),           # фрагмент 1: подача и обратка на одной геометрии
+        x(3, 2, 0.10, e1, 40), x(4, 2, 0.20, e1, 10),   # копия во фрагменте 2
+        x(5, 1, 0.20, e2), x(6, 2, 0.01, e2),
+        x(7, 3, 0.50, None),                            # без геометрии — не склеивается
+        x(8, 1, 0.40, ((5, 5), (6, 6), 1)),             # только во фрагменте 1
+    ]
+    out, dropped = rp.merge_copies(items)
+    assert dropped == 3 and sorted(i["lineid"] for i in out) == [1, 2, 5, 7, 8]
+    by = {i["lineid"]: i for i in out}
+    # остаётся фрагмент 1 (суммарный риск 0,95 против 0,31); вероятности — попарно наибольшие по убыванию
+    assert by[1]["prob"] == 0.30 and by[2]["prob"] == 0.10 and by[1]["consumers"] == 40
+    assert items[1]["prob"] == 0.05  # исходные участки не меняются

@@ -68,3 +68,15 @@ def test_capture_by_length_budget_in_km():
     # очередь: 0 (0,5 км), 1 (1,1), 4 (1,5), 3 (3,5), 2 (пропуск, 3,6)
     assert c == {"0.4": 0.0, "1": 0.333, "1.5": 0.667, "4": 1.0}
     assert ff.capture_by_length(np.zeros(3), np.ones(3), np.ones(3) * 1000, (1,)) == {"1": None}
+
+
+def test_canonical_lines_merge_copies_into_newest_fragment():
+    lines = pd.DataFrame({
+        "id": [1, 2, 3, 4, 5, 6, 7],
+        "fileid": [10, 10, 20, 20, 30, 10, 20],
+        "ends": ["0 10 0 10", "0 10 0 10", "0 10 0 10", "0 10 0 10", "0 10 0 10", "5 6 7 1", None],
+    })
+    # 1–5 — одна труба в трёх фрагментах (подача и обратка во фрагментах 10 и 20): остаётся участок фрагмента 30
+    assert ff.canonical_lines(lines) == {1: 5, 2: 5, 3: 5, 4: 5}
+    # одна копия на месте — ничего не склеивается
+    assert ff.canonical_lines(lines[lines.id.isin([1, 2, 6, 7])]) == {}

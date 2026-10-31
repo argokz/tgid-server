@@ -167,6 +167,9 @@ COMMON: tuple[Item, ...] = (
     Item("расценки перекладки tgid_relay_price",
          "select to_regclass('public.tgid_relay_price') is not null",
          (_m("20261101_relay_plan.sql"),)),
+    Item("последствия аварий tgid_line_consequence",
+         "select to_regclass('public.tgid_line_consequence_run') is not null",
+         (_m("20261101_line_consequence.sql"),)),
     Item("пространственные индексы зданий",
          "select not exists (select 1 from information_schema.columns c where c.table_schema = 'public'"
          " and c.table_name in ('zdaniya_2', 'zdaniya_tu') and c.column_name = 'shape'"

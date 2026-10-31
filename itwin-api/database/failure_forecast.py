@@ -75,10 +75,32 @@ class ForecastError(Exception):
 
 # --- данные --------------------------------------------------------------------------------------
 
+def canonical_lines(lines: pd.DataFrame) -> dict[int, int]:
+    """Копии одной трубы в разных фрагментах (сеть по сезонам друг на друге: концы на сетке 1 м и длина совпадают) →
+    участок самого нового фрагмента (наибольший id). Журнал вешает повреждение на копию, текущую в тот сезон, — без
+    склейки история трубы размазана по копиям, а копии без записей учат модель «не повреждается». Подача и обратка
+    одного фрагмента на общей геометрии не склеиваются. Возвращает {id копии: id участка, который остаётся}."""
+    k = lines.dropna(subset=["ends"])[["id", "fileid", "ends"]]
+    k = k[k.groupby("ends").fileid.transform("nunique") > 1]
+    main = k.groupby("ends").fileid.transform("max")
+    keep = k[k.fileid == main].groupby("ends").id.min()
+    copies = k[k.fileid != main]
+    return dict(zip(copies.id.astype(int), copies.ends.map(keep).astype(int)))
+
+
 async def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, dict[int, pd.DataFrame]]:
-    """Участки с паспортом и глубиной, повреждения с участком и датой, повреждения рядом с участками."""
+    """Участки с паспортом и глубиной, повреждения с участком и датой, повреждения рядом с участками. Копии одной
+    трубы склеены (canonical_lines): остаётся участок нового фрагмента, повреждения копий — на нём."""
     lines = pd.DataFrame([dict(r) for r in await conn.fetch("""
         SELECT l.id, l.fileid, ST_Length(ST_Transform(l.shape, 4326)::geography) AS len_m,
+               -- ключ копий — только у участков сети: внутренние схемы узлов в условных координатах одинаковы
+               CASE WHEN l.internalnodeid IS NULL THEN concat_ws(' ', round(least(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
+                                          ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
+                              round(greatest(ST_X(ST_StartPoint(ST_GeometryN(l.shape, 1))),
+                                             ST_X(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape)))))),
+                              round(ST_Y(ST_StartPoint(ST_GeometryN(l.shape, 1)))
+                                    + ST_Y(ST_EndPoint(ST_GeometryN(l.shape, ST_NumGeometries(l.shape))))),
+                              round(ST_Length(l.shape))) END AS ends,
                h.diametercondit AS dn, h.firstpicdatehp AS d0, h.lasttransdate AS dt, h.tubingtypeid AS tt,
                h.isolmaterialid AS im, h.isolationtypeid AS it, h.nettype AS nt, h.repairdatecapital AS rc,
                coalesce((hd.depth_start + hd.depth_end) / 2, hd.depth_start, hd.depth_end) AS depth
@@ -102,6 +124,12 @@ async def load(conn) -> tuple[pd.DataFrame, pd.DataFrame, dict[int, pd.DataFrame
             float(radius), srid)], columns=["line", "t"])
     if lines.empty:
         raise ForecastError(422, "В базе нет участков с геометрией")
+    copies = canonical_lines(lines)
+    lines = lines[~lines.id.isin(copies)].drop(columns="ends")
+    defects["lineid"] = defects.lineid.map(lambda i: copies.get(i, i))
+    for radius, nd in near.items():
+        near[radius] = nd[~nd.line.isin(copies)]
+    lines.attrs["copies_merged"] = len(copies)
     for col in ("d0", "dt", "rc"):
         lines[col] = pd.to_datetime(lines[col], errors="coerce")
     lines["fill"] = lines[PASSPORT_FIELDS].notna().sum(axis=1)
@@ -226,7 +254,8 @@ def fit_and_score(lines, defects, near, horizon: int = HORIZON_YEARS) -> dict[st
     damaged_ids = lines.id.isin(defects.lineid)
     population = {"passport_fields": PASSPORT_FIELDS, "min_filled": threshold,
                   "lines": int((lines.fill >= threshold).sum()), "lines_all": len(lines),
-                  "damaged_kept": _round(float((lines.loc[damaged_ids, "fill"] >= threshold).mean()))}
+                  "damaged_kept": _round(float((lines.loc[damaged_ids, "fill"] >= threshold).mean())),
+                  "copies_merged": int(lines.attrs.get("copies_merged", 0))}
     lines = lines[lines.fill >= threshold]
     train, test = features(lines, defects, near, t_train, horizon), features(lines, defects, near, t_test, horizon)
     metrics = {**evaluate(train, test), "population_rule": population}
