@@ -253,7 +253,7 @@ def _value(raw: Optional[str], data_type: str) -> Optional[str]:
 
 async def import_sections(conn, op, sections: dict[str, dict], name: Optional[str] = None,
                           id_map: Optional[dict[str, dict[int, int]]] = None,
-                          restore_geometry: bool = True) -> dict:
+                          restore_geometry: bool = True, source_srid: Optional[int] = None) -> dict:
     """Вставляет фрагмент из разобранного файла новыми id; возвращает отчёт.
 
     id_map (если передан) заполняется соответствием {таблица: {id в файле: новый id}} —
@@ -374,7 +374,7 @@ async def import_sections(conn, op, sections: dict[str, dict], name: Optional[st
             "FROM nodes n1 WHERE n1.id = l.nodeid1 AND l.id = ANY($1::int[])",
             new_lines,
         )
-    geometry = await _restore_geometry(conn, new_nodes, new_lines) if restore_geometry else {}
+    geometry = await _restore_geometry(conn, new_nodes, new_lines, source_srid) if restore_geometry else {}
     return {
         "fileid": new_fileid,
         "tables": counts,
@@ -387,12 +387,46 @@ async def import_sections(conn, op, sections: dict[str, dict], name: Optional[st
     }
 
 
-async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int]) -> dict:
-    """gid8 GidWidget::import_tgid0: узел — (x/100, −y/100); участок — узел1 + coords + узел2."""
+# coords участка — числа подряд через пробел или запятую, парами x y (gid8 CCoordList::loadStr): «x y x y »
+# и «x y,x y,» встречаются в одной базе
+_COORD_POINTS_SQL = r"""
+    SELECT array_agg(ST_MakePoint(v.x / 100.0, -v.y / 100.0) ORDER BY v.k)
+      FROM (SELECT (t.ord + 1) / 2 AS k,
+                   max(t.val::float) FILTER (WHERE t.ord % 2 = 1) AS x,
+                   max(t.val::float) FILTER (WHERE t.ord % 2 = 0) AS y
+              FROM unnest(regexp_split_to_array(btrim(l2.coords, ' ,'), '[ ,]+')) WITH ORDINALITY AS t(val, ord)
+             WHERE t.val ~* '^-?[0-9.]+(e[-+]?[0-9]+)?$'
+             GROUP BY 1) v
+     WHERE v.x IS NOT NULL AND v.y IS NOT NULL
+"""
+
+
+async def check_source_srid(conn, source_srid: Optional[int]) -> Optional[int]:
+    """Система координат файла: None или своя система города — без пересчёта; иначе — есть в spatial_ref_sys."""
+    if source_srid is None or source_srid == net_srid():
+        return None
+    if not await conn.fetchval("SELECT 1 FROM spatial_ref_sys WHERE srid = $1", source_srid):
+        raise FragmentFileError(f"Неизвестная система координат EPSG:{source_srid}")
+    return source_srid
+
+
+async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int],
+                            source_srid: Optional[int] = None) -> dict:
+    """gid8 GidWidget::import_tgid0: узел — (x/100, −y/100); участок — узел1 + coords + узел2.
+
+    source_srid — система координат файла (например, слой Zulu в своей проекции): геометрия пересчитывается в
+    систему города, а x/y узлов и coords участков переписываются в её единицах (см/−y, как у десктопа)."""
+    net = net_srid()
+    src = source_srid or net
+
+    def placed(expr: str) -> str:
+        geom = f"ST_SetSRID({expr}, {src})"
+        return geom if src == net else f"ST_Transform({geom}, {net})"
+
     nodes_done = 0
     if node_ids:
         status = await conn.execute(
-            f"UPDATE nodes SET shape = ST_SetSRID(ST_MakePoint(x / 100.0, -y / 100.0), {net_srid()}) "
+            f"UPDATE nodes SET shape = {placed('ST_MakePoint(x / 100.0, -y / 100.0)')} "
             "WHERE id = ANY($1::int[]) AND x IS NOT NULL AND y IS NOT NULL AND (x <> 0 OR y <> 0)",
             node_ids,
         )
@@ -401,17 +435,11 @@ async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int]) -> d
     if line_ids:
         status = await conn.execute(
             rf"""
-            UPDATE linesobj l SET shape = ST_SetSRID(ST_MakeLine(pts.p), {net_srid()})
+            UPDATE linesobj l SET shape = {placed('ST_MakeLine(pts.p)')}
               FROM (
                 SELECT l2.id,
                        ARRAY[ST_MakePoint(n1.x / 100.0, -n1.y / 100.0)]
-                       || COALESCE((
-                            SELECT array_agg(ST_MakePoint(split_part(btrim(c.pt), ' ', 1)::float / 100.0,
-                                                          -split_part(btrim(c.pt), ' ', 2)::float / 100.0)
-                                             ORDER BY c.ord)
-                              FROM unnest(string_to_array(l2.coords, ',')) WITH ORDINALITY AS c(pt, ord)
-                             WHERE btrim(c.pt) ~ '^-?[0-9.]+ +-?[0-9.]+$'
-                          ), ARRAY[]::geometry[])
+                       || COALESCE(({_COORD_POINTS_SQL}), ARRAY[]::geometry[])
                        || ARRAY[ST_MakePoint(n2.x / 100.0, -n2.y / 100.0)] AS p
                   FROM linesobj l2
                   JOIN nodes n1 ON n1.id = l2.nodeid1
@@ -425,7 +453,30 @@ async def _restore_geometry(conn, node_ids: list[int], line_ids: list[int]) -> d
             line_ids,
         )
         lines_done = int(status.split()[-1])
-    return {"nodes_with_shape": nodes_done, "lines_with_shape": lines_done}
+    if src != net:
+        # десктоп рисует по x/y и coords — после пересчёта они в системе города
+        await conn.execute(
+            "UPDATE nodes SET x = round((ST_X(shape) * 100)::numeric, 2), y = round((-ST_Y(shape) * 100)::numeric, 2) "
+            "WHERE id = ANY($1::int[]) AND shape IS NOT NULL", node_ids)
+        await conn.execute(
+            """UPDATE linesobj l SET coords = COALESCE((
+                   SELECT string_agg(round((ST_X(d.geom) * 100)::numeric, 2) || ' '
+                                     || round((-ST_Y(d.geom) * 100)::numeric, 2), ',' ORDER BY d.path[1]) || ','
+                     FROM ST_DumpPoints(l.shape) d
+                    WHERE d.path[1] > 1 AND d.path[1] < ST_NPoints(l.shape)), '')
+                WHERE l.id = ANY($1::int[]) AND l.shape IS NOT NULL""", line_ids)
+    out: dict[str, Any] = {"nodes_with_shape": nodes_done, "lines_with_shape": lines_done}
+    if src != net:
+        out["source_srid"] = src
+    box = await conn.fetchrow(
+        "SELECT ST_XMin(e) AS xmin, ST_YMin(e) AS ymin, ST_XMax(e) AS xmax, ST_YMax(e) AS ymax FROM ("
+        f"  SELECT ST_Transform(ST_SetSRID(ST_Extent(shape)::geometry, {net}), 4326) AS e"
+        "    FROM nodes WHERE id = ANY($1::int[]) AND shape IS NOT NULL) b WHERE e IS NOT NULL",
+        node_ids or [0]) if node_ids else None
+    if box:
+        # где сеть ляжет на карте — проверка системы координат по превью
+        out["bbox_wgs84"] = [round(box[k], 6) for k in ("xmin", "ymin", "xmax", "ymax")]
+    return out
 
 
 # ---------------------------------------------------------------------------

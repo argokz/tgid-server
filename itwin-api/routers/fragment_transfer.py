@@ -21,6 +21,7 @@ from database.connect import get_pool
 from database.fragment_transfer import (
     MAX_UPLOAD_BYTES,
     FragmentFileError,
+    check_source_srid,
     export_fragment_zip,
     fragment_summary,
     import_sections,
@@ -95,6 +96,9 @@ async def import_fragment(
     file: UploadFile = File(..., description=".tgid (zip с tgid.txt) или tgid.txt"),
     name: Optional[str] = Form(None, description="Название нового фрагмента"),
     dry_run: bool = Form(True),
+    source_srid: Optional[int] = Form(None, ge=1, le=999999,
+                                      description="Система координат файла (EPSG), если не своя система города: "
+                                                  "геометрия пересчитывается (например, слой Zulu в своей проекции)"),
 ):
     """Импорт фрагмента новым фрагментом (все объекты получают новые id)."""
     _require_apply_rights(user, dry_run)
@@ -105,7 +109,8 @@ async def import_fragment(
         sections = parse_tgid(content)
 
         async def body(conn, op):
-            rep = await import_sections(conn, op, sections, name=(name or "").strip() or None)
+            srid = await check_source_srid(conn, source_srid)
+            rep = await import_sections(conn, op, sections, name=(name or "").strip() or None, source_srid=srid)
             await op.audit("INSERT", "fragments", rep["fileid"],
                            {"operation": "fragment_import", "file": file.filename, "tables": rep["tables"]})
             return rep

@@ -43,6 +43,8 @@ async def file_job_kinds():
 
 @router.post("/api/v1/file-jobs")
 async def start_file_job(body: FileJobBody, user: Viewer):
+    if body.kind in file_jobs.DEDICATED_KINDS:
+        raise HTTPException(status_code=422, detail=f"«{body.kind}» запускается своим эндпоинтом")
     try:
         params = file_jobs.validate_params(body.kind, body.params)
     except ValidationError as e:

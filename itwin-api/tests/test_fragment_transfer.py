@@ -89,3 +89,22 @@ def test_import_and_merge_need_flags_and_admin(monkeypatch):
     assert client.post("/api/v1/fragments/merge", json={"fragment_ids": [1]},
                        headers=_bearer("admin")).status_code == 422
     assert client.get("/api/v1/fragments/1/export").status_code == 401
+
+
+def test_source_srid_check_and_coords_parsing_rules():
+    import asyncio
+
+    from database import fragment_transfer as ft
+    from database.net_srid import net_srid
+
+    class Conn:
+        async def fetchval(self, sql, srid):
+            return 1 if srid == 32643 else None
+
+    assert asyncio.run(ft.check_source_srid(Conn(), None)) is None
+    assert asyncio.run(ft.check_source_srid(Conn(), net_srid())) is None
+    assert asyncio.run(ft.check_source_srid(Conn(), 32643)) == 32643
+    with pytest.raises(ft.FragmentFileError, match="EPSG:5"):
+        asyncio.run(ft.check_source_srid(Conn(), 5))
+    # coords — числа подряд через пробел или запятую, парами (gid8 CCoordList::loadStr)
+    assert "regexp_split_to_array(btrim(l2.coords, ' ,'), '[ ,]+')" in ft._COORD_POINTS_SQL

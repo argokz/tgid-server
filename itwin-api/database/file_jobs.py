@@ -93,6 +93,13 @@ class NetworkDxfParams(BaseModel):
     limit: int = Field(50000, ge=1, le=200000)
 
 
+class ZuluConvertParams(BaseModel):
+    """Слой ZuluGIS → фрагмент .itwin (database/zulu_import.py); запуск — только через /api/v1/zulu/convert."""
+    upload_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
+    name: str = Field(..., min_length=1, max_length=50, pattern=r"\S")
+    tn: float = Field(..., ge=-60, le=20, description="Расчётная температура наружного воздуха, °C")
+
+
 # --- ход работы ------------------------------------------------------------------------
 
 _progress: ContextVar[Optional[Callable[[str], None]]] = ContextVar("file_job_progress", default=None)
@@ -205,6 +212,12 @@ async def _electrical_reconciliation(p: ElectricalReconciliationParams) -> FileR
     return FileResult(content, f"electrical_reconciliation_{date.today().isoformat()}.xlsx")
 
 
+async def _zulu_convert(p: ZuluConvertParams) -> FileResult:
+    from database import zulu_import
+
+    return await zulu_import.convert(p.upload_id, p.name, p.tn)
+
+
 async def _network_dxf(p: NetworkDxfParams) -> FileResult:
     """DXF участков фрагмента(ов) — фоном: по фрагменту строится десятки секунд (QA F77)."""
     from database.connect import acquire_conn
@@ -228,6 +241,7 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
     "alseko_reconciliation": AlsekoReconciliationParams,
     "electrical_reconciliation": ElectricalReconciliationParams,
     "network_dxf": NetworkDxfParams,
+    "zulu_convert": ZuluConvertParams,
 }
 
 BUILDERS: dict[str, Callable[[Any], Awaitable[FileResult]]] = {
@@ -238,9 +252,12 @@ BUILDERS: dict[str, Callable[[Any], Awaitable[FileResult]]] = {
     "alseko_reconciliation": _alseko_reconciliation,
     "electrical_reconciliation": _electrical_reconciliation,
     "network_dxf": _network_dxf,
+    "zulu_convert": _zulu_convert,
 }
 
 KINDS = tuple(PARAM_MODELS)
+# виды со своим эндпоинтом запуска (свои права и проверка владельца входных данных) — не через POST /file-jobs
+DEDICATED_KINDS = frozenset({"zulu_convert"})
 
 
 def validate_params(kind: str, params: dict[str, Any] | None) -> dict[str, Any]:
@@ -344,6 +361,22 @@ def store_result(task_id: str, result: FileResult, *, owner: str = "", kind: str
     _storage().put(f"{task_id}:data", result.content, ttl)
     _redis().set(f"{KEY_PREFIX}{task_id}:meta", json.dumps(meta, ensure_ascii=False), ex=ttl)
     return {**meta, "ttl": ttl}
+
+
+def put_blob(key: str, data: bytes, meta: dict[str, Any]) -> int:
+    """Входные данные задачи (загрузка пользователя) в хранилище файлов на TTL; вернуть TTL."""
+    ttl = ttl_seconds()
+    _storage().put(f"{key}:data", data, ttl)
+    _redis().set(f"{KEY_PREFIX}{key}:meta", json.dumps(meta, ensure_ascii=False), ex=ttl)
+    return ttl
+
+
+def load_blob(key: str) -> Optional[tuple[dict[str, Any], bytes]]:
+    raw = _redis().get(f"{KEY_PREFIX}{key}:meta")
+    if not raw:
+        return None
+    data = _storage().get(f"{key}:data")
+    return (json.loads(raw), data) if data is not None else None
 
 
 def load_meta(task_id: str) -> Optional[dict[str, Any]]:
