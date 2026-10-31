@@ -160,7 +160,8 @@ DEFECT_SNAP_M = 20.0
 # — одна труба): каждая версия получает свои повреждения. Проверено на 106 нарушениях Астаны с участком в журнале:
 # та же труба — 94 (89 %); предпочтение участка с Ду и трубой Т1/Т2 из текста точность снижало (87 %).
 _SNAP_SQL = """
-SELECT DISTINCT d.id AS defect_id, cp.id AS lineid
+SELECT DISTINCT d.id AS defect_id, cp.id AS lineid, cp.fileid,
+       ST_Distance(ST_Transform(snap.shape, 4326)::geography, ST_Transform(d.shape, 4326)::geography) AS distance_m
   FROM defect d
   CROSS JOIN LATERAL (
       SELECT l.id, l.shape
@@ -171,7 +172,7 @@ SELECT DISTINCT d.id AS defect_id, cp.id AS lineid
        ORDER BY l.shape <-> d.shape
        LIMIT 1) snap
   JOIN LATERAL (
-      SELECT l2.id FROM linesobj l2
+      SELECT l2.id, l2.fileid FROM linesobj l2
        WHERE l2.shape && snap.shape AND ST_Equals(l2.shape, snap.shape)
          AND coalesce(l2.removed, 0) = 0 AND l2.internalnodeid IS NULL
          AND EXISTS (SELECT 1 FROM heatpipesections h WHERE h.lineid = l2.id)

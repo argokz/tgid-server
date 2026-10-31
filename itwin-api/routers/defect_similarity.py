@@ -3,6 +3,9 @@
 GET  /api/v1/defects/{id}/similar   — дефекты, похожие на этот (вид, труба, Ду, место, слова)
 POST /api/v1/defects/similar        — по тексту («свищ Т2 Ду100») и, если задано, месту
 GET  /api/v1/defects/hotspots       — скопления отказов «потеря воды» за годы — кандидаты на перекладку
+GET  /api/v1/defects/line-binding        — предпросмотр: нарушения без участка → участок по месту (право «Журналы»)
+POST /api/v1/defects/line-binding        — записать участки в журнал одной операцией (exclude — снятые)
+POST /api/v1/defects/line-binding/undo   — отменить запись по change_group_id
 
 Тексты дефектов — свободные (туда бывает вписан житель или телефон): без права «Персональные данные» ФИО и номера
 в них маскируются (database/pii.py).
@@ -14,13 +17,16 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 
-from auth import AuthUser, require_roles
+from auth import AuthUser, require_mutations_enabled, require_permission, require_roles
+from database import defect_binding
 from database import defect_similarity as ds
 from database import pii
 from database.connect import acquire_conn
 
 router = APIRouter(tags=["defects"])
 Viewer = Annotated[AuthUser, Depends(require_roles("viewer"))]
+Writer = Annotated[AuthUser, Depends(require_permission("journals"))]
+WRITE = [Depends(require_mutations_enabled)]
 Radius = Annotated[float, Query(ge=10, le=ds.MAX_RADIUS_M)]
 Limit = Annotated[int, Query(ge=1, le=100)]
 
@@ -74,3 +80,40 @@ async def defect_hotspots(
     async with acquire_conn() as conn:
         items = await ds.hotspots(conn, years=years, eps_m=eps_m, min_count=min_count)
     return {"years": years, "eps_m": eps_m, "min_count": min_count, "items": items}
+
+
+class BindIn(BaseModel):
+    exclude: list[int] = Field(default_factory=list, max_length=100_000, description="Нарушения, которые не трогать")
+
+
+class UndoIn(BaseModel):
+    change_group_id: str = Field(min_length=8, max_length=64)
+
+
+@router.get("/api/v1/defects/line-binding")
+async def defect_line_binding_preview(_: Writer) -> dict[str, Any]:
+    async with acquire_conn() as conn:
+        plan = await defect_binding.preview(conn)
+    plan["items"] = plan["items"][:defect_binding.PREVIEW_ROWS]  # для просмотра; запись пересчитывает всё
+    return plan
+
+
+@router.post("/api/v1/defects/line-binding", dependencies=WRITE)
+async def defect_line_binding_apply(body: BindIn, user: Writer) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            return await defect_binding.apply(conn, user.username, exclude=set(body.exclude))
+    except defect_binding.BindingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/defects/line-binding/undo", dependencies=WRITE)
+async def defect_line_binding_undo(body: UndoIn, user: Writer) -> dict[str, Any]:
+    try:
+        async with acquire_conn() as conn:
+            result = await defect_binding.undo(conn, body.change_group_id, user.username)
+    except defect_binding.BindingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Операция привязки не найдена")
+    return result
