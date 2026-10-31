@@ -200,6 +200,24 @@ def forecast(rows: list[dict[str, Any]], cutoff: date, known_until: date, years:
             "by_label": dict(by_label), "waiting": waiting, "issue_rate": rate}
 
 
+def connect_within(rows: list[dict[str, Any]], complete: date, this_year: date, horizon: int,
+                   h: dict[str, list[float]]) -> dict[int, float]:
+    """Вероятность подключения каждого ожидающего ТУ (не подключён до границы полноты, не аннулирован) в
+    ближайшие horizon лет с текущего года — по тем же срокам, что верхняя оценка."""
+    lag_years = this_year.year - complete.year
+    out: dict[int, float] = {}
+    for r in rows:
+        if r["act"] is not None and r["act"] < complete:
+            continue
+        if r["annulled"] is not None and r["annulled"] < this_year:
+            continue
+        offset = max(0, r["issued"].year - complete.year)
+        age = years_between(r["issued"], complete) if r["issued"] < complete else 0
+        curve = [0.0] * offset + connect_curve(h, age, lag_years + horizon - offset)
+        out[r["id"]] = sum(curve[lag_years:lag_years + horizon])
+    return out
+
+
 def actual_connected(rows: list[dict[str, Any]], cutoff: date, years: int) -> list[float]:
     """Фактически подключённый прирост (акты допуска) по годам после среза."""
     out = [0.0] * years
