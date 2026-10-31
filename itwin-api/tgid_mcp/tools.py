@@ -197,6 +197,19 @@ class TaskParams(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=100)
 
 
+class SimilarDefectsParams(BaseModel):
+    text: str = Field(..., min_length=2, max_length=1000,
+                      description="Описание аварии: вид (порыв, свищ, утечка…), труба Т1/Т2, Ду, место")
+    lon: Optional[float] = Field(None, ge=-180, le=180, description="Место (WGS 84); без него — поиск по тексту")
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    radius_m: float = Field(1000, ge=10, le=20000)
+    limit: int = Field(10, ge=1, le=50)
+
+
+class HotspotParams(BaseModel):
+    years: int = Field(5, ge=1, le=30, description="За сколько лет смотреть отказы")
+
+
 class SelectParams(SelectSpec):
     limit: int = Field(100, ge=1, le=200, description="Сколько объектов вернуть (итог — в total)")
     in_view: bool = Field(False, description="Не используется в MCP: охвата карты нет")
@@ -311,6 +324,24 @@ async def _theme(p: ThemeParams, user: AuthUser) -> Any:
     return out
 
 
+async def _similar_defects(p: SimilarDefectsParams, user: AuthUser) -> Any:
+    from database import defect_similarity as ds
+    from routers.defect_similarity import masked
+
+    if (p.lon is None) != (p.lat is None):
+        raise ToolError("Место — обе координаты (lon и lat) или ни одной")
+    async with acquire_conn() as conn:
+        res = await ds.similar(conn, p.text, lon=p.lon, lat=p.lat, radius_m=p.radius_m, limit=p.limit)
+    return masked(res, user)
+
+
+async def _hotspots(p: HotspotParams, user: AuthUser) -> Any:
+    from database import defect_similarity as ds
+
+    async with acquire_conn() as conn:
+        return {"years": p.years, "items": await ds.hotspots(conn, years=p.years)}
+
+
 async def _wear(p: WearParams, user: AuthUser) -> Any:
     from database import wear
 
@@ -420,6 +451,14 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("wear_priorities", "Износ и приоритет ремонта",
          "Участки по приоритету ремонта из последнего расчёта износа (износ %, возраст, повреждения).",
          WearParams, _wear),
+    Tool("similar_defects", "Похожие аварии",
+         "Дефекты журнала, похожие на описание аварии: вид повреждения (порыв, свищ, утечка — одно семейство), "
+         "труба Т1/Т2, условный диаметр, расстояние до места, общие слова. Возвращает оценку сходства и причины.",
+         SimilarDefectsParams, _similar_defects),
+    Tool("failure_hotspots", "Места повторных отказов",
+         "Скопления порывов, свищей и утечек (3 и больше в радиусе 30 м, в разные дни) за годы — кандидаты на "
+         "перекладку: число отказов, виды, даты, ближайший участок (Ду, год прокладки), переложен ли после отказов.",
+         HotspotParams, _hotspots),
     Tool("data_quality", "Качество исходных данных",
          "Нарушения правил качества данных (без координат, без нагрузки, разрывы…) по фрагменту или всей сети.",
          DataQualityParams, _data_quality),

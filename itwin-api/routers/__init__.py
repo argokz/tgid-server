@@ -53,6 +53,7 @@ from routers.live import router as live_router
 from routers.forms import router as forms_router
 from routers.telemetry import router as telemetry_router
 from routers.load_forecast import router as load_forecast_router
+from routers.defect_similarity import router as defect_similarity_router
 from routers.api_v2 import key_router as api_key_router, router as api_v2_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
@@ -99,6 +100,7 @@ all_routers = [
     forms_router,
     telemetry_router,
     load_forecast_router,
+    defect_similarity_router,
     api_key_router,
     api_v2_router,
     file_jobs_router,
