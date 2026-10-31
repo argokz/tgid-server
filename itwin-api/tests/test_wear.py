@@ -72,15 +72,18 @@ def test_assess_row_age_defects_and_relaying():
 
 
 class FakeConn:
-    def __init__(self, rows, exists=True):
+    def __init__(self, rows, exists=True, snapped=(), unplaced=0, srids=(9995, 9995)):
         self.rows, self.exists, self.inserted, self.executed = rows, exists, [], []
         self.next_id = 7
+        self.snapped, self.unplaced, self.srids, self.snap_args = list(snapped), unplaced, srids, None
 
     async def fetchval(self, sql, *args):
         if "to_regclass" in sql:
             return self.exists
         if "INSERT INTO calculation_iznos" in sql:
             return self.next_id
+        if "FROM defect WHERE lineid IS NULL" in sql:
+            return self.unplaced
         if "COUNT(*)" in sql:
             return len(self.rows)
         if "MAX(calculationid)" in sql:
@@ -88,6 +91,11 @@ class FakeConn:
         raise AssertionError(sql)
 
     async def fetch(self, sql, *args):
+        if "ST_SRID" in sql:
+            return [{"d": self.srids[0], "l": self.srids[1]}]
+        if "CROSS JOIN LATERAL" in sql:
+            self.snap_args = args
+            return [{"defect_id": d, "lineid": lid} for d, lid in self.snapped]
         if "FROM heatpipesections h" in sql:
             return self.rows
         if "FROM wear_out w" in sql or "FROM wear_out" in sql:
@@ -192,3 +200,20 @@ def test_endpoints_and_ai_plan(monkeypatch):
     assert "line#2" in calls[0]["user"] and calls[0]["tool"] == "wear_plan"
     assert client.post("/api/v1/ai/wear/plan", json={}, headers=_auth("viewer")).status_code == 403
     assert client.delete("/api/v1/wear/7", headers=_auth("viewer")).status_code == 403
+
+
+def test_run_snaps_defects_without_line_by_place():
+    rows = [_src(lineid=1, length_m=100.0, n_defects=1), _src(lineid=2, length_m=100.0)]
+    # 4 нарушения без участка: 2 — к участку 2, 1 — к участку 1 и его копии 3 в другом фрагменте; одно далеко
+    conn = FakeConn(rows + [_src(lineid=3, length_m=100.0)], snapped=[(10, 2), (11, 2), (12, 1), (12, 3)], unplaced=4)
+    out = asyncio.run(wear.run(conn, fragment_ids=[74], at=AT))
+    by_line = {r[1]: dict(zip(wear._COLUMNS, r[1:])) for r in conn.inserted}
+    assert by_line[1]["n_defects"] == 2 and by_line[2]["n_defects"] == 2 and by_line[3]["n_defects"] == 1
+    assert out["defects_snapped"] == 3 and conn.snap_args == ([74], wear.DEFECT_SNAP_M)
+    assert any("привязано по месту (до 20 м) 3" in n for n in out["notes"])
+
+
+def test_snap_skipped_when_projections_differ():
+    conn = FakeConn([_src(lineid=1)], snapped=[(1, 1)], unplaced=2, srids=(9995, 3857))
+    out = asyncio.run(wear.run(conn, at=AT))
+    assert out["defects_snapped"] == 0 and conn.snap_args is None

@@ -8,6 +8,9 @@
 <1 — 1, <2 — 2, <4 — 3, <5 — 4, иначе 5.
 
 Отличия от десктопа: строка — участок heatpipesections (в Алматы участков ПТС pipesections нет);
+нарушения без участка (lineid) десктоп не считает — здесь они привязываются по месту к ближайшему участку не
+дальше DEFECT_SNAP_M и его копиям в других фрагментах (snap_defects): в Астане участок указан у 106 из 1785
+нарушений, без привязки 94 % аварий не попадали в повреждаемость;
 незаполненные баллы (0/NULL) не считаются «новой трубой»: wear_pct — как в gid6 (нули), а
 wear_pct_known нормирован на заполненные факторы, factors_filled показывает полноту данных.
 Приоритет ремонта (в десктопе методика не реализована, tgid_iznos_remont.sql с «??»):
@@ -150,6 +153,51 @@ SELECT DISTINCT ON (l.id)
  ORDER BY l.id, h.pipesectlength DESC NULLS LAST, h.id DESC
 """
 
+DEFECT_SNAP_M = 20.0
+
+# Нарушения без участка → ближайший участок теплосети (KNN по индексу в проекции таблицы, точное расстояние — по
+# геодезии) и все его копии с той же геометрией в других фрагментах (версии магистралей «2021–2022», «2023–2024»…
+# — одна труба): каждая версия получает свои повреждения. Проверено на 106 нарушениях Астаны с участком в журнале:
+# та же труба — 94 (89 %); предпочтение участка с Ду и трубой Т1/Т2 из текста точность снижало (87 %).
+_SNAP_SQL = """
+SELECT DISTINCT d.id AS defect_id, cp.id AS lineid
+  FROM defect d
+  CROSS JOIN LATERAL (
+      SELECT l.id, l.shape
+        FROM linesobj l
+       WHERE coalesce(l.removed, 0) = 0 AND l.internalnodeid IS NULL AND l.shape IS NOT NULL
+         AND EXISTS (SELECT 1 FROM heatpipesections h WHERE h.lineid = l.id)
+         AND ($1::int[] IS NULL OR l.fileid = ANY($1::int[]))
+       ORDER BY l.shape <-> d.shape
+       LIMIT 1) snap
+  JOIN LATERAL (
+      SELECT l2.id FROM linesobj l2
+       WHERE l2.shape && snap.shape AND ST_Equals(l2.shape, snap.shape)
+         AND coalesce(l2.removed, 0) = 0 AND l2.internalnodeid IS NULL
+         AND EXISTS (SELECT 1 FROM heatpipesections h WHERE h.lineid = l2.id)
+         AND ($1::int[] IS NULL OR l2.fileid = ANY($1::int[]))) cp ON true
+ WHERE d.lineid IS NULL AND d.shape IS NOT NULL
+   AND ST_DWithin(ST_Transform(snap.shape, 4326)::geography, ST_Transform(d.shape, 4326)::geography, $2)
+"""
+
+
+async def snap_defects(conn, fragment_ids: Optional[list[int]] = None) -> dict[str, Any]:
+    """Нарушения без участка, привязанные по месту: {участок: число} и сколько привязано / не привязано."""
+    srids = await conn.fetch(
+        """SELECT (SELECT ST_SRID(shape) FROM defect WHERE shape IS NOT NULL LIMIT 1) AS d,
+                  (SELECT ST_SRID(shape) FROM linesobj WHERE shape IS NOT NULL LIMIT 1) AS l""")
+    unplaced = int(await conn.fetchval(
+        "SELECT COUNT(*) FROM defect WHERE lineid IS NULL AND shape IS NOT NULL") or 0)
+    if not unplaced or not srids or srids[0]["d"] != srids[0]["l"]:
+        # разные проекции у нарушений и участков — KNN-оператор не работает, привязку не делать
+        return {"by_line": {}, "snapped": 0, "unplaced": unplaced}
+    rows = await conn.fetch(_SNAP_SQL, fragment_ids, DEFECT_SNAP_M)
+    by_line: dict[int, int] = {}
+    for r in rows:
+        by_line[r["lineid"]] = by_line.get(r["lineid"], 0) + 1
+    return {"by_line": by_line, "snapped": len({r["defect_id"] for r in rows}), "unplaced": unplaced}
+
+
 _INSERT_SQL = """
 INSERT INTO wear_out (calculationid, lineid, pipesectionid, fileid, age_years, age_source, srok_ball,
                       n_defects, koef_povr, koef_povr_ball, vnesniivid, sostoborudovania, kategorii,
@@ -219,6 +267,9 @@ async def run(conn, *, fragment_ids: Optional[list[int]] = None, user: str = "",
     rows = [dict(r) for r in await conn.fetch(_SOURCE_SQL, fragment_ids)]
     if not rows:
         raise WearError("Нет участков для расчёта износа (проверьте фрагменты)")
+    snap = await snap_defects(conn, fragment_ids)
+    for r in rows:
+        r["n_defects"] = int(r.get("n_defects") or 0) + snap["by_line"].get(r["lineid"], 0)
     title = name or f"Износ участков {at:%d.%m.%Y %H:%M}" + (f", фрагменты {fragment_ids}" if fragment_ids else "")
     if user:
         title += f" ({user})"
@@ -229,8 +280,13 @@ async def run(conn, *, fragment_ids: Optional[list[int]] = None, user: str = "",
         )
         assessed = [assess_row(r, at) for r in rows]
         await conn.executemany(_INSERT_SQL, [(calc_id, *[a[c] for c in _COLUMNS]) for a in assessed])
+    summary = _summarize(assessed, rows)
+    if snap["unplaced"]:
+        summary["notes"].append(
+            f"Нарушений без участка: {snap['unplaced']} — привязано по месту (до {DEFECT_SNAP_M:g} м) {snap['snapped']}, "
+            f"остальные дальше от сети{' или вне выбранных фрагментов' if fragment_ids else ''}")
     return {"calculation_id": calc_id, "name": title, "lines": len(assessed), "at": at.isoformat(timespec="seconds"),
-            **_summarize(assessed, rows)}
+            "defects_snapped": snap["snapped"], **summary}
 
 
 def _summarize(assessed: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict[str, Any]:
