@@ -147,3 +147,15 @@ def test_trace_request_limits_and_independent_defaults():
         TraceRequest(trace_type="upstream", start_node_ids=list(range(1, 502)))
     with pytest.raises(ValidationError):
         TraceRequest(trace_type="upstream", start_node_ids=[0])
+
+
+def test_sources_named_when_known():
+    from database.network_trace import _source_names, _sources_out
+
+    conn = AsyncMock()
+    conn.fetch.return_value = [{"id": 7, "name": "ТЭЦ-2"}, {"id": 8, "name": None}]
+    names = asyncio.run(_source_names(conn, {8, 7}))
+    assert names == {7: "ТЭЦ-2"} and conn.fetch.call_args.args[1] == [7, 8]
+    out = _sources_out({"source_kinds": {8: "set_pressure"}}, {7, 8}, names)
+    assert out == [{"node_id": 7, "kind": "heat_source", "name": "ТЭЦ-2"}, {"node_id": 8, "kind": "set_pressure"}]
+    assert asyncio.run(_source_names(conn, set())) == {}

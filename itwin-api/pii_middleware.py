@@ -61,7 +61,8 @@ class PiiMaskMiddleware:
             if message["type"] == "http.response.start":
                 headers = {k.lower(): v for k, v in message.get("headers") or ()}
                 ctype = headers.get(b"content-type", b"")
-                if b"json" not in ctype or headers.get(b"content-encoding"):
+                # поток NDJSON (помощник ИИ) не копить: он идёт по шагам, ПДн в нём закрыты инструментами
+                if b"json" not in ctype or b"ndjson" in ctype or headers.get(b"content-encoding"):
                     passthrough = True
                     await send(message)
                     return

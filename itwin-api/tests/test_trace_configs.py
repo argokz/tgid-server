@@ -14,6 +14,8 @@ class _Conn:
     """fetch по SQL барьеров: насосные — узел 3, узлы заданного напора — 5, источники — 1."""
 
     async def fetch(self, sql, *args):
+        if "externalnodename" in sql:  # названия питающих точек в ответе трассировки
+            return [{"id": 1, "name": "ТЭЦ"}]
         if "pumpstations" in sql:
             return [{"nodeid": 3}]
         if "setpressnodes" in sql:

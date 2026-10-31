@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Annotated, Any, Optional
 
 from database.tu_connection import DEFAULT_RADIUS_M, MAX_RADIUS_M
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from ai import calc_protocol, config, tools, tu_recommend, wear_plan
+import activity
+from ai import assistant, calc_protocol, config, tools, tu_recommend, wear_plan
 from ai.client import AiError, require_ai
 from ai.schemas import AiStatus
 from auth import AuthUser, require_permission, require_roles
@@ -20,7 +24,7 @@ router = APIRouter(tags=["ai"])
 
 # Инструменты, которые уже есть в этом API (пополняются этапами 3–6 плана)
 AI_TOOLS: list[str] = ["calc_protocol", "tu_recommend", "wear_plan", "search", "data_quality", "import_mapping",
-                       "defect_rerank"]
+                       "defect_rerank", "assistant"]
 
 
 @router.get("/api/v1/ai/status", response_model=AiStatus)
@@ -208,3 +212,31 @@ async def ai_similar_defects(defect_id: Annotated[int, Path(ge=1)], body: Simila
         result = {**found, "ranking": "features", "ai_error": exc.message}
     result["items"] = result["items"][:body.limit]
     return masked({"defect_id": defect_id, **result}, user)
+
+
+@router.post("/api/v1/ai/assistant", dependencies=[Depends(require_ai)])
+async def ai_assistant(request: Request, body: assistant.AssistantRequest,
+                       user: Annotated[AuthUser, Depends(require_permission("calc_run"))]):
+    """Помощник-собеседник: модель сама вызывает инструменты ТГИД (поиск, трассировка, локализация, выборка,
+    сценарии, расчёт) с правами пользователя. Ответ — поток NDJSON: шаги, затем ответ с подсветкой на карте."""
+    from tgid_mcp.tools import _rate_ok
+
+    try:
+        assistant.check_history(body.history)
+    except assistant.AssistantInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if assistant.input_chars(body) > config.max_input_chars():
+        raise HTTPException(status_code=413, detail="Беседа слишком длинная — начните новую")
+    if not _rate_ok((user.username or user.sub or "", "assistant"), assistant.QUESTION_RATE, time.monotonic()):
+        count, window = assistant.QUESTION_RATE
+        raise HTTPException(status_code=429, detail=f"Не больше {count} вопросов за {window // 60} минут — подождите")
+    client = {"ip": activity.client_ip(request.scope), "user_agent": request.headers.get("user-agent", "")[:300]}
+
+    async def lines():
+        async for event in assistant.run(body, user, client):
+            yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",  # nginx: отдавать шаги сразу, а не в конце
+    })

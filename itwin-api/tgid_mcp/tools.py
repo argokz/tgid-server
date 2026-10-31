@@ -210,6 +210,27 @@ class HotspotParams(BaseModel):
     years: int = Field(5, ge=1, le=30, description="За сколько лет смотреть отказы")
 
 
+class CalcListParams(BaseModel):
+    fragment_ids: FragmentIds = Field(..., min_length=1, max_length=50)
+    limit: int = Field(5, ge=1, le=20, description="Последних расчётов на фрагмент")
+
+
+class ScenarioListParams(BaseModel):
+    include_archived: bool = Field(False, description="С архивными")
+
+
+class ScenarioDiffParams(BaseModel):
+    scenario_id: int = Field(..., ge=1)
+    limit: int = Field(100, ge=1, le=500, description="Не больше стольких отличий")
+
+
+class ScenarioCompareParams(BaseModel):
+    scenario_id: int = Field(..., ge=1)
+    base_calculation_id: Optional[int] = Field(None, ge=1, description="Расчёт основы; пусто — последний")
+    scenario_calculation_id: Optional[int] = Field(None, ge=1, description="Расчёт сценария; пусто — последний")
+    limit: int = Field(100, ge=1, le=500, description="Не больше стольких изменений")
+
+
 class SelectParams(SelectSpec):
     limit: int = Field(100, ge=1, le=200, description="Сколько объектов вернуть (итог — в total)")
     in_view: bool = Field(False, description="Не используется в MCP: охвата карты нет")
@@ -400,6 +421,70 @@ async def _select(p: SelectParams, user: AuthUser) -> Any:
             raise ToolError(exc.message) from exc
 
 
+async def _calculations(p: CalcListParams, user: AuthUser) -> Any:
+    rows = []
+    async with acquire_conn() as conn:
+        for r in await conn.fetch(
+                """SELECT id, fileid, tn::float AS tn, date1, name, calc_params FROM (
+                       SELECT c.*, row_number() OVER (PARTITION BY fileid ORDER BY id DESC) AS rn
+                         FROM calculation c WHERE fileid = ANY($1::int[])) t
+                    WHERE rn <= $2 ORDER BY fileid, id DESC""", sorted(set(p.fragment_ids)), p.limit):
+            params = r["calc_params"]
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except ValueError:
+                    params = {}
+            rows.append({"id": r["id"], "fragment_id": r["fileid"], "tn": r["tn"], "name": r["name"] or None,
+                         "date": r["date1"].isoformat() if r["date1"] else None,
+                         "emergency": bool((params or {}).get("g_is_avar"))})
+    return {"calculations": rows}
+
+
+async def _scenarios(p: ScenarioListParams, user: AuthUser) -> Any:
+    from database.scenarios import list_scenarios
+
+    async with acquire_conn() as conn:
+        return {"scenarios": await list_scenarios(conn, p.include_archived)}
+
+
+async def _scenario_diff(p: ScenarioDiffParams, user: AuthUser) -> Any:
+    from database.scenarios import scenario_diff, scenarios_available
+
+    async with acquire_conn() as conn:
+        if not await scenarios_available(conn):
+            raise ToolError("Сценариев в этой базе ещё нет")
+        res = await scenario_diff(conn, p.scenario_id, limit=p.limit)
+    if res is None:
+        raise ToolError(f"Сценарий {p.scenario_id} не найден (list_scenarios)")
+    return res
+
+
+async def _scenario_compare(p: ScenarioCompareParams, user: AuthUser) -> Any:
+    from database.scenario_compare import ScenarioCompareError, compare_scenario_calculations
+    from database.scenarios import SCENARIO_TABLE, scenarios_available
+
+    async with acquire_conn() as conn:
+        if not await scenarios_available(conn):
+            raise ToolError("Сценариев в этой базе ещё нет")
+        sc = await conn.fetchrow(f"SELECT base_fileid, fileid FROM {SCENARIO_TABLE} WHERE id = $1", p.scenario_id)
+        if sc is None:
+            raise ToolError(f"Сценарий {p.scenario_id} не найден (list_scenarios)")
+        ids = []
+        for given, fileid, what in ((p.base_calculation_id, sc["base_fileid"], "основы"),
+                                    (p.scenario_calculation_id, sc["fileid"], "сценария")):
+            calc_id = given or await conn.fetchval(
+                "SELECT max(id) FROM calculation WHERE fileid = $1", fileid)
+            if not calc_id:
+                raise ToolError(f"У фрагмента {what} #{fileid} нет расчёта — сначала run_calculation")
+            ids.append(calc_id)
+        try:
+            res = await compare_scenario_calculations(conn, p.scenario_id, ids[0], ids[1], limit=p.limit)
+        except (ScenarioCompareError, LookupError) as exc:
+            raise ToolError(str(exc)) from exc
+    return {"base_calculation_id": ids[0], "scenario_calculation_id": ids[1], **(res or {})}
+
+
 def _select_fields() -> str:
     from database.network_select import CARD_TYPES, TARGETS
 
@@ -468,6 +553,18 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
          CalcParams, _run_calc, permission="calc_run", read_only=False),
     Tool("task_status", "Состояние расчёта", "Состояние задачи расчёта по task_id из run_calculation.",
          TaskParams, _task_status),
+    Tool("list_calculations", "Расчёты фрагментов",
+         "Последние расчёты фрагментов: id, дата, температура наружного воздуха, плановый или аварийный.",
+         CalcListParams, _calculations),
+    Tool("list_scenarios", "Сценарии «что если»",
+         "Сценарии: копия фрагмента-основы (fileid сценария), основа, автор, статус.", ScenarioListParams, _scenarios),
+    Tool("scenario_diff", "Отличия сценария от основы",
+         "Что изменено в сценарии по сравнению с основой (поля объектов), конфликты с правками основы.",
+         ScenarioDiffParams, _scenario_diff),
+    Tool("scenario_compare", "Режим сценария против основы",
+         "Сравнение расчётов сценария и основы: недотоп, напоры и расходы потребителей, перегрузка участков. "
+         "Без id расчётов берутся последние расчёты фрагментов основы и сценария.",
+         ScenarioCompareParams, _scenario_compare),
 )}
 
 
@@ -517,11 +614,27 @@ async def execute(name: str, arguments: dict[str, Any], user: AuthUser) -> Any:
 async def call_tool(name: str, arguments: dict[str, Any], user: AuthUser,
                     client: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """client — ip и user_agent запроса (журнал действий)."""
+    return (await call_tool_raw(name, arguments, user, client))[1]
+
+
+async def call_tool_raw(name: str, arguments: dict[str, Any], user: AuthUser,
+                        client: Optional[dict[str, str]] = None,
+                        path_prefix: str = "/mcp") -> tuple[Any, dict[str, Any]]:
+    """Как call_tool, но ещё и ответ инструмента как есть (None при ошибке) — помощнику веба для карты.
+
+    path_prefix — путь в журнале действий: /mcp у внешних ИИ-клиентов, /ai/assistant у помощника веба."""
     tool = TOOLS[name]
     started = time.perf_counter()
     status = 200
+    payload: Any = None
     try:
-        result = _text_result(await execute(name, arguments, user))
+        payload = await execute(name, arguments, user)
+        from database import pii
+
+        if pii.enabled() and not pii.can_view(user):
+            # /mcp и поток помощника идут мимо PiiMaskMiddleware — ПДн закрываются здесь
+            payload, _ = pii.mask_json(payload)
+        result = _text_result(payload)
     except ValidationError as exc:
         status = 422
         result = _text_result("Неверные параметры: " + "; ".join(
@@ -544,7 +657,7 @@ async def call_tool(name: str, arguments: dict[str, Any], user: AuthUser,
     details: dict[str, Any] = {"tool": name}
     if not tool.read_only:
         details["arguments"] = arguments  # действие с последствиями — с параметрами
-    await activity.write(username=user.username, action=ACTION, method="POST", path=f"/mcp/{name}",
+    await activity.write(username=user.username, action=ACTION, method="POST", path=f"{path_prefix}/{name}",
                          status=status, duration_ms=duration_ms, details=details,
                          ip=(client or {}).get("ip"), user_agent=(client or {}).get("user_agent"))
-    return result
+    return payload, result

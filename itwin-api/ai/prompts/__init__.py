@@ -13,10 +13,13 @@ _DIR = Path(__file__).resolve().parent
 
 
 @lru_cache(maxsize=32)
-def load_prompt(name: str) -> str:
+def load_prompt(name: str, with_base: bool = True) -> str:
+    """with_base=False — без общего tgid_base.md (он требует ответ JSON-схемой; помощнику-собеседнику не подходит)."""
     path = _DIR / f"{name}.md"
     if not path.is_file():
         raise FileNotFoundError(f"Нет промпта ai/prompts/{name}.md")
-    base = (_DIR / "tgid_base.md").read_text(encoding="utf-8").strip()
     body = path.read_text(encoding="utf-8").strip()
-    return f"{base}\n\n{body}" if name != "tgid_base" else base
+    if not with_base or name == "tgid_base":
+        return body
+    base = (_DIR / "tgid_base.md").read_text(encoding="utf-8").strip()
+    return f"{base}\n\n{body}"

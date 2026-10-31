@@ -36,7 +36,7 @@ import json
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import asyncpg
 import networkx as nx
@@ -301,10 +301,29 @@ def _base_block_tree(net: dict[str, Any]) -> BlockTree:
     return tree
 
 
-def _sources_out(net: dict[str, Any], nodes: Iterable[int]) -> list[dict[str, Any]]:
-    """Питающие точки с видом: heat_source — источник, set_pressure — узел заданного напора."""
+def _sources_out(net: dict[str, Any], nodes: Iterable[int],
+                 names: Optional[dict[int, str]] = None) -> list[dict[str, Any]]:
+    """Питающие точки с видом: heat_source — источник, set_pressure — узел заданного напора; name — если есть."""
     kinds = net.get("source_kinds", {})
-    return [{"node_id": n, "kind": kinds.get(n, "heat_source")} for n in sorted(nodes)]
+    out = []
+    for n in sorted(nodes):
+        item: dict[str, Any] = {"node_id": n, "kind": kinds.get(n, "heat_source")}
+        if names and names.get(n):
+            item["name"] = names[n]
+        out.append(item)
+    return out
+
+
+async def _source_names(conn: asyncpg.Connection, nodes: Iterable[int]) -> dict[int, str]:
+    """Название питающей точки: источник (heatsources) или имя узла — чтобы ответ можно было прочитать."""
+    ids = sorted(nodes)
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        """SELECT n.id, coalesce(nullif(hs.name, ''), nullif(hs.sourcename, ''), nullif(n.externalnodename, '')) AS name
+             FROM nodes n LEFT JOIN heatsources hs ON hs.nodeid = n.id
+            WHERE n.id = ANY($1::int[])""", ids)
+    return {r["id"]: r["name"] for r in rows if r["name"]}
 
 
 async def stop_barriers(conn: asyncpg.Connection, net: dict[str, Any],
@@ -445,7 +464,7 @@ async def _trace_response(
             "stopped_at_count": len(res.stopped_at),
         },
         "source_node_ids": sorted(res.sources),
-        "sources": _sources_out(net, res.sources),
+        "sources": _sources_out(net, res.sources, await _source_names(conn, res.sources)),
         "node_ids": sorted(res.nodes),
         "line_ids": sorted(res.lines),
         "stopped_at_node_ids": sorted(res.stopped_at),

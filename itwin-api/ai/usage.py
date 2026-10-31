@@ -31,7 +31,25 @@ async def record(
     duration_ms: int,
     details: Optional[dict[str, Any]] = None,
 ) -> None:
-    tokens = usage_dict(response)
+    await record_tokens(tool=tool, username=username, model=model, tokens=usage_dict(response),
+                        duration_ms=duration_ms, details=details)
+
+
+def add_usage(total: dict[str, int], response: Any) -> None:
+    """Сложить usage ответа в total (помощник: один вопрос — несколько вызовов модели)."""
+    for key, value in usage_dict(response).items():
+        total[key] = total.get(key, 0) + value
+
+
+async def record_tokens(
+    *,
+    tool: str,
+    username: Optional[str],
+    model: str,
+    tokens: dict[str, int],
+    duration_ms: int,
+    details: Optional[dict[str, Any]] = None,
+) -> None:
     payload: dict[str, Any] = {"tool": tool, "model": model, **tokens}
     if details:
         payload.update(details)
