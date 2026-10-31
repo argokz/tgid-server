@@ -61,6 +61,7 @@ from routers.relay_plan import router as relay_plan_router
 from routers.em_chapter import router as em_chapter_router
 from routers.load_perspective import router as load_perspective_router
 from routers.perspective_scenario import router as perspective_scenario_router
+from routers.network3d import router as network3d_router
 from routers.api_v2 import key_router as api_key_router, router as api_v2_router
 from routers.topology import router as topology_router
 from routers.wear import router as wear_router
@@ -115,6 +116,7 @@ all_routers = [
     em_chapter_router,
     load_perspective_router,
     perspective_scenario_router,
+    network3d_router,
     api_key_router,
     api_v2_router,
     file_jobs_router,
